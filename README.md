@@ -15,6 +15,8 @@ updated in place.
   mode the PDF content itself renders light-on-dark, not just the window chrome.
   Toggle with View ▸ Invert Page Colors in Dark Mode, or force Light/Dark under
   View ▸ Appearance.
+  View ▸ Appearance also picks how dark the paper is — Black, Charcoal or Gray —
+  and the window chrome follows the level you choose.
 - **Adjustable window opacity, with a blurred backdrop.** View ▸ Window Opacity
   fades the page from 100% down to 30% so you can read against what is behind
   it, and blurs whatever shows through the way Terminal does; ⌥⌘↑ / ⌥⌘↓ step it,

@@ -96,12 +96,48 @@ enum SidebarMode: Int {
     case thumbnails = 0, outline = 1
 }
 
+/// How dark the paper gets in inverted dark mode. `black` is the plain
+/// inversion; the other two add a tone-compression stage that lifts the page
+/// off pure black. Only meaningful while pages are being inverted.
+enum DarkPaper: Int {
+    case black = 0, charcoal = 1, gray = 2
+
+    var title: String {
+        switch self {
+        case .black: return "Black Paper"
+        case .charcoal: return "Charcoal Paper"
+        case .gray: return "Gray Paper"
+        }
+    }
+
+    /// The two ends of the compressed range, as on-screen greys: paper
+    /// (inverted black) rises to `lift`, ink (inverted white) falls to `top`.
+    /// `lift` is also the window's chrome colour, so the two always match.
+    /// Tuned by eye against a text-heavy PDF; edit here to re-tune.
+    var lift: CGFloat {
+        switch self {
+        case .black: return 0
+        case .charcoal: return 0.11
+        case .gray: return 0.17
+        }
+    }
+
+    var top: CGFloat {
+        switch self {
+        case .black: return 1
+        case .charcoal: return 0.93
+        case .gray: return 0.90
+        }
+    }
+}
+
 /// User preferences. Small on purpose; everything defaults to "follow the system".
 enum Prefs {
     private static let defaults = UserDefaults.standard
 
     private enum Key {
         static let invertInDarkMode = "invertInDarkMode"
+        static let darkPaper = "darkPaper"
         static let appearance = "appearance"
         static let lastPositions = "lastPositions"
         static let markdownStyle = "markdownStyle"
@@ -120,6 +156,16 @@ enum Prefs {
         get { defaults.object(forKey: Key.invertInDarkMode) as? Bool ?? true }
         set {
             defaults.set(newValue, forKey: Key.invertInDarkMode)
+            NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
+        }
+    }
+
+    /// How dark the inverted page reads. Default black, which is the plain
+    /// inversion with no extra filter stage.
+    static var darkPaper: DarkPaper {
+        get { DarkPaper(rawValue: defaults.integer(forKey: Key.darkPaper)) ?? .black }
+        set {
+            defaults.set(newValue.rawValue, forKey: Key.darkPaper)
             NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
         }
     }
