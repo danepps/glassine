@@ -22,8 +22,8 @@ updated in place.
 - **Opens Markdown too.** A `.md` file is typeset into real pages and shown
   through the same reader, so tabs, dark mode, find, paging, and position memory
   all work on it. It re-renders within about half a second whenever the file
-  changes on disk, keeping your place. The title bar shows its word count and
-  reading time. Export the rendered pages with ⇧⌘E — always paginated, however
+  changes on disk, keeping your place. The title bar shows its word count.
+  Export the rendered pages with ⇧⌘E — always paginated, however
   you are reading it.
 - **Markdown styles.** View ▸ Markdown ▸ Style offers six print-quality
   stylesheets — Manuscript (New York serif), Modern (SF, airy), GitHub,
@@ -34,7 +34,9 @@ updated in place.
   set the stylesheet's variables (`--body-font`, `--line-height`, `--rule`, …)
   or override anything.
 - **Pages or continuous.** View ▸ Markdown ▸ Pages / Continuous: real Letter
-  pages, or one uninterrupted column with no page breaks at all.
+  pages, or one uninterrupted column with no page breaks at all. Reading
+  continuously, the toolbar's page counter becomes a progress percentage, and
+  ⌥⌘G jumps to one.
 - **One window, native tabs.** Every PDF opens as a tab (⌘T opens another,
   ⇧⌘[ / ⇧⌘] switch, drag tabs out to split).
 - **Zippy.** Renders through PDFKit, the same engine as Preview. Launches cold in

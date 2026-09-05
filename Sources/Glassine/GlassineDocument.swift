@@ -46,12 +46,12 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private var headings: [MarkdownHeading] = []
     private var lastLoadedHash: Int?
     private var styling = MarkdownStyling.current
-    /// Word count and reading time of the Markdown behind the current render;
-    /// nil for a PDF. The window shows them as its subtitle.
+    /// Word count of the Markdown behind the current render; nil for a PDF.
+    /// The window shows it as its subtitle.
     private(set) var markdownStats: MarkdownStats?
     /// True while the PDF on screen is a Markdown document laid out as one tall
-    /// page: the reader hides its page indicator, which would always read
-    /// "1 of 1".
+    /// page: the reader's indicator then shows reading progress as a percentage,
+    /// because "1 of 1" would say nothing.
     private(set) var isContinuousMarkdown = false
     private var watcher: FileWatcher?
     /// Bumped for every render; a completion whose generation is stale is dropped.

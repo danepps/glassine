@@ -86,6 +86,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let pageLabel = NSTextField(labelWithString: "")
     private let pageField = NSTextField()
     private weak var pageIndicator: PageIndicatorContainer?
+    private weak var pageIndicatorItem: NSToolbarItem?
     private weak var searchItem: NSSearchToolbarItem?
     private let searchCountLabel = NSTextField(labelWithString: "")
 
@@ -114,6 +115,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// while the first install's two-pass jump is still in flight, and the live
     /// destination is meaningless at that moment; this is what to aim at instead.
     private var lastInstallTarget: Prefs.Position?
+    /// The clip view the progress readout watches. PDFKit builds a fresh
+    /// document view for every document, so this is re-resolved after each
+    /// install rather than looked up once.
+    private weak var progressClipView: NSClipView?
+    private var progressRefreshPending = false
 
     private var pdfView: ReaderPDFView { readerVC.pdfView }
     private var pageCount: Int { glassineDocument.pdf?.pageCount ?? 0 }
@@ -174,6 +180,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             self,
             selector: #selector(pageChanged),
             name: .PDFViewPageChanged,
+            object: pdfView
+        )
+        // Zooming changes how much of a continuous document fits on screen, and
+        // with it the fraction the reader has behind them.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollGeometryChanged),
+            name: .PDFViewScaleChanged,
             object: pdfView
         )
         // Markdown documents get their PDF asynchronously, and again on every
@@ -346,7 +360,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // centred in the capsule by construction whatever the digit count.
         pageLabel.alignment = .center
         pageLabel.font = font
-        pageLabel.toolTip = "Go to page (\u{2325}\u{2318}G)"
+        pageLabel.toolTip = indicatorToolTip
         pageLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // Editing state: an unbezelled field in the same place. The toolbar
@@ -384,7 +398,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
         // Fixed width, sized for the widest string this document can show, so
         // the capsule never resizes while paging; the label centres inside it.
-        let width = container.widthAnchor.constraint(equalToConstant: indicatorWidth(for: pageCount))
+        let width = container.widthAnchor.constraint(equalToConstant: currentIndicatorWidth)
         pageIndicatorWidth = width
 
         NSLayoutConstraint.activate([
@@ -405,17 +419,43 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         let item = NSToolbarItem(itemIdentifier: .pageIndicator)
         item.label = "Page"
         item.paletteLabel = "Page"
-        item.toolTip = "Go to page (\u{2325}\u{2318}G)"
+        item.toolTip = indicatorToolTip
         item.view = container
         item.isBordered = true
         item.visibilityPriority = .high
+        pageIndicatorItem = item
         return item
     }
+
+    /// True while the reader is showing a continuous Markdown render: one very
+    /// tall page, where "1 of 1" says nothing and a percentage says everything.
+    private var showsProgress: Bool { glassineDocument.isContinuousMarkdown }
 
     private func indicatorWidth(for pageCount: Int) -> CGFloat {
         let widest = "\(max(pageCount, 1)) of \(max(pageCount, 1))"
             .size(withAttributes: [.font: indicatorFont]).width
         return ceil(widest) + 20
+    }
+
+    /// Sized for "100%", so the capsule does not jitter as the reader scrolls.
+    private var progressIndicatorWidth: CGFloat {
+        ceil("100%".size(withAttributes: [.font: indicatorFont]).width) + 20
+    }
+
+    private var currentIndicatorWidth: CGFloat {
+        showsProgress ? progressIndicatorWidth : indicatorWidth(for: pageCount)
+    }
+
+    private var indicatorToolTip: String {
+        showsProgress ? "Go to position (\u{2325}\u{2318}G)" : "Go to page (\u{2325}\u{2318}G)"
+    }
+
+    /// Width and tooltip both depend on which readout the capsule is showing,
+    /// so they are re-applied together whenever the layout can have changed.
+    private func updateIndicatorMode() {
+        pageIndicatorWidth?.constant = currentIndicatorWidth
+        pageLabel.toolTip = indicatorToolTip
+        pageIndicatorItem?.toolTip = indicatorToolTip
     }
 
     private var currentPageNumber: Int? {
@@ -425,27 +465,128 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     private func updatePageField() {
+        if showsProgress {
+            updateProgressLabel()
+            return
+        }
         guard let number = currentPageNumber, pageCount > 0 else {
             pageLabel.stringValue = ""
             return
         }
+        indicate(value: "\(number)", trailing: " of \(pageCount)")
+        if pageField.isHidden { pageField.stringValue = "\(number)" }
+    }
+
+    private func updateProgressLabel() {
+        let percent = currentProgressPercent
+        indicate(value: "\(percent)", trailing: "%")
+        if pageField.isHidden { pageField.stringValue = "\(percent)" }
+    }
+
+    /// The readout is one attributed string so the capsule centres it whatever
+    /// its width: the number in label colour, the rest a shade back.
+    private func indicate(value: String, trailing: String) {
         let font = indicatorFont
         let text = NSMutableAttributedString(
-            string: "\(number)",
+            string: value,
             attributes: [.font: font, .foregroundColor: NSColor.labelColor])
         text.append(NSAttributedString(
-            string: " of \(pageCount)",
+            string: trailing,
             attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         pageLabel.attributedStringValue = text
-        if pageField.isHidden { pageField.stringValue = "\(number)" }
+    }
+
+    // MARK: Reading progress (continuous Markdown)
+
+    /// The scroll geometry behind the progress readout: the clip view that
+    /// frames the visible area, and the document view it slides over.
+    private var scrollGeometry: (clip: NSClipView, documentView: NSView)? {
+        guard let documentView = pdfView.documentView,
+              let clip = documentView.enclosingScrollView?.contentView
+        else { return nil }
+        return (clip, documentView)
+    }
+
+    /// How far through the scrollable range the top of the visible area sits:
+    /// 0 at the top of the document, 1 once its bottom edge is at the bottom of
+    /// the view. A page shorter than the view is entirely on screen, so it is
+    /// read: 100%.
+    private var readingProgress: CGFloat {
+        guard let (clip, documentView) = scrollGeometry else { return 0 }
+        let span = documentView.bounds.height - clip.bounds.height
+        guard span > 0.5 else { return 1 }
+        // PDFKit's document view is flipped, but the geometry is cheap to state
+        // for both so a future PDFKit cannot invert the readout silently.
+        let travelled = documentView.isFlipped
+            ? clip.bounds.minY - documentView.bounds.minY
+            : documentView.bounds.maxY - clip.bounds.maxY
+        return min(max(travelled / span, 0), 1)
+    }
+
+    private var currentProgressPercent: Int {
+        Int((readingProgress * 100).rounded())
+    }
+
+    /// Put the top of the visible area at `fraction` of the scrollable range.
+    private func scrollToProgress(_ fraction: CGFloat) {
+        guard let (clip, documentView) = scrollGeometry else { return }
+        let span = documentView.bounds.height - clip.bounds.height
+        guard span > 0.5 else { return }
+        let travelled = span * min(max(fraction, 0), 1)
+        var origin = clip.bounds.origin
+        origin.y = documentView.isFlipped
+            ? documentView.bounds.minY + travelled
+            : documentView.bounds.maxY - clip.bounds.height - travelled
+        clip.scroll(to: origin)
+        clip.enclosingScrollView?.reflectScrolledClipView(clip)
+        updatePageField()
+    }
+
+    /// A continuous document scrolls without ever changing page, so
+    /// .PDFViewPageChanged never fires and the clip view's own bounds
+    /// notification is the only thing that reports movement. Re-resolved after
+    /// every install: PDFKit builds a new document view for each document.
+    private func observeScrollGeometry() {
+        let clip = pdfView.documentView?.enclosingScrollView?.contentView
+        guard clip !== progressClipView else { return }
+        if let previous = progressClipView {
+            NotificationCenter.default.removeObserver(
+                self, name: NSView.boundsDidChangeNotification, object: previous)
+        }
+        progressClipView = clip
+        guard let clip else { return }
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(scrollGeometryChanged),
+            name: NSView.boundsDidChangeNotification,
+            object: clip
+        )
+    }
+
+    /// Coalesced: a scroll posts this every frame, and relaying the label out
+    /// each time is wasted work when the percentage barely moves.
+    @objc private func scrollGeometryChanged() {
+        guard showsProgress, !progressRefreshPending else { return }
+        progressRefreshPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            self.progressRefreshPending = false
+            if self.showsProgress { self.updateProgressLabel() }
+        }
     }
 
     /// Swap the label for the editable field, with the number preselected.
     @objc func beginPageEdit() {
         guard pageCount > 0, pageField.isHidden else { return }
-        pageField.stringValue = currentPageNumber.map(String.init) ?? ""
-        // Emptying the field should still say what a legal answer looks like.
-        pageField.placeholderString = "1\u{2013}\(pageCount)"
+        if showsProgress {
+            pageField.stringValue = "\(currentProgressPercent)"
+            pageField.placeholderString = "0\u{2013}100"
+        } else {
+            pageField.stringValue = currentPageNumber.map(String.init) ?? ""
+            // Emptying the field should still say what a legal answer looks like.
+            pageField.placeholderString = "1\u{2013}\(pageCount)"
+        }
         pageLabel.isHidden = true
         pageField.isHidden = false
         pageField.refusesFirstResponder = false
@@ -473,6 +614,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         guard let pdf = pdfView.document, pdf.pageCount > 0,
               let requested = Int(pageField.stringValue.trimmingCharacters(in: .whitespaces))
         else { return }
+        if showsProgress {
+            scrollToProgress(CGFloat(min(max(requested, 0), 100)) / 100)
+            return
+        }
         let target = min(max(requested, 1), pdf.pageCount) - 1
         let current = pdfView.currentPage.map { pdf.index(for: $0) } ?? NSNotFound
         if target != current, let page = pdf.page(at: target) {
@@ -848,6 +993,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // is the one chance to read its outline; a Markdown document has no PDF
         // yet and picks its mode up when the first render lands.
         if pdfView.document != nil { sidebarVC.documentDidChange() }
+        observeScrollGeometry()
         restorePositionIfNeeded()
     }
 
@@ -873,8 +1019,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             menuItem.state = sidebarVC.mode == .outline ? .on : .off
             return sidebarVC.hasOutline
         case #selector(focusPageField(_:)):
-            // A continuous Markdown document has no page indicator to edit.
-            return pageCount > 0 && !glassineDocument.isContinuousMarkdown
+            // In a continuous document this edits the progress percentage
+            // instead, so the only thing that disables it is having no document.
+            return pageCount > 0
         default:
             break
         }
@@ -972,7 +1119,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         guard let replacement = glassineDocument.pdf else { return }
         let initial = (note.userInfo?["initial"] as? Bool) ?? false
         if let stats = glassineDocument.markdownStats {
-            window?.subtitle = "\(stats.words.formatted(.number)) words · \(stats.minutes) min"
+            window?.subtitle = "\(stats.words.formatted(.number)) words"
         }
         // On a reload, hold the place the reader is actually looking at; on the
         // first render there is nothing on screen yet, so use the saved one.
@@ -1017,8 +1164,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
         pdfView.document = replacement
         sidebarVC.documentDidChange()
-        setPageIndicatorVisible(!glassineDocument.isContinuousMarkdown)
-        pageIndicatorWidth?.constant = indicatorWidth(for: replacement.pageCount)
+        observeScrollGeometry()
+        updateIndicatorMode()
         updatePageField()
 
         let clamped = target.map {
@@ -1036,30 +1183,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
     }
 
-    /// Where the page indicator was before it was taken out of the toolbar.
-    private var pageIndicatorSlot: Int?
-
-    /// A continuously laid-out Markdown document is one very tall page, so
-    /// "1 of 1" says nothing; the item leaves the toolbar entirely and comes
-    /// back, at its own place, when the document is paginated again.
-    private func setPageIndicatorVisible(_ visible: Bool) {
-        guard let toolbar = window?.toolbar else { return }
-        if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == .pageIndicator }) {
-            guard !visible else { return }
-            pageIndicatorSlot = index
-            toolbar.removeItem(at: index)
-        } else if visible {
-            let slot = pageIndicatorSlot
-                ?? toolbarDefaultItemIdentifiers(toolbar).firstIndex(of: .pageIndicator)
-                ?? toolbar.items.count
-            toolbar.insertItem(withItemIdentifier: .pageIndicator,
-                               at: min(slot, toolbar.items.count))
-        }
-    }
-
     private func finishInstall() {
         restoreStarted = true
         restoreFinished = true
+        // The document view only exists once PDFView has laid the new document
+        // out, which the install's jump has just forced.
+        observeScrollGeometry()
         updatePageField()
         // Swapping the document can leave the window itself as first responder,
         // and the next activation then hands focus to the first key view it
