@@ -7,11 +7,13 @@
 //   --keep-iconset  Leave the intermediate .iconset beside the output so the
 //                   individual sizes can be inspected.
 //
-// Concept 1 ("tabbed page + M↓") from make-doc-icon-concepts.swift, light
-// variant only: Finder draws one document icon whatever the appearance is.
-// Each size is drawn at its own pixel resolution rather than downsampled, so
-// the 16 and 32 px tiles can snap their edges to the pixel grid and carry a
-// heavier mark. Pure CoreGraphics + ImageIO, so it runs as a plain script.
+// The app icon's drawing language on a single sheet: the same folded page, a
+// coral rim, and the four coloured rules — with the M↓ mark above them saying
+// which kind of document this is. Light variant only: Finder draws one document
+// icon whatever the appearance is. Each size is drawn at its own pixel
+// resolution rather than downsampled, so the 16 and 32 px tiles can snap their
+// edges to the pixel grid and carry a heavier mark. Pure CoreGraphics +
+// ImageIO, so it runs as a plain script.
 
 import Foundation
 import CoreGraphics
@@ -41,39 +43,43 @@ func rounded(_ rect: CGRect, radius: CGFloat, _ color: CGColor, in ctx: CGContex
 
 // The 1024 pt canvas the concept was drawn on. Everything below is expressed
 // in it and mapped onto the target tile.
-let pageRect = CGRect(x: 152, y: 112, width: 624, height: 800)
+// Centred, unlike the Folio-era sheet, which sat left of centre to leave room
+// for the margin tabs that this design drops.
+let pageRect = CGRect(x: 200, y: 112, width: 624, height: 800)
 let foldSize: CGFloat = 150
 let pageRadius: CGFloat = 24
 
-let ruleLeft: CGFloat = 241
-let ruleRight: CGFloat = 675
-let ruleThickness: CGFloat = 30
-let ruleYs: [CGFloat] = [715, 650, 290, 225]
+// The four rules keep the app icon's proportions, widened to this sheet.
+let ruleLeft: CGFloat = 289
+let ruleThickness: CGFloat = 38
+let ruleWidths: [CGFloat] = [350, 446, 388, 446]
+let ruleYs: [CGFloat] = [452, 364, 276, 188]
+let ruleColors = [rgb(255, 91, 91), rgb(255, 190, 48), rgb(46, 210, 171), rgb(76, 160, 255)]
 
-let tabLeft: CGFloat = 726
-let tabRight: CGFloat = 870
-let tabThickness: CGFloat = 71
-let tabRadius: CGFloat = 21
-let tabYs: [CGFloat] = [612, 493, 374, 255]
-let tabColors = [rgb(255, 91, 91), rgb(255, 190, 48), rgb(46, 210, 171), rgb(76, 160, 255)]
-
-let markCenterY: CGFloat = 485
+let markCenterY: CGFloat = 700
 let markSize: CGFloat = 224
 
 let paperColor = rgb(255, 255, 255)
 let foldColor = rgb(212, 219, 229)
-let inkColor = rgb(55, 65, 77)              // #37414D
+let inkColor = rgb(38, 46, 58)              // #262E3A, the app icon's slate
+let rimColor = ruleColors[0]                // coral, as on the app icon's top leaf
+let rimWidth: CGFloat = 9
 
 // MARK: - Per-size tuning
 
 // At 16 and 32 px the design has to be redrawn rather than scaled: the sheet
 // is zoomed so it fills the tile, the mark is drawn heavier than the
-// proportional size (a 0.25 × height stem lands under 2 px and greys out),
-// and at 16 px the rules and the arrow are dropped — there is room for a bold
-// M and nothing else.
+// proportional size (a 0.25 × height stem lands under 2 px and greys out), the
+// rules are floored at 2 px so their colours survive, and at 16 px the rules
+// and the arrow are dropped — there is room for a bold M and nothing else, so
+// the mark moves back to the middle of the sheet and the coral rim is left to
+// carry the family's colour.
 struct Tuning {
     var zoom: CGFloat = 1
     var rules = 4
+    var rulePitch: CGFloat?     // px
+    var ruleHeight: CGFloat?    // px
+    var markCenterY: CGFloat?   // design units
     var markHeight: CGFloat?
     var markWidth: CGFloat?
     var markStroke: CGFloat?
@@ -84,11 +90,14 @@ struct Tuning {
 func tuning(for side: Int) -> Tuning {
     switch side {
     case 16:
-        return Tuning(zoom: 1.15, rules: 0, markHeight: 8, markWidth: 9, markStroke: 2,
+        return Tuning(zoom: 1.18, rules: 0, markCenterY: pageRect.midY,
+                      markHeight: 9, markWidth: 8, markStroke: 2,
                       arrow: false, shadow: false)
     case 32:
-        return Tuning(zoom: 1.10, rules: 4, markHeight: 10, markStroke: 2,
-                      shadow: false)
+        return Tuning(zoom: 1.10, rules: 4, rulePitch: 3, ruleHeight: 2,
+                      markHeight: 10, markStroke: 2, shadow: false)
+    case 64:
+        return Tuning(ruleHeight: 3)
     default:
         return Tuning()
     }
@@ -117,19 +126,6 @@ func render(side: Int) -> CGImage {
     let sheet = CGRect(x: left, y: bottom, width: right - left, height: top - bottom)
     let fold = size(foldSize)
     let radius = (pageRadius * unit).rounded()
-
-    // Tabs first, so they emerge from behind the sheet. Their spacing is one
-    // rounded step rather than four rounded positions: at 16 px the design's
-    // even 119 pt pitch would otherwise round to 2, 2, 3 px apart.
-    let tabX = at(tabLeft)
-    let tabW = max(side <= 16 ? 3 : 1, at(tabRight) - tabX)
-    let tabH = size(tabThickness)
-    let tabStep = size(tabYs[0] - tabYs[1])
-    for (index, color) in tabColors.enumerated() {
-        rounded(CGRect(x: tabX, y: at(tabYs[0]) - CGFloat(index) * tabStep,
-                       width: tabW, height: tabH),
-                radius: (tabRadius * unit).rounded(), color, in: ctx)
-    }
 
     let page = CGMutablePath()
     page.move(to: CGPoint(x: sheet.minX, y: sheet.minY + radius))
@@ -161,11 +157,32 @@ func render(side: Int) -> CGImage {
     flap.closeSubpath()
     fill(flap, foldColor, in: ctx)
 
-    let ruleX = at(ruleLeft), ruleW = at(ruleRight) - at(ruleLeft)
-    let ruleH = size(ruleThickness)
-    for y in ruleYs.prefix(t.rules) {
-        rounded(CGRect(x: ruleX, y: at(y), width: ruleW, height: ruleH),
-                radius: ruleH <= 2 ? 0 : ruleH / 2, inkColor, in: ctx)
+    // The coral rim is the app icon's front leaf, on its own. It is a
+    // double-width stroke clipped to the sheet, so the rim lies wholly inside
+    // the pixel-snapped edge: a centred 1 px stroke at 16 px would land half in
+    // and half out and come back as two grey rows.
+    ctx.saveGState()
+    ctx.addPath(page)
+    ctx.clip()
+    ctx.addPath(page)
+    ctx.setStrokeColor(rimColor)
+    ctx.setLineWidth(size(rimWidth) * 2)
+    ctx.strokePath()
+    ctx.restoreGState()
+
+    // One rounded pitch rather than four rounded positions: at 32 px the
+    // design's even 88 pt spacing would otherwise round to 3, 3, 2 px apart.
+    let ruleX = at(ruleLeft)
+    let ruleH = t.ruleHeight ?? size(ruleThickness)
+    let pitch = t.rulePitch ?? size(ruleYs[0] - ruleYs[1])
+    let blockHeight = pitch * 3 + ruleH
+    let firstY = (at((ruleYs.last! + ruleYs.first! + ruleThickness) / 2)
+                  + blockHeight / 2 - ruleH).rounded()
+    for index in 0..<t.rules {
+        let w = max(3, size(ruleWidths[index]))
+        rounded(CGRect(x: ruleX, y: firstY - CGFloat(index) * pitch,
+                       width: w, height: ruleH),
+                radius: ruleH <= 2 ? 0 : ruleH / 2, ruleColors[index], in: ctx)
     }
 
     let h = t.markHeight ?? size(markSize)
@@ -176,7 +193,7 @@ func render(side: Int) -> CGImage {
     let headH = max(2, (h * 0.46).rounded())
     let total = t.arrow ? mW + gap + arrowW : mW
     let x0 = (sheet.midX - total / 2).rounded()
-    let y0 = (at(markCenterY) - h / 2).rounded()
+    let y0 = (at(t.markCenterY ?? markCenterY) - h / 2).rounded()
 
     // The M is a stroked polyline clipped to its own box: that keeps the stem
     // terminals flat and the mitred apex from spiking past the cap height.

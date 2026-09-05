@@ -27,19 +27,25 @@ DEPLOY_TARGET=14.0                   # matches LSMinimumSystemVersion in Info.pl
 mkdir -p "$SUPPORT"
 
 # ---------------------------------------------------------------- 1. artwork
-# Legacy .icns art uses the inset 824-in-1024 grid; Icon Composer layers are
-# full-bleed and get masked to the icon shape by the system.
-echo "==> rendering artwork"
-swift "$RENDER" "$WORK/glassine-legacy-1024.png"
+# Icon Composer layers are full-bleed and get masked to the icon shape by the
+# system; the legacy .icns art uses the inset macOS icon grid.
+echo "==> rendering Icon Composer layers"
 rm -rf "$ICONPKG"
 mkdir -p "$ICONPKG/Assets"
 swift "$RENDER" "$ICONPKG/Assets/Glassine-Light-1024.png" --full-bleed
 swift "$RENDER" "$ICONPKG/Assets/Glassine-Dark-1024.png"  --full-bleed --dark
 
 # ------------------------------------------------------------------ 2. .icns
+# Every size is rendered at its own resolution rather than downsampled from
+# 1024: below 128 px the rims and the four coloured rules are sub-pixel, and
+# make-icon.swift widens them, straightens the top leaf and drops fanned leaves
+# to suit.
 echo "==> building $ICON_NAME.icns"
 ICONSET="$WORK/$ICON_NAME.iconset"
 mkdir -p "$ICONSET"
+for px in 16 32 64 128 256 512 1024; do
+  swift "$RENDER" "$WORK/glassine-legacy-$px.png" --size "$px"
+done
 # size:name pairs — @2x entries are the same pixel size as the next base size up
 for pair in \
   16:icon_16x16.png \
@@ -53,8 +59,7 @@ for pair in \
   512:icon_512x512.png \
   1024:icon_512x512@2x.png
 do
-  sips -z "${pair%%:*}" "${pair%%:*}" "$WORK/glassine-legacy-1024.png" \
-       --out "$ICONSET/${pair#*:}" >/dev/null
+  cp "$WORK/glassine-legacy-${pair%%:*}.png" "$ICONSET/${pair#*:}"
 done
 iconutil -c icns "$ICONSET" -o "$SUPPORT/$ICON_NAME.icns"
 
