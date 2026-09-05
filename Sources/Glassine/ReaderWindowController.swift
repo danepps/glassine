@@ -764,6 +764,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         searchNavControl?.isEnabled = false
         pdfView.highlightedSelections = nil
         pdfView.setFindMatches([], current: 0)
+        // In light mode the current match is PDFKit's own selection, and nothing
+        // else ever drops it: without this the last match stays washed on the
+        // page after the query stops matching, and survives cancelling the
+        // search entirely.
+        pdfView.setCurrentSelection(nil, animate: false)
 
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         lastQuery = trimmed
@@ -1163,6 +1168,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         pendingQuery = nil
         pdfView.setFindMatches([], current: 0)
         pdfView.highlightedSelections = nil
+        pdfView.setCurrentSelection(nil, animate: false)
         searchNavControl?.isEnabled = false
         searchCountLabel.stringValue = ""
 
