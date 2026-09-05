@@ -154,6 +154,19 @@ Dan's stated requirements, all met as of this handoff:
   Runtime-verified on the ad-hoc build: menu bar and About panel, the Folio
   preference migration, find, the TOC sidebar, the Markdown style menu, the
   synthesised outline through the renamed scheme, and Export as PDF.
+- **Dark Paper landed 2026-09-05**: `Prefs.darkPaper` (`DarkPaper` — `black` 0
+  default, `charcoal` 1, `gray` 2) picks how dark the inverted page reads, as
+  three radio items after a separator in View ▸ Appearance. Above Black the
+  filter chain gains a `CIColorMatrix` stage and the window chrome takes the
+  same grey (design bullet below). Runtime-verified on the ad-hoc build in
+  forced dark, PDF and Markdown in two tabs, sidebar thumbnails and a live find
+  in frame at every level: paper and chrome measure identically (Charcoal
+  28/255, Gray 43/255, Black 0), thumbnails follow, find highlights stay green
+  (mean of the green-dominant pixels rgb(40,165,25) at Black →
+  rgb(59,151,40) at Gray), the page-break gutter stays visible (paper→gutter
+  0→24, 28→38, 43→50) and the three items grey out when Invert Page Colors is
+  off. Black is unchanged: a same-state screenshot diff against the pre-change
+  build differs only in the toolbar's glass tint, by at most 3/255.
 
 ## Build, run, test
 
@@ -197,7 +210,7 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 | `ReaderViewController.swift` | `ReaderPDFView` (PDFView subclass: arrow-key paging, per-page highlight bookkeeping), appearance routine that installs the inversion filters. |
 | `SidebarViewController.swift` | Two panes behind a segmented control: `PDFThumbnailView` (mirrors the inversion filters) and an `NSOutlineView` table of contents driven from `PDFDocument.outlineRoot`, with `PDFOutline` objects as the items. Clicking a row navigates; `syncSelection()` follows the reading position. The outline is native text and is deliberately *not* filtered. |
 | `ReaderPage.swift` | `PDFPage` subclass; draws dark-mode find highlights. |
-| `Prefs.swift` | UserDefaults: invert toggle, appearance override, per-file last position, Markdown style/layout/size, window opacity and blur. Also `MarkdownStyle`, which enumerates the six built-ins and the `.css` files in `~/Library/Application Support/Glassine/Styles` and reads a style's CSS. |
+| `Prefs.swift` | UserDefaults: invert toggle, dark-paper level, appearance override, per-file last position, Markdown style/layout/size, window opacity and blur. Also `MarkdownStyle`, which enumerates the six built-ins and the `.css` files in `~/Library/Application Support/Glassine/Styles` and reads a style's CSS. |
 
 Support/: `Info.plist`, `Glassine.icon` (Icon Composer package, light+dark),
 `Assets.car` (compiled from it), `Glassine.icns` (fallback). scripts/:
@@ -252,6 +265,20 @@ tiles are the ones worth tuning.
   mid-gray). Green highlight ink is `(0, 0.77, 0)` pre-filter, calibrated by
   pixel-sampling screenshots to ~#69E170 on screen; the analytic value
   clips. Formula: same chroma, luminance 1−Y.
+- **Dark Paper is one more filter stage, and the chrome follows it.** Above
+  `DarkPaper.black` the chain gets a third filter, `CIColorMatrix`, that
+  compresses the inverted image into `[lift, top]`: paper (inverted black)
+  rises to `lift`, ink (inverted white) falls to `top`, alpha untouched.
+  Charcoal is 0.11/0.93, Gray 0.17/0.90, both written as *screen* values in
+  `DarkPaper.lift` / `.top` — the one place to re-tune them — and converted to
+  linear light where the filters actually work. `applyWindowAppearance` paints
+  the dark window background with the same `lift`, so the title bar and tab bar
+  sit on exactly the page's tone (measured identical). `black` adds no filter
+  and keeps `.black` chrome, so the default look is the old one byte for byte.
+  The gutter needs no per-level tweak: it is a fixed pre-filter white and the
+  matrix carries it along, staying a few levels above paper at each setting.
+  Find highlights need none either — the matrix compresses toward `top`, so the
+  green loses a little saturation but stays plainly green.
 - **No `.fullSizeContentView`.** macOS 26 Liquid Glass toolbar/tab bar tint
   from the content beneath them and they sample the PDF view's *pre-filter*
   colors, so with content under the toolbar the chrome went light gray and a
@@ -558,6 +585,19 @@ Steps 1–4 are kept for setting up any further machine.
   concluding the credential is gone; unlock via Screen Sharing and rerun.
   (2026-09-04, Mac Studio.) The same lock also blanks `screencapture`, which is
   why agent-driven UI verification stalls until someone unlocks.
+- **A layer filter's numbers are linear light, and Core Animation ignores half
+  of `CIColorMatrix`.** Two traps, both silent, hit while adding Dark Paper.
+  Setting the lift on `inputAVector` (mathematically the premultiply-safe way to
+  add a constant: bias × alpha) does *nothing* through
+  `contentFilters` — CA honours `inputBiasVector` and the R/G/B vectors and
+  drops the colour channels of the alpha vector. And the values land in linear
+  light, like the 0.997 gutter: a bias of 0.11 came out as 93/255 on screen,
+  not 28. `ReaderViewController.linearLight` converts, and the levels are
+  written as the greys you want to see. There is no console warning for either;
+  the page simply does not change. A 300×300 borderless window with a white and
+  a black patch, `contentFilters` set, then `screencapture -l` and sample the
+  two patches, settles this kind of question in a minute
+  (`darkpaper-filtertest.swift` pattern).
 - **Never add Swift stored properties to a `PDFPage` subclass.** PDFKit
   allocates pages through a private initializer that skips Swift ivar
   setup; the property reads as garbage on the tile thread and crashes

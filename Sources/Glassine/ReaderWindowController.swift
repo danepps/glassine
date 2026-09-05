@@ -193,7 +193,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     /// Keep the sidebar and the find highlights in step with the page inversion.
     private func applyInversion(_ inverted: Bool) {
-        sidebarVC.setContentFilters(inverted ? ReaderViewController.makeInvertFilters() : [])
+        sidebarVC.setContentFilters(inverted ? ReaderViewController.makeDarkFilters() : [])
         applyHighlights()
         applyWindowAppearance()
     }
@@ -203,15 +203,19 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     /// Chrome and translucency in one pass, because they share the window's
-    /// background colour. In dark mode the title bar and tab bar sit on plain
-    /// black, matching the inverted page paper; the toolbar controls keep their
-    /// own glass capsules. Tabs are separate windows, so every controller does
-    /// this for its own.
+    /// background colour. In dark mode the title bar and tab bar sit on the same
+    /// tone as the inverted page paper; the toolbar controls keep their own
+    /// glass capsules. Tabs are separate windows, so every controller does this
+    /// for its own.
     private func applyWindowAppearance() {
         guard let window else { return }
         let dark = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         window.titlebarAppearsTransparent = dark
         window.titlebarSeparatorStyle = dark ? .none : .automatic
+        // Black unless the pages are actually being lifted off black.
+        let level = Prefs.darkPaper
+        let paper: NSColor = (level != .black && Prefs.invertInDarkMode)
+            ? NSColor(white: level.lift, alpha: 1) : .black
 
         let opacity = Prefs.windowOpacity
         let translucent = opacity < Prefs.maxWindowOpacity
@@ -220,7 +224,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // pixels transparent, and transparent pixels are what the compositor
         // blurs behind.
         window.isOpaque = !translucent
-        window.backgroundColor = translucent ? .clear : (dark ? .black : .windowBackgroundColor)
+        window.backgroundColor = translucent ? .clear : (dark ? paper : .windowBackgroundColor)
         if let content = contentViewController?.view {
             content.wantsLayer = true
             content.alphaValue = translucent ? opacity : 1

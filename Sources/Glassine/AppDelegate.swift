@@ -50,6 +50,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Prefs.invertInDarkMode.toggle()
     }
 
+    @objc func setDarkPaper(_ sender: NSMenuItem) {
+        guard let paper = DarkPaper(rawValue: sender.tag) else { return }
+        Prefs.darkPaper = paper
+    }
+
+    /// The paper levels are stages of the inversion filter, so they do nothing
+    /// unless pages are actually being inverted right now.
+    private var isInvertingNow: Bool {
+        Prefs.invertInDarkMode
+            && NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
     @objc func increaseOpacity(_ sender: Any?) {
         Prefs.windowOpacity += Prefs.windowOpacityStep
     }
@@ -129,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = (menuItem.tag == Prefs.appearance.rawValue) ? .on : .off
         case #selector(toggleInvertInDarkMode(_:)):
             menuItem.state = Prefs.invertInDarkMode ? .on : .off
+        case #selector(setDarkPaper(_:)):
+            menuItem.state = (menuItem.tag == Prefs.darkPaper.rawValue) ? .on : .off
+            return isInvertingNow
         case #selector(toggleWindowBlur(_:)):
             menuItem.state = Prefs.windowBlur ? .on : .off
             // Nothing to blur behind an opaque window.

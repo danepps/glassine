@@ -153,6 +153,11 @@ enum MainMenu {
             target: appDelegate, tag: AppearanceMode.light.rawValue)
         add(appearanceMenu, "Dark", #selector(AppDelegate.setAppearance(_:)),
             target: appDelegate, tag: AppearanceMode.dark.rawValue)
+        appearanceMenu.addItem(.separator())
+        for paper in [DarkPaper.black, .charcoal, .gray] {
+            add(appearanceMenu, paper.title, #selector(AppDelegate.setDarkPaper(_:)),
+                target: appDelegate, tag: paper.rawValue)
+        }
         appearance.submenu = appearanceMenu
         menu.addItem(appearance)
 

@@ -131,17 +131,39 @@ final class ReaderViewController: NSViewController {
     var onInversionChanged: ((Bool) -> Void)?
 
     /// Luminance inversion that keeps hues: invert, then rotate hue 180 degrees,
-    /// so blue links stay blue instead of turning orange.
-    /// CIFilters are mutable objects, so each view gets its own pair rather
+    /// so blue links stay blue instead of turning orange. Above Black paper a
+    /// third stage compresses the result into `[lift, top]`, lifting the page
+    /// off pure black without touching the light-mode path.
+    /// CIFilters are mutable objects, so each view gets its own chain rather
     /// than sharing one static set across windows and the sidebar.
-    static func makeInvertFilters() -> [CIFilter] {
+    static func makeDarkFilters() -> [CIFilter] {
         guard let invert = CIFilter(name: "CIColorInvert"),
               let hue = CIFilter(name: "CIHueAdjust") else { return [] }
         hue.setValue(Float.pi, forKey: "inputAngle")
-        return [invert, hue]
+
+        let paper = Prefs.darkPaper
+        guard paper != .black, let compress = CIFilter(name: "CIColorMatrix") else {
+            return [invert, hue]
+        }
+        // out = lift + (top - lift) * in, per channel, in the linear light the
+        // layer filters work in (same reason the gutter is 0.997 pre-filter), so
+        // the levels are converted from the screen values they are written as.
+        let lift = linearLight(paper.lift)
+        let span = linearLight(paper.top) - lift
+        compress.setValue(CIVector(x: span, y: 0, z: 0, w: 0), forKey: "inputRVector")
+        compress.setValue(CIVector(x: 0, y: span, z: 0, w: 0), forKey: "inputGVector")
+        compress.setValue(CIVector(x: 0, y: 0, z: span, w: 0), forKey: "inputBVector")
+        compress.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputAVector")
+        compress.setValue(CIVector(x: lift, y: lift, z: lift, w: 0), forKey: "inputBiasVector")
+        return [invert, hue, compress]
     }
 
-    private lazy var invertFilters = Self.makeInvertFilters()
+    /// sRGB value to linear light. Core Animation ignores the colour channels of
+    /// `inputAVector`, so the lift has to be a plain bias and this is the space
+    /// it lands in.
+    private static func linearLight(_ value: CGFloat) -> CGFloat {
+        value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
 
     init(document: GlassineDocument) {
         self.glassineDocument = document
@@ -205,7 +227,9 @@ final class ReaderViewController: NSViewController {
             ? NSColor(white: 0.997, alpha: 1)
             : NSColor(white: dark ? 0.11 : 0.94, alpha: 1)
 
-        pdfView.contentFilters = invert ? invertFilters : []
+        // Rebuilt rather than cached: the chain depends on Prefs.darkPaper,
+        // which this pass may be reacting to.
+        pdfView.contentFilters = invert ? Self.makeDarkFilters() : []
         // Inverted, PDFKit's drop shadows become bright halos around every page
         // and a light band at the end of the document.
         pdfView.pageShadowsEnabled = !invert
