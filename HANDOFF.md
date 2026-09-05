@@ -188,6 +188,34 @@ Dan's stated requirements, all met as of this handoff:
   and the About panel with the system in light, the dark artwork in both with
   the system in dark, and every size 512 → 16 judged off a family board.
 
+- **Recents launch window landed 2026-09-05** on branch `recents`: the app no
+  longer opens an Open panel when it has nothing to show. `Prefs.recentDocuments`
+  (30 entries of path + bookmark + date + page count, most recent first) is
+  written from `GlassineDocument.read`, and `RecentsWindowController` lists it.
+  It appears at launch, when the last reader window closes, and at ⇧⌘O (File ▸
+  Recents…); it hides whenever a reader window is shown or becomes key. ⌘O and
+  Open Recent are unchanged. Runtime-verified on the ad-hoc build: the window at
+  launch with the list (tilde-abbreviated folders, "p. 1 of 211", "Today, 14:36",
+  the Markdown document icon for `.md`); the filter narrowing seven rows to two
+  on "mcken", reached with ⌘F; Tab back to the table and Return opening the
+  selected row with the Recents window going away; ⇧⌘O bringing it back over a
+  document and Escape dismissing it; ⌘W on the last document bringing it back;
+  Escape with no document leaving it up; a deleted file's row dimmed and reading
+  "Not found", Return on it opening nothing, Delete removing it from the stored
+  list; "Open Other…" raising the standard Open panel; the dark-mode look, which
+  needs nothing of its own (`NSApp.appearance` is app-wide); quitting with the
+  window up and relaunching showing it again; a Finder open of a PDF with the app
+  quit going straight to the reader with no Recents flash (screenshot at 0.9 s);
+  the model itself (`defaults read com.epps.Glassine recentDocuments` after four
+  opens: right order, dates, page counts for the PDFs and none for the Markdown
+  file); and a renamed file's bookmark resolving to its new path, with the entry
+  rewritten in defaults on the next launch. **Not verified: a real drag onto the
+  window** — a drag cannot be driven from System Events; the code registers the
+  content view for `.fileURL` and filters with `GlassineDocument.canOpen`.
+  The screen locked for part of the session, which blanks `screencapture` and
+  empties the System Events window list; `CGWindowListCopyWindowInfo` keeps
+  working through a lock and is how the window-presence checks were made.
+
 ## Build, run, test
 
 ```sh
@@ -211,6 +239,14 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 - `screencapture -x /abs/path.png` works on this machine for visual checks;
   crop with `sips -c`. GUI keystroke automation via System Events is flaky
   (keystrokes can land in other apps); guard on Glassine being frontmost.
+- A locked screen blanks `screencapture` **and** empties System Events' window
+  list, but `CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements],
+  kCGNullWindowID)` keeps reporting every window's title, bounds and
+  `kCGWindowIsOnscreen` right through it. That is enough to check which windows
+  an action put on screen without a single pixel, and it is how the Recents
+  work was verified while the Mac sat locked. Two cautions: while locked the
+  bounds come back scaled (0.9× here) and nothing ever becomes *key*, so
+  anything riding on `windowDidBecomeKey` will not fire.
 - Test PDFs the agents used live in the session scratchpad and are gone;
   Dan has plenty in ~/Downloads (SCOTUS slip opinions are good: color,
   small caps, lots of matches).
@@ -220,17 +256,18 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 | File | Role |
 |---|---|
 | `main.swift` | NSApplication bootstrap, sets `AppDelegate`. |
-| `AppDelegate.swift` | Installs the menu, applies saved appearance override, shows Open panel on launch/no windows, appearance & invert menu actions. Owns the Sparkle `SPUStandardUpdaterController` (started eagerly, so the scheduled background check runs). |
+| `AppDelegate.swift` | Installs the menu, applies saved appearance override, shows the Recents window on launch/no windows (and hides it when a reader window becomes key), appearance & invert menu actions. Owns the Sparkle `SPUStandardUpdaterController` (started eagerly, so the scheduled background check runs). |
 | `MainMenu.swift` | Entire menu bar in code. Nil-target actions ride the responder chain (`zoomIn:`, `goToNextPage:` etc. are PDFView's). "Open Recent" is just a submenu with a `clearRecentDocuments:` item; AppKit fills it. "Check for Updates…" is the one item with an explicit target — Sparkle's updater controller isn't in the responder chain, so it's passed in from the app delegate. |
 | `GlassineDocument.swift` | `NSDocument` (ObjC name `GlassineDocument`, referenced from Info.plist) wrapping `PDFDocument`. Two `Kind`s: a PDF is opened directly; a Markdown file is decoded and converted to HTML in `read`, then typeset asynchronously and installed through `.glassineDocumentDidReplacePDF`. Owns the `FileWatcher`, the re-render on a style/size/layout change, `applyOutline` (the synthesised Markdown table of contents), the word-count `markdownStats`, `isContinuousMarkdown`, and `exportAsPDF` (which typesets a second, paginated render when the reader is showing a continuous one). `PDFDocumentDelegate`: returns `ReaderPage` for pages, forwards find callbacks to the window controller via `FindSink`. |
 | `MarkdownHTML.swift` | Markdown → HTML. Decode (UTF-8, UTF-16 by BOM), strip YAML front matter, `Markdown.Document` + `HTMLFormatter`, an `ImageInliner` rewriter that turns relative local images into `data:` URIs, a `HeadingAnchorer` rewriter that wraps each heading in an invisible `glassine-outline://` anchor and returns the heading list beside the HTML, a `TextCollector` walker behind the word count, and the stylesheet: a base layer of structure driven by CSS variables plus one style layer (six built-ins, or a custom file). Pure Swift, no AppKit, safe off-main. |
 | `MarkdownRenderer.swift` | `@MainActor` singleton. One offscreen `WKWebView` in a never-shown borderless window; serial job queue (a newer job for the same document supersedes a queued one); prints to a temp PDF and hands back `(Data, PDFDocument)`. A `.continuous` job is measured with `scrollHeight` after it loads and printed onto one page as tall as its content. Tears the web view down 30 s after the last Markdown document closes. |
 | `FileWatcher.swift` | vnode `DispatchSource` on the file *and* its parent directory, 250 ms debounce, `(inode, mtime, size)` gate, reopens the descriptor when the file is replaced or recreated. |
+| `RecentsWindowController.swift` | The launch window. A shared, non-tabbed 680×520 window listing `Prefs.recentDocuments` most recent first: icon, name, folder (tilde-abbreviated) plus the saved reading position, and a relative date. Filter field (⌘F, via the same `focusSearch:` selector the reader uses), Return/double-click to open, Delete or "Remove from List" to forget a row, "Open Other…" for the Open panel, Escape to leave (a beep if there is no document to go back to), and file URLs dropped anywhere on it. Also holds `RecentsTableView` (Return/Delete/Escape, which NSTableView handles for you otherwise), `RecentsDropView` and `RecentRowView`. |
 | `ReaderWindowController.swift` | Window, `NSSplitViewController` (sidebar + reader), unified toolbar, page indicator, search field + hit counter + previous/next match segmented control (⇧⌘G/⌘G equivalents), tabs, reading-position memory, black chrome in dark mode, window translucency and the backdrop blur. |
 | `ReaderViewController.swift` | `ReaderPDFView` (PDFView subclass: arrow-key paging, per-page highlight bookkeeping), appearance routine that installs the inversion filters. |
 | `SidebarViewController.swift` | Two panes behind a segmented control: `PDFThumbnailView` (mirrors the inversion filters) and an `NSOutlineView` table of contents driven from `PDFDocument.outlineRoot`, with `PDFOutline` objects as the items. Clicking a row navigates; `syncSelection()` follows the reading position. The outline is native text and is deliberately *not* filtered. |
 | `ReaderPage.swift` | `PDFPage` subclass; draws dark-mode find highlights. |
-| `Prefs.swift` | UserDefaults: invert toggle, dark-paper level, appearance override, per-file last position, Markdown style/layout/size, window opacity and blur. Also `MarkdownStyle`, which enumerates the six built-ins and the `.css` files in `~/Library/Application Support/Glassine/Styles` and reads a style's CSS. |
+| `Prefs.swift` | UserDefaults: invert toggle, dark-paper level, appearance override, per-file last position, Markdown style/layout/size, window opacity and blur, and the `recentDocuments` list behind the Recents window. Also `MarkdownStyle`, which enumerates the six built-ins and the `.css` files in `~/Library/Application Support/Glassine/Styles` and reads a style's CSS. |
 
 Support/: `Info.plist`, `Glassine.icon` (Icon Composer package, light+dark),
 `Assets.car` (compiled from it), `Glassine.icns` (fallback). scripts/:
@@ -518,6 +555,33 @@ tiles are the ones worth tuning.
   frozen as Folio's final feed and `glassine-appcast.xml` is Glassine's; the
   reasoning is under "Two feeds, and why" below, and it is the one thing in this
   repo where duplicating a file is deliberate.
+- **The Recents list is Glassine's own, not the system's.**
+  `NSDocumentController.recentDocumentURLs` is ten items long, carries no dates,
+  and is emptied outright when macOS is set to keep no recent items — on this
+  Mac it is empty, which is exactly the case a launch window must not fall over
+  on. `Prefs.recentDocuments` therefore keeps thirty entries with a date, the
+  page count at the time of opening (so a row can say "p. 12 of 30" without
+  reopening the file), and a security-scope-free **bookmark**, which is what
+  still finds a file after a rename or a move; the entry's path is rewritten
+  from the bookmark when the row is built, so a moved file reads as itself
+  rather than "Not found". The seed runs once, from the system list *and* from
+  the paths in `lastPositions` — the latter is Glassine's own record of what has
+  been read, complete with timestamps, and on a Mac with recent items off it is
+  the only source there is. Seeded entries deliberately get **no** bookmark:
+  making one reads the file, and doing that for thirty files during launch draws
+  a privacy prompt for every protected folder they sit in (observed: a Desktop
+  prompt on the first run) before the reader has asked for anything. An entry
+  earns its bookmark the first time it is really opened.
+- **The launch check is deferred, not immediate.** A file double-clicked in the
+  Finder arrives as its own Apple Event that can be delivered either side of
+  `applicationDidFinishLaunching`, and macOS window restoration reopens the last
+  session's documents later still. So `applicationShouldOpenUntitledFile` is
+  false and the decision is taken 0.2 s into the first runloop, by which time
+  whatever was going to open has a window: `ReaderWindowController.anyWindowIsOpen`
+  answers it, and the Recents window is never ordered in only to be hidden
+  again. The same trick, one runloop turn, covers the close side — the closing
+  window is still on screen inside `willCloseNotification`, and closing one tab
+  of a multi-tab window closes a window too.
 - **The Folio settings are copied, not moved.** A new bundle id means a new
   defaults domain and a new Application Support folder, so `FolioMigration` in
   `AppDelegate.swift` runs once in `applicationWillFinishLaunching` — before
@@ -715,6 +779,19 @@ Steps 1–4 are kept for setting up any further machine.
   `searchFieldDidEndSearching(_:)` is deliberately still not implemented — it was
   not needed, and it would also fire when the field merely ends its search
   interaction, which could wipe a search the reader is still stepping with ⌘G.
+- **`setFrameAutosaveName` saves the current frame the moment you call it**, so
+  a window centred *after* it has already stored its bottom-left starting frame,
+  and every launch from then on restores that. The Recents window centres before
+  naming the autosave (which is also the order `sizeWindowInitially` uses for
+  the reader, for the same reason). Once a bad frame is stored there is no way
+  back from inside the app short of vetting the saved string, which is what
+  `ReaderWindowController.hasUsableSavedFrame` exists to do.
+- **macOS window restoration reopens the last session's documents**, and it does
+  so *after* `applicationDidFinishLaunching`. That is why testing anything about
+  the launch window means quitting with no document open — otherwise the app
+  comes back with the previous session's tabs and (correctly) shows no Recents
+  window at all. It also means the recents list gains an entry per restored
+  document, since restoration goes through `read(from:ofType:)` like any open.
 - `annotationsChanged(on:)` alone does not drop an already-rendered tile;
   follow it with `layoutDocumentView()` + `needsDisplay`.
 - `.PDFViewPageChanged` fires during initial layout reporting page 1, which

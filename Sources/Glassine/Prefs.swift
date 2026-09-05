@@ -131,6 +131,44 @@ enum DarkPaper: Int {
     }
 }
 
+/// A file Glassine has opened, remembered for the Recents window. The path is
+/// what the list shows and what keys the reading position; the bookmark is what
+/// still finds the file after a rename or a move.
+struct RecentDocument {
+    var path: String
+    var bookmark: Data?
+    var lastOpened: Date
+    /// Pages the document had when it was last opened. Nil for Markdown, whose
+    /// page count is not known until it has been typeset.
+    var pageCount: Int?
+
+    var url: URL { URL(fileURLWithPath: path) }
+
+    init(path: String, bookmark: Data?, lastOpened: Date, pageCount: Int?) {
+        self.path = path
+        self.bookmark = bookmark
+        self.lastOpened = lastOpened
+        self.pageCount = pageCount
+    }
+
+    fileprivate init?(stored: [String: Any]) {
+        guard let path = stored["path"] as? String else { return nil }
+        self.path = path
+        bookmark = stored["bookmark"] as? Data
+        lastOpened = (stored["date"] as? Double).map(Date.init(timeIntervalSinceReferenceDate:))
+            ?? .distantPast
+        pageCount = stored["pages"] as? Int
+    }
+
+    fileprivate var stored: [String: Any] {
+        var value: [String: Any] = ["path": path,
+                                    "date": lastOpened.timeIntervalSinceReferenceDate]
+        if let bookmark { value["bookmark"] = bookmark }
+        if let pageCount { value["pages"] = pageCount }
+        return value
+    }
+}
+
 /// User preferences. Small on purpose; everything defaults to "follow the system".
 enum Prefs {
     private static let defaults = UserDefaults.standard
@@ -146,6 +184,8 @@ enum Prefs {
         static let sidebarMode = "sidebarMode"
         static let windowOpacity = "windowOpacity"
         static let windowBlur = "windowBlur"
+        static let recentDocuments = "recentDocuments"
+        static let recentDocumentsSeeded = "recentDocumentsSeeded"
     }
 
     /// Sizes offered in View ▸ Markdown ▸ Size.
@@ -292,5 +332,132 @@ enum Prefs {
     private static func accessStamp(_ raw: Any?) -> Double {
         guard let values = raw as? [Double], values.count >= 4 else { return 0 }
         return values[3]
+    }
+
+    /// When a reading position for this file was last written. The closest thing
+    /// to a "last opened" stamp for a document from before the recents list.
+    static func lastAccess(for url: URL) -> Date? {
+        let table = defaults.dictionary(forKey: Key.lastPositions) ?? [:]
+        guard let raw = table[url.path] as? [Double], raw.count >= 4 else { return nil }
+        return Date(timeIntervalSinceReferenceDate: raw[3])
+    }
+
+    // MARK: Recent documents
+
+    static let maxRecentDocuments = 30
+
+    /// Most recent first, capped. Glassine's own list rather than
+    /// NSDocumentController's, because that one is ten items long, carries no
+    /// dates, and holds only paths.
+    static var recentDocuments: [RecentDocument] {
+        get {
+            let stored = defaults.array(forKey: Key.recentDocuments) as? [[String: Any]] ?? []
+            return stored.compactMap(RecentDocument.init(stored:))
+        }
+        set {
+            defaults.set(newValue.prefix(maxRecentDocuments).map(\.stored),
+                         forKey: Key.recentDocuments)
+        }
+    }
+
+    /// Documents can be read concurrently, and this is a read-modify-write of
+    /// one defaults key that also makes a bookmark, which reads the file. One
+    /// serial queue, off the main thread, settles both.
+    private static let recentsQueue = DispatchQueue(label: "com.epps.Glassine.recents")
+
+    /// Record an open: the file moves to the front and takes today's date.
+    static func noteRecentDocument(_ url: URL, pageCount: Int?) {
+        let file = url.standardizedFileURL
+        recentsQueue.async {
+            var list = recentDocuments
+            list.removeAll { $0.path == file.path }
+            list.insert(RecentDocument(path: file.path,
+                                       bookmark: try? file.bookmarkData(),
+                                       lastOpened: Date(),
+                                       pageCount: pageCount),
+                        at: 0)
+            recentDocuments = list
+        }
+    }
+
+    static func removeRecentDocument(path: String) {
+        var list = recentDocuments
+        list.removeAll { $0.path == path }
+        recentDocuments = list
+    }
+
+    /// Where the entry's file is now: its stored path if that still exists,
+    /// otherwise wherever the bookmark leads. A resolved move is written back,
+    /// so the row shows the new location instead of "Not found". Nil means the
+    /// file is really gone.
+    static func resolvedURL(for entry: RecentDocument) -> URL? {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: entry.path) { return entry.url }
+        guard let bookmark = entry.bookmark else { return nil }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: bookmark,
+                                 options: [.withoutUI, .withoutMounting],
+                                 relativeTo: nil,
+                                 bookmarkDataIsStale: &stale),
+              fm.fileExists(atPath: url.path)
+        else { return nil }
+
+        // Standardized, so the returned URL and the rewritten entry agree on the
+        // path -- which is what the Recents list keys a row by.
+        let moved = url.standardizedFileURL
+        var list = recentDocuments
+        if let index = list.firstIndex(where: { $0.path == entry.path }) {
+            list[index].path = moved.path
+            if stale { list[index].bookmark = try? moved.bookmarkData() }
+            recentDocuments = list
+        }
+        return moved
+    }
+
+    /// First launch after the recents list arrived: adopt whatever
+    /// NSDocumentController remembers, then any file with a saved reading
+    /// position it did not mention. The second source matters because the
+    /// system recent-documents list is empty whenever macOS is set to keep no
+    /// recent items, while the position table is Glassine's own and dated.
+    static func seedRecentDocumentsIfNeeded() {
+        guard defaults.object(forKey: Key.recentDocumentsSeeded) == nil else { return }
+        defaults.set(true, forKey: Key.recentDocumentsSeeded)
+        guard recentDocuments.isEmpty else { return }
+
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var seeded: [RecentDocument] = []
+
+        for url in NSDocumentController.shared.recentDocumentURLs {
+            let path = url.standardizedFileURL.path
+            guard fm.fileExists(atPath: path), seen.insert(path).inserted else { continue }
+            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+        }
+        for path in positionedPaths() where !seen.contains(path) && fm.fileExists(atPath: path) {
+            seen.insert(path)
+            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+        }
+
+        // The two sources are each in their own order, so sort the whole thing.
+        recentDocuments = seeded.sorted { $0.lastOpened > $1.lastOpened }
+    }
+
+    /// Deliberately no bookmark: making one reads the file, and doing that for
+    /// thirty files during launch draws a privacy prompt for every protected
+    /// folder they sit in, before the reader has asked for anything. A seeded
+    /// entry earns its bookmark the first time it is actually opened.
+    private static func entry(forSeeding url: URL) -> RecentDocument {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        return RecentDocument(path: url.path,
+                              bookmark: nil,
+                              lastOpened: lastAccess(for: url) ?? modified ?? .distantPast,
+                              pageCount: nil)
+    }
+
+    /// Files with a saved reading position, most recently read first.
+    private static func positionedPaths() -> [String] {
+        let table = defaults.dictionary(forKey: Key.lastPositions) ?? [:]
+        return table.keys.sorted { accessStamp(table[$0]) > accessStamp(table[$1]) }
     }
 }

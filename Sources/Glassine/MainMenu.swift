@@ -12,7 +12,7 @@ enum MainMenu {
 
         main.addItem(submenu(appMenu(appDelegate: appDelegate,
                                      updater: appDelegate.updaterController)))
-        main.addItem(submenu(fileMenu()))
+        main.addItem(submenu(fileMenu(appDelegate: appDelegate)))
         main.addItem(submenu(editMenu()))
         main.addItem(submenu(viewMenu(appDelegate: appDelegate)))
         main.addItem(submenu(goMenu()))
@@ -82,9 +82,12 @@ enum MainMenu {
         return menu
     }
 
-    private static func fileMenu() -> NSMenu {
+    private static func fileMenu(appDelegate: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "File")
         add(menu, "Open…", #selector(NSDocumentController.openDocument(_:)), key: "o")
+        // Explicit target: the Recents window is the app's, not a document's.
+        add(menu, "Recents…", #selector(AppDelegate.showRecents(_:)),
+            key: "o", modifiers: [.command, .shift], target: appDelegate)
 
         // AppKit populates and maintains this submenu once it contains the
         // standard "Clear Menu" item.

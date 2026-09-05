@@ -41,6 +41,10 @@ updated in place.
   ⌥⌘G jumps to one.
 - **One window, native tabs.** Every PDF opens as a tab (⌘T opens another,
   ⇧⌘[ / ⇧⌘] switch, drag tabs out to split).
+- **Opens to your recent files, not a file dialog.** With nothing on screen
+  Glassine shows a Recents window (⇧⌘O any time): the last thirty files you
+  read, with where you left off in each, a filter field, drag-and-drop, and
+  "Open Other…" for everything else.
 - **Zippy.** Renders through PDFKit, the same engine as Preview. Launches cold in
   well under a second.
 - **Remembers where you were** in each file.
@@ -90,6 +94,7 @@ Sources/Glassine/
   MarkdownHTML.swift          Markdown -> HTML + headings + the print stylesheet
   MarkdownRenderer.swift      offscreen WKWebView that typesets HTML into a PDF
   FileWatcher.swift           vnode watcher behind Markdown auto-refresh
+  RecentsWindowController.swift the launch window: the files you have been in
   ReaderWindowController.swift  window, toolbar, tabs, find, page field
   ReaderViewController.swift  the PDFView and dark-mode handling
   SidebarViewController.swift sidebar: page thumbnails and the outline pane

@@ -24,20 +24,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         _ = NSDocumentController.shared
     }
 
+    /// Set once the app is on its way out, so a window closing during quit does
+    /// not flash the Recents window on the way.
+    private var isTerminating = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate()
+        Prefs.seedRecentDocumentsIfNeeded()
+        observeDocumentWindows()
+        // A file double-clicked in the Finder arrives as its own Apple Event,
+        // which can be delivered either side of this method and opens its
+        // document asynchronously. Checking after a beat, rather than now, is
+        // what keeps the Recents window from flashing in front of it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.launchCheckDelay) { [weak self] in
+            self?.showRecentsIfNoDocuments()
+        }
     }
 
-    // Launching with no document, or clicking the Dock icon with no windows
-    // open, shows the Open panel -- the way Preview behaves.
-    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { true }
+    private static let launchCheckDelay = 0.2
 
-    func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        NSDocumentController.shared.openDocument(nil)
+    func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+    }
+
+    // Launching or reopening with nothing on screen shows the Recents window,
+    // not an Open panel: the reader's own files are more use than the file tree.
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { RecentsWindowController.shared.show() }
         return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    // MARK: Recents
+
+    @objc func showRecents(_ sender: Any?) {
+        RecentsWindowController.shared.show()
+    }
+
+    private func observeDocumentWindows() {
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(windowDidBecomeKey(_:)),
+                           name: NSWindow.didBecomeKeyNotification, object: nil)
+        center.addObserver(self, selector: #selector(windowWillClose(_:)),
+                           name: NSWindow.willCloseNotification, object: nil)
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard isReaderWindow(notification.object) else { return }
+        RecentsWindowController.shared.hide()
+    }
+
+    @objc private func windowWillClose(_ notification: Notification) {
+        guard isReaderWindow(notification.object) else { return }
+        // The window is still on screen at this point, and closing one tab of a
+        // multi-tab window closes a window too -- so ask on the next turn,
+        // when what is left is what is really left.
+        DispatchQueue.main.async { [weak self] in
+            self?.showRecentsIfNoDocuments()
+        }
+    }
+
+    private func isReaderWindow(_ object: Any?) -> Bool {
+        (object as? NSWindow)?.tabbingIdentifier == ReaderWindowController.tabbingIdentifier
+    }
+
+    private func showRecentsIfNoDocuments() {
+        guard !isTerminating, !ReaderWindowController.anyWindowIsOpen else { return }
+        RecentsWindowController.shared.show()
+    }
 
     // MARK: Menu actions
 

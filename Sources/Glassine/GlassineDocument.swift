@@ -81,6 +81,13 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         return markdownExtensions.contains(url.pathExtension.lowercased()) ? .markdown : .pdf
     }
 
+    /// True for a file this reader can open. Used where there is no type name to
+    /// go on, such as a file dropped on the Recents window.
+    static func canOpen(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ext == "pdf" || markdownExtensions.contains(ext)
+    }
+
     override func read(from url: URL, ofType typeName: String) throws {
         kind = Self.kind(forType: typeName, url: url)
         switch kind {
@@ -108,6 +115,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             headings = converted.headings
             markdownStats = converted.stats
         }
+        Prefs.noteRecentDocument(url, pageCount: pdf?.pageCount)
     }
 
     override func makeWindowControllers() {
