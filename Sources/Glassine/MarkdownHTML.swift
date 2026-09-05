@@ -29,11 +29,9 @@ struct MarkdownStyling: Equatable {
     }
 }
 
-/// Word count and reading time for a Markdown document.
+/// Word count for a Markdown document.
 struct MarkdownStats: Equatable {
     var words: Int
-    /// At 250 words a minute, rounded up, never zero.
-    var minutes: Int
 }
 
 /// One heading of a Markdown document, in document order. `index` is what the
@@ -142,8 +140,8 @@ enum MarkdownHTML {
 
     // MARK: Statistics
 
-    /// Words and reading time, counted over the document's plain text so that
-    /// markup, URLs and image data never inflate the number.
+    /// Words, counted over the document's plain text so that markup, URLs and
+    /// image data never inflate the number.
     private static func statistics(of document: Document) -> MarkdownStats {
         var collector = TextCollector()
         collector.visit(document)
@@ -153,8 +151,7 @@ enum MarkdownHTML {
                                  options: [.byWords, .localized]) { _, _, _, _ in
             words += 1
         }
-        return MarkdownStats(words: words,
-                             minutes: max(1, Int(ceil(Double(words) / 250))))
+        return MarkdownStats(words: words)
     }
 
     /// Gathers the readable text: prose, inline code and code blocks.

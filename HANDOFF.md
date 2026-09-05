@@ -116,12 +116,12 @@ Dan's stated requirements, all met as of this handoff:
   `.css` files in `~/Library/Application Support/Glassine/Styles`, and "Open
   Styles Folder…"), and the size list; `MarkdownTypeface` is gone, replaced by
   `Prefs.markdownStyle` (a string id). The window subtitle reads
-  "6,433 words · 26 min". Runtime-verified in the built app: every preset
+  "6,433 words". Runtime-verified in the built app: every preset
   applied from the menu and checkmarked; a `.css` file appearing in the Style
   menu while the app ran, applying when picked, and disappearing again when
   deleted; Continuous rendering a 22-page memo as one 612 × 13,757 pt page with
-  the page indicator removed from the toolbar and restored (at its own slot,
-  correctly sized) on the way back to Pages; the outline sidebar listing and
+  the page indicator showing reading progress as a percentage and going back to
+  "N of M" (correctly sized) on the way back to Pages; the outline sidebar listing and
   navigating that single page, with the selection following the reading
   position; ⇧⌘E from a continuous document exporting 22 Letter pages with the
   bookmarks and no `glassine-outline` links; the subtitle updating on a save. The
@@ -145,6 +145,20 @@ Dan's stated requirements, all met as of this handoff:
   bottom-band fix was checked mid-document); the light-mode icon variant
   (would have required toggling Dan's system appearance); Page Up/Down and
   Space paging (left to PDFView's defaults, code-checked only).
+- Reading-progress indicator landed 2026-09-05 (branch `progress`): the
+  subtitle dropped the reading-time estimate and is now just "24,341 words"
+  (`MarkdownStats.minutes` is gone), and a continuous Markdown document keeps
+  its page-indicator capsule, which reads "53%" instead of "1 of 1".
+  `setPageIndicatorVisible` and the `pageIndicatorSlot` machinery are gone with
+  it — nothing removes a toolbar item any more — and Go ▸ Go to Page… is
+  enabled in this mode, where it takes 0–100 and scrolls to that fraction.
+  Runtime-verified in the built app on a 65-page memo: 0% at the top, 13% after
+  eight page-downs, 100% at the foot, ⌥⌘G to 50 landing mid-document and
+  reading "50%", Escape cancelling without moving, View ▸ Markdown ▸ Pages
+  swapping the capsule to "1 of 65" and Continuous swapping it back with no
+  relaunch, a PDF opened in a second tab still reading "1 of 224" with ⌥⌘G
+  going to page 42, find jumping to a match and the percentage following it,
+  the TOC sidebar listing and tracking, and the subtitle re-counting on a save.
 - **Renamed Folio → Glassine 2026-09-05** on branch `glassine`, uncommitted:
   bundle id, product, `Sources/Glassine`, `GlassineDocument`, the
   `glassine-outline://` anchor scheme, the notification names, the toolbar and
@@ -291,6 +305,25 @@ tiles are the ones worth tuning.
   button and ⌘T.
 - **Page indicator** is one attributed label ("4 of 30") that swaps to an
   editable field on click/⌥⌘G. Two-control versions were never centered.
+- **In continuous Markdown the same capsule shows reading progress**, "53%",
+  because "1 of 1" says nothing about a 65-page document laid out as one page.
+  The fraction is scroll geometry, not PDF coordinates: the PDFView's document
+  view and the clip view that frames it give `clip.bounds.minY /
+  (documentView.bounds.height - clip.bounds.height)`, i.e. how far the *top* of
+  the visible area has travelled through the scrollable range, so it reads 0 at
+  the top and 100 with the bottom of the page at the bottom of the window (a
+  page shorter than the view is all on screen and reads 100). Going the other
+  way — `currentDestination` plus `bounds(for: .cropBox)` — means undoing
+  PDFKit's bottom-up coordinates and the gutter offset that already trips up
+  `syncSelection`, for the same number. Movement is reported by the clip view's
+  `NSView.boundsDidChangeNotification` (with `postsBoundsChangedNotifications`
+  set on it) because a continuous document scrolls without ever changing page,
+  so `.PDFViewPageChanged` never fires; `.PDFViewScaleChanged` covers zooming,
+  which changes how much fits on screen. The notification arrives every frame
+  of a scroll, so the label is rebuilt on a 50 ms debounce. The clip view is
+  re-resolved after every install: PDFKit builds a fresh document view per
+  document. Editing the capsule in this mode takes 0–100 and scrolls the clip
+  view directly.
 - **Replacing a search while one is running** goes through a small state
   machine in `ReaderWindowController.startFind`: PDFKit's find callbacks
   carry no query identity and arrive asynchronously, so the old search is
@@ -545,8 +578,10 @@ Steps 1–4 are kept for setting up any further machine.
   opened afterwards inherited the stripped set, so the page number "never came
   back" once a continuous Markdown document had hidden it. Each window now gets
   `GlassineReaderToolbar.<UUID>`; nothing autosaves the configuration, so the
-  identifier is otherwise unused. Go ▸ Go to Page… is also disabled while the
-  indicator is absent instead of flashing into nothing.
+  identifier is otherwise unused. Since 2026-09-05 nothing removes the item at
+  all — a continuous document shows a percentage in the same capsule — so the
+  per-window identifier is belt and braces. Keep it: any future item that comes
+  and goes would hit exactly this again.
 - **A locked screen breaks notarization, and only notarization.** `notarytool`
   keeps its `notary` profile in the data-protection keychain, which locks with
   the screen; the Developer ID identity and the Sparkle key live in the login
@@ -720,9 +755,11 @@ Steps 1–4 are kept for setting up any further machine.
   the position is carried as a page index and a point and the two layouts share
   neither. Anchoring to the nearest heading would fix this and the reload case
   above at the same time.
-- **In Continuous mode the page indicator, Go ▸ page commands and arrow-key
-  paging all have nothing to act on** — there is one page. The indicator hides
-  itself; the rest simply do nothing.
+- **In Continuous mode the Go ▸ page commands and arrow-key paging have nothing
+  to act on** — there is one page, so ⌘↑/⌘↓ and Next/Previous Page do nothing.
+  The page indicator is the exception: it shows a reading percentage, and
+  ⌥⌘G scrolls to one. Paging by fraction (a "page" of the window's height per
+  arrow press) is the obvious next step if the dead keys ever annoy.
 - A custom Markdown style is trusted: it is the style layer, so it can override
   anything the base layer sets, including the geometry that makes continuous
   layout measurable. Only the CSP still applies.
