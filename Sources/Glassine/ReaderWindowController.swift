@@ -126,6 +126,19 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     // MARK: Init
 
+    /// The tab group every reader window belongs to, and how the app tells a
+    /// reader window apart from the Recents window in `NSApp.windows`.
+    static let tabbingIdentifier = NSWindow.TabbingIdentifier("GlassineReader")
+
+    /// Is a document on screen? A minimised window counts; a closed one, which
+    /// AppKit keeps around because reader windows are not released on close,
+    /// does not.
+    static var anyWindowIsOpen: Bool {
+        NSApp.windows.contains {
+            $0.tabbingIdentifier == tabbingIdentifier && ($0.isVisible || $0.isMiniaturized)
+        }
+    }
+
     init(document: GlassineDocument) {
         glassineDocument = document
         savedPosition = document.fileURL.flatMap { Prefs.lastPosition(for: $0) }
@@ -145,7 +158,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         )
         window.isReleasedWhenClosed = false
         window.tabbingMode = .preferred
-        window.tabbingIdentifier = "GlassineReader"
+        window.tabbingIdentifier = Self.tabbingIdentifier
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .automatic
         window.contentMinSize = Self.minimumContentSize
@@ -994,6 +1007,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
 
         super.showWindow(sender)
+        // Not left to the app delegate's didBecomeKey observer: a document
+        // opened while Glassine is in the background never becomes key, and the
+        // Recents window would sit there behind it until it did.
+        RecentsWindowController.shared.hide()
         // The backdrop blur is keyed to the window number, so re-assert it once
         // the window is actually on screen (and in its tab group).
         applyWindowAppearance()
