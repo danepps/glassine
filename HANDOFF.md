@@ -181,6 +181,12 @@ Dan's stated requirements, all met as of this handoff:
   0→24, 28→38, 43→50) and the three items grey out when Invert Page Colors is
   off. Black is unchanged: a same-state screenshot diff against the pre-change
   build differs only in the toolbar's glass tint, by at most 3/255.
+- **New icon family landed 2026-09-05** on branch `icon-production`: Palette
+  Rules L4/D5 for the app, a matching single-sheet Markdown document icon, and
+  an `.icns` whose every size is drawn at its own resolution (see "Icon"
+  below). Runtime-verified on the ad-hoc build: the light artwork in the Dock
+  and the About panel with the system in light, the dark artwork in both with
+  the system in dark, and every size 512 → 16 judged off a family board.
 
 ## Build, run, test
 
@@ -228,29 +234,75 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 
 Support/: `Info.plist`, `Glassine.icon` (Icon Composer package, light+dark),
 `Assets.car` (compiled from it), `Glassine.icns` (fallback). scripts/:
-`make-icon.swift` renders both variants, `make-icon.sh` builds icns +
-`.icon` + runs `actool`. The icon (2026-09-04, drawn by Codex) is a page with
-a folded corner and four coloured margin tabs on a graphite tile; the dark
-variant flips the page to black. `scripts/make-icon-concepts.swift` renders
+`make-icon.swift` renders the artwork, `make-icon.sh` builds icns +
+`.icon` + runs `actool`. `scripts/make-icon-concepts.swift` renders
 the alternatives that were considered into `Support/IconConcepts/` (gitignored,
-~57 MB).
+~57 MB) and stays as the exploratory record.
+
+**The icon (2026-09-05) is Palette Rules**, round four of the concepts script,
+tuned through rounds five and six: four fanned leaves of glassine, each
+composited the way the app composites its own translucent window — the blurred
+backdrop of everything drawn so far, plus a milky tint, a sheen along the top
+edge — with a coloured rim per leaf and four coloured rules (coral, amber, mint,
+blue: the same accents the Folio margin tabs used) on the front leaf. Dan chose
+**L4 "Near white"** for light and **D5 "Neon Rules"** for dark. It replaced the
+Folio-era page-with-margin-tabs icon.
+
+The two appearances are not the same picture on different tiles, and that is
+deliberate. On L4's near-white tile (#FBFBFA → #E3E6EA) the fan has almost no
+tone to sit against, so the *rims* do the separating: crisp coloured strokes
+over a tight, weak soft shadow (blur 11, alpha 0.42 — a wide bloom on a pale
+tile reads as a smear), a deepened leaf shadow, and the front leaf's tint raised
+to 0.92 so its page still reads as white paper. On D5's graphite tile the rims
+bloom instead (blur 20, alpha 0.65) and the sheen runs at 50%, with the leaves
+taken correspondingly closer to opaque — the soft light across a dark leaf is
+half the top-edge gradient and half the type on the leaves *underneath* glowing
+up through the blurred backdrop, and only a less transparent sheet shuts that
+off (`dimmed` in both scripts).
+
+**Every `.icns` size is drawn at its own resolution**, the way
+`make-doc-icon.swift` does, rather than downsampled from 1024: `make-icon.swift
+--size N` plus a `tuning(for:)` table, and `make-icon.sh` renders 16/32/64/128/
+256/512/1024 and copies them into the iconset. Below 128 px the rims and rules
+are sub-pixel — a 9 pt rim is 0.28 px at 32 — so they are floored at a whole
+pixel and the four rules given their own 3 px pitch at 2 px tall; the leaf rects
+are snapped to whole pixels; the top leaf is *straightened* (angle 0) at 16 and
+32, because a 7° rotation turns a 2 px rule into two grey rows; the fan drops to
+three leaves at 32 and two at 16; and the fan is zoomed (1.16 at 32, 1.42 at 16)
+because the legacy grid's margin is a luxury at that size. The rim is a
+double-width stroke clipped to the leaf at those sizes, so it lies wholly inside
+the pixel-snapped edge instead of straddling it. What did not survive 16 px:
+the tile all but disappears (the fan fills it), the fan is a one-pixel sliver of
+colour at the edges, and the four rules end up equal-width because they are
+trimmed to clear the rim — the icon reads as a rimmed card with four coloured
+bars, which is the identity and all there is room for.
+
+The **Icon Composer package's structure is unchanged** — same `icon.json`, same
+two layer names, same `opacity-specializations` — so macOS 26's tinted and clear
+appearances keep working; only the two 1024 PNGs were swapped.
 
 The **Markdown document icon** (the Finder icon for a `.md` file) is separate:
 `swift scripts/make-doc-icon.swift` writes the committed
 `Support/MarkdownDocument.icns` (10 entries, 16–512 pt at 1× and 2×), which
 `build.sh` copies into `Contents/Resources` and `Info.plist` names twice —
 `CFBundleTypeIconFile` on the Markdown `CFBundleDocumentTypes` entry and
-`UTTypeIconFile` on the imported UTI. It is a bare sheet with the app icon's
-folded corner, slate rules and four coloured margin tabs, plus a bold M↓;
-only the *light* variant is shipped, because Finder draws one document icon
-whatever the appearance is. `scripts/make-doc-icon-concepts.swift` stays as the
-exploratory script (six directions into `Support/IconConcepts/Doc/`). Each size
-is drawn at its own resolution rather than downsampled, and 16 and 32 px are
-hand-tuned in `tuning(for:)`: the sheet is zoomed to fill the tile, edges and
-rules snap to whole pixels, the mark's stem is forced to 2 px (the
-proportional 0.25 × height lands under a pixel and greys out), tab positions
-come from one rounded pitch rather than four rounded positions, and at 16 px
-the rules and the arrow are dropped — there is only room for the M.
+`UTTypeIconFile` on the imported UTI. Since 2026-09-05 it matches the new app
+icon: one sheet of the same family, the same folded corner, a coral rim, the
+four coloured rules, and a bold slate M↓ above them. The margin tabs went with
+the app icon's, and the sheet moved to the middle of the canvas now that nothing
+sits beside it. Only the *light* variant is shipped, because Finder draws one
+document icon whatever the appearance is.
+`scripts/make-doc-icon-concepts.swift` stays as the exploratory script (six
+directions into `Support/IconConcepts/Doc/`). Each size is drawn at its own
+resolution rather than downsampled, and 16 and 32 px are hand-tuned in
+`tuning(for:)`: the sheet is zoomed to fill the tile, edges and rules snap to
+whole pixels, the rim is a double-width stroke clipped to the sheet so a 1 px
+rim lands on the pixel rather than straddling the edge, the rules come from one
+rounded pitch at 2 px tall rather than four rounded positions, the mark's stem
+is forced to 2 px (the proportional 0.25 × height lands under a pixel and greys
+out), and at 16 px the rules and the arrow are dropped and the M moves back to
+the middle of the sheet — there is only room for the M, and the coral rim is
+left to carry the family's colour.
 
 Two gotchas. **LaunchServices caches document icons**, so a rebuild changes
 nothing until the bundle is re-registered
@@ -652,6 +704,15 @@ Steps 1–4 are kept for setting up any further machine.
   saving is gated until the restore has run.
 - `sidebarItem.isCollapsed = true` doesn't survive `addTabbedWindow`;
   re-assert after tabbing and once in `windowDidBecomeKey`.
+- **The app icon's light/dark variant follows the *system* appearance, not
+  `Prefs.appearance`.** Forcing the app dark with `defaults write … appearance
+  -int 2` blackens the chrome and leaves the Dock tile and the About panel on
+  the light artwork; the dark variant only appears with the system itself in
+  dark mode. And the variant that does appear is **cached per bundle
+  identifier**, so with an older copy in `/Applications` the About panel can
+  show *its* artwork for a build out of `build/` — `killall Dock` cleared it
+  (2026-09-05); the About panel's image is also fixed at launch, so relaunch
+  after switching appearance.
 - `actool` compiling a `.icon` package is undocumented by Apple (works via
   `man actool` + experiment). `actool` writes `Assets.car` even on error, so
   `make-icon.sh` greps its output for `error:` before installing. Valid
