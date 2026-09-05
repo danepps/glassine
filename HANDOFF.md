@@ -645,6 +645,24 @@ Steps 1–4 are kept for setting up any further machine.
   0) when opacity returns to 1: nothing about an opaque window undoes it.
   Alpha on the content view wants `wantsLayer` too, or AppKit has nothing to
   composite through.
+- **Ending a find has to drop `pdfView.currentSelection` too, and the search
+  field's x is not the problem.** The cancel button *does* send the field's
+  action (and Escape reaches `control(_:textView:doCommandBy:)`), so
+  `startFind("")` runs and the counter, the match list, the highlight arrays and
+  the prev/next control all reset. What nothing cleared was PDFKit's own current
+  selection: in light mode `showMatch` marks the current match with
+  `setCurrentSelection`, and that green wash stayed on the page after the query
+  stopped matching, and survived the x, Escape and a Markdown reload. It shows up
+  worst in the sequence that was reported (2026-09-05) — search something, refine
+  the query until it matches nothing, hit the x — because the counter then says
+  "No matches" over a page that is still highlighted. Dark mode never showed it:
+  the inverted path sets the current selection to nil and draws its own boxes.
+  `startFind` and `installDocument` now clear it. Two theories checked and
+  discarded on the way: `NSSearchToolbarItem` never collapses in this toolbar
+  (the field stays expanded even at `contentMinSize`), and
+  `searchFieldDidEndSearching(_:)` is deliberately still not implemented — it was
+  not needed, and it would also fire when the field merely ends its search
+  interaction, which could wipe a search the reader is still stepping with ⌘G.
 - `annotationsChanged(on:)` alone does not drop an already-rendered tile;
   follow it with `layoutDocumentView()` + `needsDisplay`.
 - `.PDFViewPageChanged` fires during initial layout reporting page 1, which
