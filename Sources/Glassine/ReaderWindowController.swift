@@ -661,6 +661,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         endPageEdit()
     }
 
+    // The search field's action is what normally restarts the find, but a
+    // cancel-button click that AppKit swallows into a search interaction can
+    // empty the field without sending it. Any route to an empty field resets.
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSSearchField, field === searchField,
+              field.stringValue.isEmpty, !lastQuery.isEmpty else { return }
+        startFind("")
+    }
+
     // MARK: Toolbar delegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -714,18 +723,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(searchCountLabel)
-        // Hug the text with symmetric insets, but never shrink below 56pt, so
-        // the capsule keeps a steady shape as the readout changes.
-        let hug = container.widthAnchor.constraint(equalTo: searchCountLabel.widthAnchor,
-                                                   constant: 20)
-        hug.priority = .defaultLow
+        // Fixed width, sized for the widest readout: a capsule that grows and
+        // shrinks shifts the search field sideways, and the cancel button
+        // moves out from under a pointer that was aiming at it.
+        let widest = ["No matches", "9999 of 9999", "9999 found…"]
+            .map { $0.size(withAttributes: [.font: font]).width }
+            .max() ?? 56
 
         NSLayoutConstraint.activate([
             container.heightAnchor.constraint(equalToConstant: 22),
-            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-            container.widthAnchor.constraint(greaterThanOrEqualTo: searchCountLabel.widthAnchor,
-                                             constant: 20),
-            hug,
+            container.widthAnchor.constraint(equalToConstant: ceil(widest) + 20),
             searchCountLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             searchCountLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
