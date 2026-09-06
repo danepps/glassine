@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import GlassineCore
 import PDFKit
 
 /// PDFView with two additions: it reports effective-appearance changes
@@ -8,24 +9,16 @@ import PDFKit
 final class ReaderPDFView: PDFView {
     var onEffectiveAppearanceChange: (() -> Void)?
 
+    /// The dark-mode highlight bookkeeping, which is platform-independent and
+    /// lives in Core; this view is just its host.
+    private lazy var highlighter = FindHighlighter(pdfView: self)
+
     /// Set by the window controller. When true, find matches are drawn here as
     /// reverse video instead of PDFKit's translucent yellow, because a yellow
     /// wash reads poorly through the dark-mode inversion filter.
     var isInverted = false {
-        didSet { if isInverted != oldValue { refresh(allMatchPages) } }
+        didSet { highlighter.isInverted = isInverted }
     }
-
-    private(set) var findMatches: [PDFSelection] = []
-    private(set) var currentMatchIndex = 0
-
-    private struct LineRect {
-        let rect: CGRect
-        let match: Int
-    }
-
-    private var lineRects: [ObjectIdentifier: [LineRect]] = [:]
-    private var pagesByMatch: [Int: [PDFPage]] = [:]
-    private var allMatchPages: [PDFPage] = []
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -35,67 +28,68 @@ final class ReaderPDFView: PDFView {
     // MARK: Reverse-video find highlights
 
     func setFindMatches(_ selections: [PDFSelection], current: Int) {
-        let previous = allMatchPages
-        findMatches = selections
-        currentMatchIndex = current
-        rebuildLineRects()
-        refresh(previous + allMatchPages)
+        highlighter.setFindMatches(selections, current: current)
     }
 
     func setCurrentMatchIndex(_ index: Int) {
-        guard index != currentMatchIndex else { return }
-        let affected = (pagesByMatch[currentMatchIndex] ?? []) + (pagesByMatch[index] ?? [])
-        currentMatchIndex = index
-        refresh(affected)
+        highlighter.setCurrentMatchIndex(index)
     }
 
-    /// Flatten every match into per-line rectangles keyed by page, so drawing a
-    /// page is a dictionary lookup rather than a scan of the whole match list.
-    private func rebuildLineRects() {
-        lineRects = [:]
-        pagesByMatch = [:]
-        allMatchPages = []
-        var seen = Set<ObjectIdentifier>()
-
-        for (index, selection) in findMatches.enumerated() {
-            var pages: [PDFPage] = []
-            for line in selection.selectionsByLine() {
-                for page in line.pages {
-                    let rect = line.bounds(for: page).insetBy(dx: 0, dy: -1)
-                    lineRects[ObjectIdentifier(page), default: []]
-                        .append(LineRect(rect: rect, match: index))
-                    if !pages.contains(where: { $0 === page }) { pages.append(page) }
-                }
-            }
-            pagesByMatch[index] = pages
-            for page in pages where seen.insert(ObjectIdentifier(page)).inserted {
-                allMatchPages.append(page)
-            }
-        }
+    /// The scroll geometry, when there is any: PDFKit builds a fresh document
+    /// view per document, so this is resolved on demand rather than cached.
+    private var scrollGeometry: (clip: NSClipView, documentView: NSView)? {
+        guard let documentView, let clip = documentView.enclosingScrollView?.contentView
+        else { return nil }
+        return (clip, documentView)
     }
 
-    /// Push the current rects into the page objects (PDFKit draws through
-    /// them) and invalidate the cached tiles for every page that changed.
-    private func refresh(_ pages: [PDFPage]) {
-        var seen = Set<ObjectIdentifier>()
-        for page in pages where seen.insert(ObjectIdentifier(page)).inserted {
-            if let readerPage = page as? ReaderPage {
-                let rects = isInverted ? (lineRects[ObjectIdentifier(page)] ?? []) : []
-                readerPage.findHighlights = rects.map {
-                    ReaderPage.Highlight(rect: $0.rect,
-                                         isCurrent: $0.match == currentMatchIndex)
-                }
-            }
-            annotationsChanged(on: page)
+    /// One page, taller than the window: a continuous Markdown render, or a
+    /// single-page PDF zoomed past the frame. There is no next page to go to, so
+    /// page navigation is a no-op and the arrows have to scroll instead.
+    private var scrollsRatherThanPages: Bool {
+        guard document?.pageCount == 1, let (clip, documentView) = scrollGeometry else {
+            return false
         }
-        // annotationsChanged alone does not always drop an already-rendered
-        // tile, so nudge the layout as well: without this, matches that arrive
-        // after a page is on screen stay unhighlighted until it is scrolled
-        // out and back.
-        if !pages.isEmpty {
-            layoutDocumentView()
-            needsDisplay = true
-        }
+        return documentView.bounds.height > clip.bounds.height + 1
+    }
+
+    /// How far the top of the visible area has travelled down the document --
+    /// the same quantity the window's progress readout uses, and stated for a
+    /// flipped and an unflipped document view alike so a future PDFKit cannot
+    /// reverse it silently.
+    private var scrollOffset: CGFloat {
+        guard let (clip, documentView) = scrollGeometry else { return 0 }
+        return documentView.isFlipped
+            ? clip.bounds.minY - documentView.bounds.minY
+            : documentView.bounds.maxY - clip.bounds.maxY
+    }
+
+    /// Put the top of the visible area `offset` down the scrollable range,
+    /// clamped to its ends -- so the last press at either end lands exactly on
+    /// it instead of overshooting or beeping.
+    ///
+    /// This moves the clip view itself rather than sending `scrollPageDown(_:)`:
+    /// PDFView is an NSView wrapping a private scroll view and the responder
+    /// chain runs child → parent, so those actions sent to this view walk up
+    /// past the window instead of down into the scroller.
+    private func scroll(toOffset offset: CGFloat) {
+        guard let (clip, documentView) = scrollGeometry else { return }
+        let span = max(documentView.bounds.height - clip.bounds.height, 0)
+        let clamped = min(max(offset, 0), span)
+        var origin = clip.bounds.origin
+        origin.y = documentView.isFlipped
+            ? documentView.bounds.minY + clamped
+            : documentView.bounds.maxY - clip.bounds.height - clamped
+        clip.scroll(to: origin)
+        clip.enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    /// One viewport per press, less a little overlap so the line you stopped on
+    /// is still there.
+    private func scrollByViewport(_ direction: CGFloat) {
+        guard let (clip, _) = scrollGeometry else { return }
+        let step = max(clip.bounds.height - 24, 1)
+        scroll(toOffset: scrollOffset + direction * step)
     }
 
     /// Page-at-a-time arrows. This lives on the view, so arrow keys still edit
@@ -103,6 +97,26 @@ final class ReaderPDFView: PDFView {
     /// Up/Down and Space/Shift-Space fall through to PDFView untouched.
     override func keyDown(with event: NSEvent) {
         let command = event.modifierFlags.contains(.command)
+        // A continuous Markdown document is one page: "next page" has nothing
+        // to do, so the same keys move a viewport at a time instead. Ordinary
+        // documents are unaffected.
+        if scrollsRatherThanPages {
+            switch event.specialKey {
+            case .upArrow, .leftArrow:
+                if command && event.specialKey == .upArrow { scroll(toOffset: 0) }
+                else { scrollByViewport(-1) }
+                return
+            case .downArrow, .rightArrow:
+                if command && event.specialKey == .downArrow {
+                    scroll(toOffset: .greatestFiniteMagnitude)
+                } else {
+                    scrollByViewport(1)
+                }
+                return
+            default:
+                break
+            }
+        }
         switch event.specialKey {
         case .upArrow, .leftArrow:
             if command && event.specialKey == .upArrow { goToFirstPage(nil) }
@@ -251,7 +265,30 @@ final class ReaderViewController: NSViewController {
         pdfView.scaleFactor = 1
     }
 
+    /// A PDF, and a Markdown document already laid out as pages, print exactly
+    /// what is on screen. A *continuous* Markdown render does not: it is one
+    /// 612 × 13,757 pt page, and handing that to the print system leaves the
+    /// pagination to whatever scaling it decides on. So it goes through the same
+    /// paginated typesetting Export as PDF uses, and the print panel is given a
+    /// real Letter document.
     @objc func printDocument(_ sender: Any?) {
-        pdfView.print(with: NSPrintInfo.shared, autoRotate: true)
+        guard glassineDocument.needsPaginatedOutput, let window = view.window else {
+            pdfView.print(with: NSPrintInfo.shared, autoRotate: true)
+            return
+        }
+        glassineDocument.paginatedDocumentForOutput { [weak self] result in
+            switch result {
+            case .success(let document):
+                // .pageScaleNone: the pages are already the paper's size, and
+                // "fit to page" would inset them by the printer's margins twice.
+                guard let operation = document.printOperation(for: NSPrintInfo.shared,
+                                                              scalingMode: .pageScaleNone,
+                                                              autoRotate: true)
+                else { return }
+                operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+            case .failure(let error):
+                self?.glassineDocument.presentError(error)
+            }
+        }
     }
 }

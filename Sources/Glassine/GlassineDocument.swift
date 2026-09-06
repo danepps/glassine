@@ -1,11 +1,14 @@
 import AppKit
+import GlassineCore
 import PDFKit
 import UniformTypeIdentifiers
 
-/// Receives find results from the PDFDocument delegate.
-protocol FindSink: AnyObject {
-    func findDidMatch(_ selection: PDFSelection)
-    func findDidEnd()
+extension Notification.Name {
+    /// Posted by a GlassineDocument (as `object`) once a new PDFDocument has taken
+    /// the place of the old one -- the first Markdown render, a reload after the
+    /// file changed on disk, or a typography change. `userInfo["initial"]` is
+    /// true for the first render of a window.
+    static let glassineDocumentDidReplacePDF = Notification.Name("GlassineDocumentDidReplacePDF")
 }
 
 /// Read-only NSDocument wrapping a PDFDocument. NSDocument gives us Finder
@@ -39,24 +42,32 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private(set) var pdf: PDFDocument?
     weak var findSink: FindSink?
 
-    // Markdown state
-    private var bodyHTML: String?
-    /// The headings behind the current body, in document order; they become the
-    /// rendered PDF's outline.
-    private var headings: [MarkdownHeading] = []
-    private var lastLoadedHash: Int?
+    // Markdown state. The decode/convert/headings/word-count half lives in
+    // Core; this class keeps the NSDocument shell around it.
+    private var content: MarkdownContent?
     private var styling = MarkdownStyling.current
     /// Word count of the Markdown behind the current render; nil for a PDF.
     /// The window shows it as its subtitle.
-    private(set) var markdownStats: MarkdownStats?
+    var markdownStats: MarkdownStats? { content?.stats }
     /// True while the PDF on screen is a Markdown document laid out as one tall
     /// page: the reader's indicator then shows reading progress as a percentage,
     /// because "1 of 1" would say nothing.
     private(set) var isContinuousMarkdown = false
     private var watcher: FileWatcher?
+    /// Reloads, in order: two saves in quick succession are two conversions
+    /// racing on a concurrent queue, and without this the slower one could
+    /// overwrite the newer revision (and then start a render carrying a newer
+    /// generation, so the render guard could not catch it either).
+    private var reloader: MarkdownReloader?
     /// Bumped for every render; a completion whose generation is stale is dropped.
     private var renderGeneration = 0
     private var observingPrefs = false
+    /// Where the reader is, as an outline entry, recorded just before a
+    /// re-render and handed to the window once the replacement is installed. A
+    /// page index and a point mean nothing across a re-typesetting that moved
+    /// every page break -- or, going Pages → Continuous, collapsed them all into
+    /// one page.
+    private var pendingAnchor: ReadingAnchor?
     /// Identifies this document to the renderer's job queue, so a second render
     /// of the same file supersedes one still waiting.
     private let renderKey = UUID().uuidString
@@ -106,14 +117,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             pdf = document
         case .markdown:
             // Only text work here; `pdf` stays nil until the renderer finishes.
-            let data = try Data(contentsOf: url)
-            lastLoadedHash = data.hashValue
-            let converted = MarkdownHTML.body(
-                fromMarkdown: try MarkdownHTML.decode(data, url: url),
-                baseDirectory: url.deletingLastPathComponent())
-            bodyHTML = converted.html
-            headings = converted.headings
-            markdownStats = converted.stats
+            content = try MarkdownDocumentModel.content(of: try Data(contentsOf: url), url: url)
         }
         Prefs.noteRecentDocument(url, pageCount: pdf?.pageCount)
     }
@@ -121,15 +125,15 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     override func makeWindowControllers() {
         addWindowController(ReaderWindowController(document: self))
         guard kind == .markdown else { return }
-        startRender(initial: true)
+        startRender()
         startWatching()
         observePrefs()
     }
 
     // MARK: Markdown rendering
 
-    private func startRender(initial: Bool) {
-        guard kind == .markdown, let bodyHTML else { return }
+    private func startRender() {
+        guard kind == .markdown, let bodyHTML = content?.html else { return }
         renderGeneration += 1
         let generation = renderGeneration
         let html = MarkdownHTML.page(body: bodyHTML,
@@ -141,6 +145,12 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
                                        key: renderKey,
                                        layout: layout) { [weak self] result in
             guard let self, generation == self.renderGeneration else { return }
+            // "First" is a fact about the document, not about which event asked
+            // for this render: a save or a style change that lands before the
+            // opening render has finished supersedes it, and *that* render is
+            // then the first successful install -- it has to restore the saved
+            // position, and its failure is the one worth reporting.
+            let initial = (self.pdf == nil)
             switch result {
             case .success(let rendered):
                 self.install(rendered, initial: initial, layout: layout)
@@ -154,7 +164,15 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
-    private func install(_ rendered: MarkdownRenderer.Result,
+    /// Note where the reader is, by heading, before a re-render throws the
+    /// current pagination away.
+    @MainActor
+    private func captureAnchor() {
+        guard kind == .markdown, pdf != nil else { return }
+        pendingAnchor = (windowControllers.first as? ReaderWindowController)?.readingAnchor
+    }
+
+    private func install(_ rendered: RenderedMarkdown,
                          initial: Bool,
                          layout: MarkdownLayout) {
         isContinuousMarkdown = (layout == .continuous)
@@ -162,68 +180,18 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         // PDFKit calls classForPage lazily, and a page vended before this is set
         // would be a plain PDFPage, which cannot draw dark-mode find highlights.
         rendered.document.delegate = self
-        Self.applyOutline(headings, to: rendered.document)
+        MarkdownDocumentModel.applyOutline(content?.headings ?? [], to: rendered.document)
         pdf = rendered.document
         if let url = fileURL,
            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]) {
             fileModificationDate = values.contentModificationDate
         }
+        var info: [AnyHashable: Any] = ["initial": initial]
+        if let anchor = pendingAnchor { info["anchor"] = anchor }
+        pendingAnchor = nil
         NotificationCenter.default.post(name: .glassineDocumentDidReplacePDF,
                                         object: self,
-                                        userInfo: ["initial": initial])
-    }
-
-    /// Give a rendered Markdown PDF the outline WebKit's print path never
-    /// writes. MarkdownHTML wraps every heading in a `glassine-outline://<n>`
-    /// anchor, and WebKit *does* emit link annotations, so each annotation
-    /// names one heading and says exactly where it landed. The annotations are
-    /// removed afterwards: nothing on screen should link to a private scheme.
-    private static func applyOutline(_ headings: [MarkdownHeading], to document: PDFDocument) {
-        guard !headings.isEmpty else { return }
-
-        var located: [Int: (page: Int, top: CGFloat)] = [:]
-        for pageIndex in 0..<document.pageCount {
-            guard let page = document.page(at: pageIndex) else { continue }
-            for annotation in page.annotations {
-                guard let url = annotation.url, url.scheme == "glassine-outline",
-                      let index = url.host.flatMap(Int.init) else { continue }
-                // A heading that wraps onto two lines gets one annotation per
-                // line; the topmost is where the bookmark should point.
-                let top = annotation.bounds.maxY
-                let better = located[index].map {
-                    pageIndex < $0.page || (pageIndex == $0.page && top > $0.top)
-                } ?? true
-                if better { located[index] = (pageIndex, top) }
-                page.removeAnnotation(annotation)
-            }
-        }
-
-        let root = PDFOutline()
-        var stack: [(level: Int, node: PDFOutline)] = [(0, root)]
-        var previous: PDFDestination?
-        for heading in headings {
-            var destination = previous
-            if let hit = located[heading.index], let page = document.page(at: hit.page) {
-                // PDF coordinates are bottom-up, so this is the top-left corner
-                // the view scrolls to.
-                destination = PDFDestination(page: page, at: NSPoint(x: 0, y: hit.top + 4))
-                previous = destination
-            } else if destination == nil, let first = document.page(at: 0) {
-                destination = PDFDestination(
-                    page: first, at: NSPoint(x: 0, y: first.bounds(for: .mediaBox).maxY))
-            }
-            let node = PDFOutline()
-            node.label = heading.title
-            node.destination = destination
-            // A jump from h1 straight to h3 simply nests under the h1.
-            while stack.count > 1, stack[stack.count - 1].level >= heading.level {
-                stack.removeLast()
-            }
-            let parent = stack[stack.count - 1].node
-            parent.insertChild(node, at: parent.numberOfChildren)
-            stack.append((heading.level, node))
-        }
-        document.outlineRoot = root
+                                        userInfo: info)
     }
 
     // MARK: Reloading
@@ -235,23 +203,35 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
+    /// Built on first reload rather than at init, so a PDF document never makes
+    /// one, and always from the main actor.
+    @MainActor
+    private func makeReloader() -> MarkdownReloader {
+        let made = MarkdownReloader()
+        made.onContent = { [weak self] fresh in
+            // The hash gate stays here: the reloader guarantees order, not that
+            // the newest bytes differ from the ones already on screen.
+            guard let self, self.content?.hash != fresh.hash else { return }
+            self.content = fresh
+            self.captureAnchor()
+            self.startRender()
+        }
+        return made
+    }
+
+    @MainActor
     private func reloadFromDisk() {
         guard kind == .markdown, let url = fileURL else { return }
-        let baseDirectory = url.deletingLastPathComponent()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let data = try? Data(contentsOf: url) else { return }
-            let hash = data.hashValue
-            guard let text = try? MarkdownHTML.decode(data, url: url) else { return }
-            let converted = MarkdownHTML.body(fromMarkdown: text, baseDirectory: baseDirectory)
-            DispatchQueue.main.async {
-                guard let self, self.lastLoadedHash != hash else { return }
-                self.lastLoadedHash = hash
-                self.bodyHTML = converted.html
-                self.headings = converted.headings
-                self.markdownStats = converted.stats
-                self.startRender(initial: false)
-            }
-        }
+        if reloader == nil { reloader = makeReloader() }
+        reloader?.reload(url: url)
+    }
+
+    /// Retire every reload still converting. The document is going away, or the
+    /// file it points at has moved and what is in flight was read from the old
+    /// path.
+    @MainActor
+    private func invalidateReloads() {
+        reloader?.invalidate()
     }
 
     // Route the coordinated-write callback into the watcher instead of letting
@@ -267,12 +247,14 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func presentedItemDidMove(to newURL: URL) {
         super.presentedItemDidMove(to: newURL)
+        MainActor.assumeIsolated { invalidateReloads() }
         watcher?.retarget(to: newURL)
     }
 
     override func close() {
         watcher?.stop()
         watcher = nil
+        MainActor.assumeIsolated { invalidateReloads() }
         super.close()
         if kind == .markdown { MarkdownRenderer.shared.releaseIfIdle() }
     }
@@ -291,8 +273,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         guard kind == .markdown, current != styling else { return }
         styling = current
         // The Markdown itself has not changed, only the stylesheet wrapped
-        // around it, so the cached body is reused as is.
-        startRender(initial: false)
+        // around it, so the cached body is reused as is -- but every page break
+        // moves, so where the reader is has to be remembered by heading.
+        MainActor.assumeIsolated { captureAnchor() }
+        startRender()
     }
 
     // MARK: Export
@@ -321,10 +305,44 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
-    /// An export is always paginated: one 40-inch page is a way to read on
-    /// screen, not a file to hand someone or print. A continuous render is
-    /// therefore typeset a second time, under its own renderer key so the
-    /// document's own render is not superseded.
+    /// True when what is on screen is not what should leave the app: a
+    /// continuous Markdown render is one 40-inch page, which is a way to read
+    /// and not a thing to hand someone or feed a printer.
+    var needsPaginatedOutput: Bool { kind == .markdown && styling.layout == .continuous }
+
+    /// The document an export or a print should use. Output is always
+    /// paginated, so a continuous render is typeset a second time under its own
+    /// renderer key -- the document's own render is not superseded -- and given
+    /// the same outline. Anything else is what is already on screen.
+    func paginatedDocumentForOutput(
+        _ completion: @escaping (Swift.Result<PDFDocument, Error>) -> Void
+    ) {
+        guard needsPaginatedOutput, let bodyHTML = content?.html else {
+            guard let pdf else {
+                completion(.failure(Self.nothingToExport))
+                return
+            }
+            completion(.success(pdf))
+            return
+        }
+        let html = MarkdownHTML.page(body: bodyHTML,
+                                     title: displayName ?? "",
+                                     styling: styling.paginated)
+        let outline = content?.headings ?? []
+        MarkdownRenderer.shared.render(html: html,
+                                       baseURL: fileURL,
+                                       key: renderKey + ".export",
+                                       layout: .pages) { result in
+            switch result {
+            case .success(let rendered):
+                MarkdownDocumentModel.applyOutline(outline, to: rendered.document)
+                completion(.success(rendered.document))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
     private func pdfDataForExport(_ completion: @escaping (Swift.Result<Data, Error>) -> Void) {
         // Deliberately not the raw render bytes for Markdown: those still carry
         // the glassine-outline:// link annotations and none of the bookmarks.
@@ -334,34 +352,18 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             completion(.success(data))
             return
         }
-        if kind == .markdown, styling.layout == .continuous, let bodyHTML {
-            let html = MarkdownHTML.page(body: bodyHTML,
-                                         title: displayName ?? "",
-                                         styling: styling.paginated)
-            let outline = headings
-            MarkdownRenderer.shared.render(html: html,
-                                           baseURL: fileURL,
-                                           key: renderKey + ".export",
-                                           layout: .pages) { result in
-                switch result {
-                case .success(let rendered):
-                    Self.applyOutline(outline, to: rendered.document)
-                    guard let data = rendered.document.dataRepresentation() else {
-                        completion(.failure(Self.nothingToExport))
-                        return
-                    }
-                    completion(.success(data))
-                case .failure(let error):
-                    completion(.failure(error))
+        paginatedDocumentForOutput { result in
+            switch result {
+            case .success(let document):
+                guard let data = document.dataRepresentation() else {
+                    completion(.failure(Self.nothingToExport))
+                    return
                 }
+                completion(.success(data))
+            case .failure(let error):
+                completion(.failure(error))
             }
-            return
         }
-        guard let data = pdf?.dataRepresentation() else {
-            completion(.failure(Self.nothingToExport))
-            return
-        }
-        completion(.success(data))
     }
 
     private static let nothingToExport = NSError(
@@ -382,17 +384,35 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     func didMatchString(_ instance: PDFSelection) {
         if Thread.isMainThread {
-            findSink?.findDidMatch(instance)
+            MainActor.assumeIsolated { findSink?.findDidMatch(instance) }
         } else {
-            DispatchQueue.main.async { self.findSink?.findDidMatch(instance) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.findSink?.findDidMatch(instance) }
+            }
         }
     }
 
+    /// PDFKit names the document the search ran in, which is what lets the find
+    /// controller tell its own search's end from a straggler belonging to a
+    /// document a Markdown reload has already replaced.
     func documentDidEndDocumentFind(_ notification: Notification) {
+        let source = notification.object as? PDFDocument
         if Thread.isMainThread {
-            findSink?.findDidEnd()
+            MainActor.assumeIsolated { deliverFindEnd(from: source) }
         } else {
-            DispatchQueue.main.async { self.findSink?.findDidEnd() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.deliverFindEnd(from: source) }
+            }
+        }
+    }
+
+    @MainActor
+    private func deliverFindEnd(from source: PDFDocument?) {
+        guard let sink = findSink else { return }
+        if let source {
+            sink.findDidEnd(in: source)
+        } else {
+            sink.findDidEnd()
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import GlassineCore
 import PDFKit
 
 extension NSToolbarItem.Identifier {
@@ -107,7 +108,7 @@ enum WindowChrome {
 /// memory.
 final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate,
                                     NSSearchFieldDelegate, NSTextFieldDelegate,
-                                    NSMenuItemValidation, FindSink {
+                                    NSMenuItemValidation, FindControllerDelegate {
 
     private let glassineDocument: GlassineDocument
     private let readerVC: ReaderViewController
@@ -123,36 +124,23 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private weak var searchItem: NSSearchToolbarItem?
     private let searchCountLabel = NSTextField(labelWithString: "")
 
-    private var matches: [PDFSelection] = []
-    private var matchIndex = 0
+    /// The find state machine, in Core. This controller is its delegate and
+    /// keeps the label, the counter and the prev/next control.
+    private let findController = FindController()
     private var searchNavControl: NSSegmentedControl?
-    private var findInProgress = false
-    private var lastQuery = ""
-    /// Set while a cancelled PDFKit search is still winding down: its late
-    /// callbacks are ignored, and `pendingQuery` starts when its end arrives.
-    private var awaitingCancelledFindEnd = false
-    private var pendingQuery: String?
-    /// Read once, at init: PDFView posts page-change notifications while it
-    /// lays out, and those would otherwise overwrite the stored position with
-    /// page 1 before we ever get a chance to restore it.
-    private let savedPosition: Prefs.Position?
-    private var restoreStarted = false
-    private var restoreFinished = false
-    /// Set while re-running a find after the document was swapped underneath us:
-    /// the first match must not steal the reading position we just restored.
-    private var suppressFirstMatchScroll = false
+    /// Reading-position memory, in Core: the saved position (read once, at
+    /// init), the restore gate, the two-pass jump and the install target.
+    private let position: ReadingPosition
     /// The page indicator's fixed width, which has to grow or shrink when a
     /// Markdown re-render changes the page count.
     private var pageIndicatorWidth: NSLayoutConstraint?
-    /// Where the last install aimed. A burst of saves can land a second render
-    /// while the first install's two-pass jump is still in flight, and the live
-    /// destination is meaningless at that moment; this is what to aim at instead.
-    private var lastInstallTarget: Prefs.Position?
     /// The clip view the progress readout watches. PDFKit builds a fresh
     /// document view for every document, so this is re-resolved after each
     /// install rather than looked up once.
     private weak var progressClipView: NSClipView?
-    private var progressRefreshPending = false
+    /// One debounce for everything that follows the scroll: the progress
+    /// readout and the outline selection.
+    private var scrollRefreshPending = false
 
     private var pdfView: ReaderPDFView { readerVC.pdfView }
     private var pageCount: Int { glassineDocument.pdf?.pageCount ?? 0 }
@@ -174,10 +162,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     init(document: GlassineDocument) {
         glassineDocument = document
-        savedPosition = document.fileURL.flatMap { Prefs.lastPosition(for: $0) }
         let reader = ReaderViewController(document: document)
         readerVC = reader
         sidebarVC = SidebarViewController(pdfView: reader.pdfView)
+        position = ReadingPosition(
+            pdfView: reader.pdfView,
+            saved: document.fileURL.flatMap { Prefs.lastPosition(for: $0) },
+            url: { [weak document] in document?.fileURL })
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 1040),
@@ -201,7 +192,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         window.delegate = self
         shouldCascadeWindows = false
 
-        document.findSink = self
+        findController.document = document.pdf
+        findController.delegate = self
+        document.findSink = findController
         reader.onInversionChanged = { [weak self] inverted in
             self?.applyInversion(inverted)
         }
@@ -271,13 +264,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// uses PDFKit's own translucent highlight.
     private func applyHighlights() {
         let inverted = readerVC.isInverted
+        let matches = findController.matches
         pdfView.isInverted = inverted
         if inverted {
             // The reverse-video boxes are the highlight; suppress PDFKit's own
             // translucent selection wash so it does not double up on them.
             for selection in matches { selection.color = .clear }
             pdfView.highlightedSelections = nil
-            pdfView.setFindMatches(matches, current: matchIndex)
+            pdfView.setFindMatches(matches, current: findController.matchIndex)
         } else {
             pdfView.setFindMatches([], current: 0)
             for selection in matches {
@@ -539,13 +533,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private var readingProgress: CGFloat {
         guard let (clip, documentView) = scrollGeometry else { return 0 }
         let span = documentView.bounds.height - clip.bounds.height
-        guard span > 0.5 else { return 1 }
         // PDFKit's document view is flipped, but the geometry is cheap to state
         // for both so a future PDFKit cannot invert the readout silently.
         let travelled = documentView.isFlipped
             ? clip.bounds.minY - documentView.bounds.minY
             : documentView.bounds.maxY - clip.bounds.maxY
-        return min(max(travelled / span, 0), 1)
+        return ReadingProgress.fraction(travelled: travelled, span: span)
     }
 
     private var currentProgressPercent: Int {
@@ -556,8 +549,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private func scrollToProgress(_ fraction: CGFloat) {
         guard let (clip, documentView) = scrollGeometry else { return }
         let span = documentView.bounds.height - clip.bounds.height
-        guard span > 0.5 else { return }
-        let travelled = span * min(max(fraction, 0), 1)
+        guard let travelled = ReadingProgress.offset(forFraction: fraction, span: span) else {
+            return
+        }
         var origin = clip.bounds.origin
         origin.y = documentView.isFlipped
             ? documentView.bounds.minY + travelled
@@ -569,8 +563,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     /// A continuous document scrolls without ever changing page, so
     /// .PDFViewPageChanged never fires and the clip view's own bounds
-    /// notification is the only thing that reports movement. Re-resolved after
-    /// every install: PDFKit builds a new document view for each document.
+    /// notification is the only thing that reports movement. Watched for every
+    /// document, not only a continuous one: scrolling within an ordinary PDF
+    /// page moves between headings too, and the outline has to follow.
+    /// Re-resolved after every install: PDFKit builds a new document view for
+    /// each document.
     private func observeScrollGeometry() {
         let clip = pdfView.documentView?.enclosingScrollView?.contentView
         guard clip !== progressClipView else { return }
@@ -591,13 +588,21 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     /// Coalesced: a scroll posts this every frame, and relaying the label out
     /// each time is wasted work when the percentage barely moves.
+    ///
+    /// The outline follows the *scroll*, not just the page: a continuous
+    /// Markdown document never changes page at all, and even in a paginated one
+    /// several headings can share a page, so `.PDFViewPageChanged` alone leaves
+    /// the sidebar selection stuck behind the reader. `syncSelection` never
+    /// navigates -- its own `isSyncingSelection` guard keeps the outline view's
+    /// selection handler from turning round and scrolling the reader back.
     @objc private func scrollGeometryChanged() {
-        guard showsProgress, !progressRefreshPending else { return }
-        progressRefreshPending = true
+        guard !scrollRefreshPending else { return }
+        scrollRefreshPending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self else { return }
-            self.progressRefreshPending = false
+            self.scrollRefreshPending = false
             if self.showsProgress { self.updateProgressLabel() }
+            self.sidebarVC.syncSelection()
         }
     }
 
@@ -652,7 +657,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     @objc private func pageChanged() {
         updatePageField()
-        savePosition()
+        position.save()
         sidebarVC.syncSelection()
     }
 
@@ -674,8 +679,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     // empty the field without sending it. Any route to an empty field resets.
     func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSSearchField, field === searchField,
-              field.stringValue.isEmpty, !lastQuery.isEmpty else { return }
-        startFind("")
+              field.stringValue.isEmpty, !findController.lastQuery.isEmpty else { return }
+        findController.startFind("")
     }
 
     // MARK: Toolbar delegate
@@ -785,145 +790,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         sender.selectedSegment == 0 ? findPrevious(sender) : findNext(sender)
     }
 
-    private func startFind(_ query: String, suppressFirstScroll: Bool = false) {
-        suppressFirstMatchScroll = suppressFirstScroll
-        matches.removeAll()
-        matchIndex = 0
-        searchNavControl?.isEnabled = false
-        pdfView.highlightedSelections = nil
-        pdfView.setFindMatches([], current: 0)
-        // In light mode the current match is PDFKit's own selection, and nothing
-        // else ever drops it: without this the last match stays washed on the
-        // page after the query stops matching, and survives cancelling the
-        // search entirely.
-        pdfView.setCurrentSelection(nil, animate: false)
-
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        lastQuery = trimmed
-        findInProgress = !trimmed.isEmpty
-        searchCountLabel.stringValue = ""
-
-        // PDFKit delivers find callbacks asynchronously and does not tag them
-        // with the query, so a search cancelled mid-flight can still report
-        // matches (and its end) after a replacement has begun. Hold the new
-        // query until the old search's end callback arrives, discarding
-        // anything else from it in the meantime. The timer is a safety net in
-        // case PDFKit never reports the end of a cancelled search.
-        if let pdf = glassineDocument.pdf, pdf.isFinding {
-            pdf.cancelFindString()
-            pendingQuery = trimmed
-            awaitingCancelledFindEnd = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self, self.awaitingCancelledFindEnd else { return }
-                self.awaitingCancelledFindEnd = false
-                self.startPendingFind()
-            }
-            return
-        }
-        beginFind(trimmed)
-    }
-
-    private func beginFind(_ trimmed: String) {
-        findInProgress = !trimmed.isEmpty
-        guard !trimmed.isEmpty, let pdf = glassineDocument.pdf else { return }
-        pdf.beginFindString(trimmed, withOptions: [.caseInsensitive])
-    }
-
-    private func startPendingFind() {
-        guard let query = pendingQuery else { return }
-        pendingQuery = nil
-        beginFind(query)
-    }
-
-    func findDidMatch(_ selection: PDFSelection) {
-        guard !awaitingCancelledFindEnd else { return }
-        matches.append(selection)
-        // Show the first hit immediately; the rest arrive asynchronously.
-        // Reassigning the highlight array per match is quadratic on large
-        // documents, so later hits are batched onto a short timer instead:
-        // they appear within ~150ms of being found rather than only when the
-        // whole search ends.
-        if matches.count == 1 {
-            if suppressFirstMatchScroll {
-                // Re-running the query after a reload: light the matches up but
-                // stay where the reader was.
-                suppressFirstMatchScroll = false
-            } else {
-                showMatch(0)
-            }
-            applyHighlights()
-            // Stepping is useful as soon as there is something to step through;
-            // it wraps over the results found so far.
-            searchNavControl?.isEnabled = true
-        } else {
-            scheduleHighlightRefresh()
-        }
-        searchCountLabel.stringValue = "\(matches.count) found…"
-    }
-
-    func findDidEnd() {
-        if awaitingCancelledFindEnd {
-            awaitingCancelledFindEnd = false
-            startPendingFind()
-            return
-        }
-        findInProgress = false
-        applyHighlights()
-        updateSearchCount()
-    }
-
-    private var highlightRefreshPending = false
-
-    private func scheduleHighlightRefresh() {
-        guard !highlightRefreshPending else { return }
-        highlightRefreshPending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
-            self.highlightRefreshPending = false
-            // findDidEnd has already applied the final set if the search is over.
-            if self.findInProgress { self.applyHighlights() }
-        }
-    }
-
-    /// "K of N" once a search has finished, "No matches" when it found nothing,
-    /// blank when there is no query. Left alone while a search is still running
-    /// -- findDidMatch shows the running total there.
-    private func updateSearchCount() {
-        searchNavControl?.isEnabled = !matches.isEmpty
-        guard !lastQuery.isEmpty else {
-            searchCountLabel.stringValue = ""
-            return
-        }
-        if findInProgress {
-            searchCountLabel.stringValue = "\(matches.count) found…"
-        } else if matches.isEmpty {
-            searchCountLabel.stringValue = "No matches"
-        } else {
-            searchCountLabel.stringValue = "\(matchIndex + 1) of \(matches.count)"
-        }
-    }
-
-    private func showMatch(_ index: Int) {
-        guard !matches.isEmpty else { return }
-        let count = matches.count
-        matchIndex = ((index % count) + count) % count
-        let selection = matches[matchIndex]
-        if readerVC.isInverted {
-            // PDFKit would paint its own selection wash over our reverse-video
-            // box, and inverted it comes out olive. Scroll to the match, then
-            // drop the selection and let the drawn box mark it.
-            pdfView.go(to: selection)
-            pdfView.setCurrentSelection(nil, animate: false)
-            pdfView.setCurrentMatchIndex(matchIndex)
-        } else {
-            pdfView.setCurrentSelection(selection, animate: true)
-            pdfView.go(to: selection)
-        }
-        if !findInProgress { updateSearchCount() }
-    }
-
     @objc func searchChanged(_ sender: NSSearchField) {
-        startFind(sender.stringValue)
+        findController.startFind(sender.stringValue)
     }
 
     @objc func findNext(_ sender: Any?) {
@@ -935,18 +803,54 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     private func step(by delta: Int) {
-        guard matches.isEmpty else {
-            showMatch(matchIndex + delta)
-            return
-        }
-        let query = (searchField?.stringValue ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !findInProgress, !query.isEmpty, query == lastQuery {
-            // Already searched for exactly this and came up empty.
+        // False means the reader has already searched for exactly this and it
+        // came up empty; there is nowhere to step to.
+        if !findController.step(by: delta, query: searchField?.stringValue ?? "") {
             NSSound.beep()
-        } else {
-            startFind(query)
         }
+    }
+
+    // MARK: FindControllerDelegate
+
+    func findControllerDidClear(_ controller: FindController) {
+        pdfView.highlightedSelections = nil
+        pdfView.setFindMatches([], current: 0)
+        // In light mode the current match is PDFKit's own selection, and nothing
+        // else ever drops it: without this the last match stays washed on the
+        // page after the query stops matching, and survives cancelling the
+        // search entirely.
+        pdfView.setCurrentSelection(nil, animate: false)
+    }
+
+    func findController(_ controller: FindController,
+                        didUpdate matches: [PDFSelection],
+                        current: Int,
+                        inProgress: Bool) {
+        applyHighlights()
+    }
+
+    func findController(_ controller: FindController,
+                        show selection: PDFSelection,
+                        at index: Int) {
+        if readerVC.isInverted {
+            // PDFKit would paint its own selection wash over our reverse-video
+            // box, and inverted it comes out olive. Scroll to the match, then
+            // drop the selection and let the drawn box mark it.
+            pdfView.go(to: selection)
+            pdfView.setCurrentSelection(nil, animate: false)
+            pdfView.setCurrentMatchIndex(index)
+        } else {
+            pdfView.setCurrentSelection(selection, animate: true)
+            pdfView.go(to: selection)
+        }
+    }
+
+    func findController(_ controller: FindController, canStep: Bool) {
+        searchNavControl?.isEnabled = canStep
+    }
+
+    func findControllerCountDidChange(_ controller: FindController) {
+        searchCountLabel.stringValue = controller.countText
     }
 
     @objc func focusSearch(_ sender: Any?) {
@@ -956,7 +860,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc func useSelectionForFind(_ sender: Any?) {
         guard let text = pdfView.currentSelection?.string, !text.isEmpty else { return }
         searchField?.stringValue = text
-        startFind(text)
+        findController.startFind(text)
     }
 
     @objc func focusPageField(_ sender: Any?) {
@@ -970,8 +874,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         if control is NSSearchField {
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
-                if matches.isEmpty {
-                    startFind(control.stringValue)
+                if findController.matches.isEmpty {
+                    findController.startFind(control.stringValue)
                 } else if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                     findPrevious(nil)
                 } else {
@@ -980,7 +884,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 control.stringValue = ""
-                startFind("")
+                findController.startFind("")
                 searchItem?.endSearchInteraction()
                 window?.makeFirstResponder(pdfView)
                 return true
@@ -1083,79 +987,22 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     func windowWillClose(_ notification: Notification) {
-        if let pdf = glassineDocument.pdf, pdf.isFinding { pdf.cancelFindString() }
-        savePosition()
+        findController.cancelIfFinding()
+        position.save()
     }
 
     // MARK: Reading position
 
-    private func savePosition() {
-        // Nothing is worth saving until the restore has run: the layout-time
-        // page changes all report page 1.
-        guard restoreFinished else { return }
-        guard let url = glassineDocument.fileURL,
-              let pdf = pdfView.document,
-              let destination = pdfView.currentDestination,
-              let page = destination.page
-        else { return }
-        let index = pdf.index(for: page)
-        guard index != NSNotFound else { return }
-        Prefs.setLastPosition(
-            Prefs.Position(pageIndex: index,
-                           x: destination.point.x,
-                           y: destination.point.y),
-            for: url
-        )
-    }
-
     private func restorePositionIfNeeded() {
-        guard !restoreStarted else { return }
-        // A Markdown document has no PDF yet when its window is shown. Leave
-        // restoreStarted false: the first render posts
-        // .glassineDocumentDidReplacePDF and installDocument does the restore.
-        guard pdfView.document != nil else { return }
-        restoreStarted = true
-
-        guard let saved = savedPosition,
-              let pdf = pdfView.document,
-              saved.pageIndex > 0 || saved.x != 0 || saved.y != 0,
-              saved.pageIndex < pdf.pageCount,
-              let page = pdf.page(at: saved.pageIndex)
-        else {
-            restoreFinished = true
-            updatePageField()
-            return
-        }
-
-        let destination = PDFDestination(page: page, at: NSPoint(x: saved.x, y: saved.y))
-        jump(to: destination, expectingPageIndex: saved.pageIndex) { [weak self] in
-            guard let self else { return }
-            self.restoreFinished = true
-            self.updatePageField()
-        }
-    }
-
-    /// PDFView silently ignores go(to:) before it has laid the document out, so
-    /// force layout and jump on the next runloop pass; then confirm we actually
-    /// landed on the expected page and retry once if not.
-    private func jump(to destination: PDFDestination,
-                      expectingPageIndex index: Int,
-                      completion: @escaping () -> Void) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.pdfView.layoutDocumentView()
-            self.pdfView.go(to: destination)
-
-            DispatchQueue.main.async {
-                let landed = self.pdfView.currentPage
-                    .map { self.pdfView.document?.index(for: $0) ?? NSNotFound } ?? NSNotFound
-                if landed != index { self.pdfView.go(to: destination) }
-                completion()
-            }
-        }
+        position.restoreIfNeeded { [weak self] in self?.updatePageField() }
     }
 
     // MARK: Document replacement (Markdown render / reload)
+
+    /// Where the reader is, by heading -- what the document records before it
+    /// throws the current pagination away and re-renders.
+    @MainActor
+    var readingAnchor: ReadingAnchor? { ReadingAnchor.capture(from: pdfView) }
 
     @objc private func documentDidReplacePDF(_ note: Notification) {
         guard let replacement = glassineDocument.pdf else { return }
@@ -1163,47 +1010,29 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         if let stats = glassineDocument.markdownStats {
             window?.subtitle = "\(stats.words.formatted(.number)) words"
         }
-        // On a reload, hold the place the reader is actually looking at; on the
-        // first render there is nothing on screen yet, so use the saved one.
-        var target = initial ? savedPosition : lastInstallTarget
-        // restoreFinished is false only while an install's jump is still in
-        // flight, and the view is then somewhere arbitrary; trust the live
-        // destination in every other case.
-        if !initial, restoreFinished,
-           let old = pdfView.document,
-           let destination = pdfView.currentDestination,
-           let page = destination.page {
-            let index = old.index(for: page)
-            if index != NSNotFound {
-                target = Prefs.Position(pageIndex: index,
-                                        x: destination.point.x,
-                                        y: destination.point.y)
-            }
-        }
-        installDocument(replacement, target: target)
+        installDocument(replacement,
+                        target: position.targetForInstall(initial: initial),
+                        anchor: note.userInfo?["anchor"] as? ReadingAnchor)
     }
 
     /// Swap in a freshly rendered PDF, keeping the reading position, the page
     /// indicator, and any active search.
-    private func installDocument(_ replacement: PDFDocument, target: Prefs.Position?) {
+    ///
+    /// `anchor` is the heading the reader was under before the re-render. When
+    /// it can be found again in the new outline it *replaces* `target`: the page
+    /// index and point in `target` describe a pagination that no longer exists
+    /// (and, going Pages → Continuous, one that has collapsed to a single page).
+    /// It still goes through `position.aim`, so the restore gates and
+    /// `lastInstallTarget` behave exactly as they do for any other install.
+    private func installDocument(_ replacement: PDFDocument,
+                                 target: Prefs.Position?,
+                                 anchor: ReadingAnchor? = nil) {
         // Assigning a document makes PDFView lay out and report page 1; without
         // this those reports would overwrite the position we are restoring.
-        restoreFinished = false
+        position.beginInstall()
 
         // Every PDFSelection we hold points into the document about to go away.
-        if let old = glassineDocument.pdf, old !== replacement, old.isFinding {
-            old.cancelFindString()
-        }
-        matches.removeAll()
-        matchIndex = 0
-        findInProgress = false
-        awaitingCancelledFindEnd = false
-        pendingQuery = nil
-        pdfView.setFindMatches([], current: 0)
-        pdfView.highlightedSelections = nil
-        pdfView.setCurrentSelection(nil, animate: false)
-        searchNavControl?.isEnabled = false
-        searchCountLabel.stringValue = ""
+        findController.reset(for: replacement)
 
         pdfView.document = replacement
         sidebarVC.documentDidChange()
@@ -1211,24 +1040,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         updateIndicatorMode()
         updatePageField()
 
-        let clamped = target.map {
-            Prefs.Position(pageIndex: min(max($0.pageIndex, 0), max(replacement.pageCount - 1, 0)),
-                           x: $0.x, y: $0.y)
-        }
-        lastInstallTarget = clamped
-        guard let clamped, let page = replacement.page(at: clamped.pageIndex) else {
-            finishInstall()
-            return
-        }
-        let destination = PDFDestination(page: page, at: NSPoint(x: clamped.x, y: clamped.y))
-        jump(to: destination, expectingPageIndex: clamped.pageIndex) { [weak self] in
+        let aimed = anchor?.position(in: replacement) ?? target
+        position.aim(in: replacement, target: aimed) { [weak self] in
             self?.finishInstall()
         }
     }
 
     private func finishInstall() {
-        restoreStarted = true
-        restoreFinished = true
+        position.finishInstall()
         // The document view only exists once PDFView has laid the new document
         // out, which the install's jump has just forced.
         observeScrollGeometry()
@@ -1241,6 +1060,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
         // Re-run the search against the new document, without letting match 1
         // pull the view away from where the reader was.
-        if !lastQuery.isEmpty { startFind(lastQuery, suppressFirstScroll: true) }
+        let query = findController.lastQuery
+        if !query.isEmpty { findController.startFind(query, suppressFirstScroll: true) }
     }
 }

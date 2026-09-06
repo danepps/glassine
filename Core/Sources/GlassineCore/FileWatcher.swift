@@ -12,7 +12,10 @@ import Foundation
 /// Every event is debounced and then gated on a `(inode, mtime, size)`
 /// signature, so a save that rewrites identical bytes, or one editor's flurry of
 /// writes, produces at most one callback.
-final class FileWatcher {
+/// `@unchecked Sendable` because it really is: every mutable field is touched
+/// only on `queue` (or before that queue starts), which is exactly what the
+/// note below the properties says.
+public final class FileWatcher: @unchecked Sendable {
 
     private struct Signature: Equatable {
         var inode: UInt64
@@ -37,7 +40,7 @@ final class FileWatcher {
     private var reopenAttempts = 0
     private var stopped = false
 
-    init(url: URL, onChange: @escaping @MainActor @Sendable () -> Void) {
+    public init(url: URL, onChange: @escaping @MainActor @Sendable () -> Void) {
         self.url = url
         self.onChange = onChange
         self.signature = Self.signature(of: url)
@@ -55,7 +58,7 @@ final class FileWatcher {
         directorySource?.cancel()
     }
 
-    func stop() {
+    public func stop() {
         queue.sync {
             guard !stopped else { return }
             stopped = true
@@ -69,7 +72,7 @@ final class FileWatcher {
     }
 
     /// Follow the file to a new location (NSDocument reports moves).
-    func retarget(to newURL: URL) {
+    public func retarget(to newURL: URL) {
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
             self.url = newURL
@@ -85,7 +88,7 @@ final class FileWatcher {
 
     /// Ask for a check now (the NSFilePresenter callback routes in here so both
     /// paths share one debounce and one signature gate).
-    func poke() {
+    public func poke() {
         queue.async { [weak self] in self?.scheduleNotify() }
     }
 

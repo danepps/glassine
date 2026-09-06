@@ -2,17 +2,95 @@ import Foundation
 import Markdown
 import UniformTypeIdentifiers
 
+/// How rendered Markdown is laid out: real Letter pages, or one tall page the
+/// reader scrolls through without a break.
+public enum MarkdownLayout: Int, Sendable {
+    case pages = 0, continuous = 1
+
+    public var title: String {
+        switch self {
+        case .pages: return "Pages"
+        case .continuous: return "Continuous"
+        }
+    }
+}
+
+/// A stylesheet for rendered Markdown: one of the built-ins, whose CSS lives in
+/// `MarkdownHTML`, or a `.css` file the reader dropped into the styles folder.
+public struct MarkdownStyle: Equatable, Sendable {
+    public var id: String
+    public var title: String
+    /// nil for a built-in.
+    public var url: URL?
+
+    public init(id: String, title: String, url: URL? = nil) {
+        self.id = id
+        self.title = title
+        self.url = url
+    }
+
+    public static let defaultID = "manuscript"
+    public static let customPrefix = "custom:"
+
+    public static let builtIns: [MarkdownStyle] = [
+        MarkdownStyle(id: "manuscript", title: "Manuscript"),
+        MarkdownStyle(id: "modern", title: "Modern"),
+        MarkdownStyle(id: "github", title: "GitHub"),
+        MarkdownStyle(id: "antique", title: "Antique"),
+        MarkdownStyle(id: "ink", title: "Ink"),
+        MarkdownStyle(id: "academic", title: "Academic")
+    ]
+
+    /// Where custom stylesheets live. `~/Library/Application Support/Glassine/Styles`
+    /// on the Mac; whatever `Prefs.stylesDirectory` is set to elsewhere.
+    public static var folder: URL { Prefs.stylesDirectory }
+
+    /// The `.css` files in that folder, in name order. Read every time the Style
+    /// menu opens, so a newly dropped file needs no relaunch.
+    public static func customStyles() -> [MarkdownStyle] {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])) ?? []
+        return files
+            .filter { $0.pathExtension.lowercased() == "css" }
+            .map { url in
+                let name = url.deletingPathExtension().lastPathComponent
+                return MarkdownStyle(id: customPrefix + name, title: name, url: url)
+            }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// The style layer for an id: a built-in's CSS, or a custom file read from
+    /// disk. A custom style whose file has gone away falls back to the default.
+    public static func css(forID id: String) -> String {
+        guard id.hasPrefix(customPrefix) else { return MarkdownHTML.builtInStyle(id) }
+        let name = String(id.dropFirst(customPrefix.count))
+        let url = folder.appendingPathComponent(name).appendingPathExtension("css")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return MarkdownHTML.builtInStyle(defaultID)
+        }
+        return text
+    }
+}
+
 /// Everything the stylesheet depends on. Resolved from `Prefs` on the main
 /// thread (a custom style's CSS is read from disk here) and then carried around
 /// as a value, so the HTML itself can be built off-main.
-struct MarkdownStyling: Equatable {
-    var styleID: String
+public struct MarkdownStyling: Equatable, Sendable {
+    public var styleID: String
     /// The style layer: the CSS that sets the base layer's variables.
-    var css: String
-    var size: Int
-    var layout: MarkdownLayout
+    public var css: String
+    public var size: Int
+    public var layout: MarkdownLayout
 
-    static var current: MarkdownStyling {
+    public init(styleID: String, css: String, size: Int, layout: MarkdownLayout) {
+        self.styleID = styleID
+        self.css = css
+        self.size = size
+        self.layout = layout
+    }
+
+    public static var current: MarkdownStyling {
         let id = Prefs.markdownStyle
         return MarkdownStyling(styleID: id,
                                css: MarkdownStyle.css(forID: id),
@@ -22,7 +100,7 @@ struct MarkdownStyling: Equatable {
 
     /// The same styling, paginated: an export is a document to file or print,
     /// never one 40-inch page.
-    var paginated: MarkdownStyling {
+    public var paginated: MarkdownStyling {
         var copy = self
         copy.layout = .pages
         return copy
@@ -30,17 +108,25 @@ struct MarkdownStyling: Equatable {
 }
 
 /// Word count for a Markdown document.
-struct MarkdownStats: Equatable {
-    var words: Int
+public struct MarkdownStats: Equatable, Sendable {
+    public var words: Int
+
+    public init(words: Int) { self.words = words }
 }
 
 /// One heading of a Markdown document, in document order. `index` is what the
 /// `glassine-outline://` anchor in the HTML carries, so a link annotation in the
 /// rendered PDF names exactly one heading.
-struct MarkdownHeading {
-    var level: Int
-    var title: String
-    var index: Int
+public struct MarkdownHeading: Sendable {
+    public var level: Int
+    public var title: String
+    public var index: Int
+
+    public init(level: Int, title: String, index: Int) {
+        self.level = level
+        self.title = title
+        self.index = index
+    }
 }
 
 /// Markdown -> HTML. Pure Swift, no AppKit, safe to call off the main thread.
@@ -48,11 +134,11 @@ struct MarkdownHeading {
 /// The HTML is a complete page with an inline stylesheet; page geometry is
 /// deliberately *not* in it (no `@page` rule) because the print info supplies
 /// the margins and WebKit would otherwise apply both.
-enum MarkdownHTML {
+public enum MarkdownHTML {
 
     /// Decode file bytes as text. UTF-8 is the rule; a UTF-16 byte-order mark is
     /// honoured, and anything else is reported the way an unreadable PDF is.
-    static func decode(_ data: Data, url: URL) throws -> String {
+    public static func decode(_ data: Data, url: URL) throws -> String {
         if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
             if let text = String(data: data, encoding: .utf16) { return text }
         }
@@ -79,7 +165,7 @@ enum MarkdownHTML {
     /// The headings come back with it: the caller turns them into the rendered
     /// PDF's outline, using the anchors this leaves around each one. So do the
     /// word-count statistics, which are counted from the same parse.
-    static func body(fromMarkdown markdown: String,
+    public static func body(fromMarkdown markdown: String,
                      baseDirectory: URL?) -> (html: String,
                                               headings: [MarkdownHeading],
                                               stats: MarkdownStats) {
@@ -101,8 +187,28 @@ enum MarkdownHTML {
 
     /// Wrap a formatted body in the full page: charset, CSP, and the stylesheet
     /// for the current styling.
-    static func page(body: String, title: String, styling: MarkdownStyling) -> String {
-        """
+    ///
+    /// `platformCSS` is an optional **third** layer, emitted after the style
+    /// layer, for corrections a platform's *display* pipeline forces on the
+    /// document. It exists for exactly one thing today: iOS inverts dark mode in
+    /// sRGB (`255 - v`) where macOS inverts in linear light, so the near-white
+    /// panel colours the Mac is calibrated for come out five levels off the page
+    /// there. See `ReaderTheme.markdownPlatformCSS` in the iOS app.
+    ///
+    /// It goes **last, after the style layer**, because the style layer is where
+    /// both the six built-ins and a user's own `.css` live — they share one slot
+    /// (`MarkdownStyling.css`), and every built-in sets `--code-bg` itself, so a
+    /// correction placed before it would be overridden by all six and correct
+    /// nothing. The cost is that a custom stylesheet's own panel colour is
+    /// overridden too on iOS; `!important` is its escape hatch.
+    ///
+    /// Passing nothing emits nothing — not an empty `<style>` — so the macOS
+    /// output is byte-for-byte what it was before this parameter existed
+    /// (`MarkdownHTMLSnapshotTests` is the guard).
+    public static func page(body: String, title: String, styling: MarkdownStyling,
+                            platformCSS: String? = nil) -> String {
+        let platformLayer = platformCSS.map { "\n<style>\($0)</style>" } ?? ""
+        return """
         <!DOCTYPE html>
         <html><head>
         <meta charset="utf-8">
@@ -110,7 +216,7 @@ enum MarkdownHTML {
         content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
         <title>\(escape(title))</title>
         <style>\(baseStyle(styling))</style>
-        <style>\(styling.css)</style>
+        <style>\(styling.css)</style>\(platformLayer)
         </head><body>
         \(body)
         </body></html>
@@ -121,7 +227,7 @@ enum MarkdownHTML {
 
     /// Drop a leading YAML front-matter block (`---` … `---` or `…`), which is
     /// metadata for other tools and reads as a horizontal rule otherwise.
-    static func stripFrontMatter(_ text: String) -> String {
+    public static func stripFrontMatter(_ text: String) -> String {
         var body = text
         if body.hasPrefix("\u{FEFF}") { body.removeFirst() }
         guard body.hasPrefix("---") else { return body }
@@ -387,7 +493,7 @@ enum MarkdownHTML {
     /// The style layer for a built-in id; an unknown id falls back to the
     /// default. Each one sets the base layer's variables and adds only the few
     /// rules that give it its character.
-    static func builtInStyle(_ id: String) -> String {
+    public static func builtInStyle(_ id: String) -> String {
         switch id {
         case "modern": return modernStyle
         case "github": return githubStyle

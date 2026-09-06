@@ -6,3 +6,6 @@ Support/Glassine-partial-Info.plist
 .codex-memo/
 Support/IconConcepts/
 .claude/
+iOS/Glassine.xcodeproj/
+iOS/DerivedData*/
+AI Memos/

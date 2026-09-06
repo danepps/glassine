@@ -1,4 +1,5 @@
 import AppKit
+import GlassineCore
 
 /// A new tab with nothing in it yet: the recents picker, shown as a tab of the
 /// reader's own window group the way Safari shows its start page. Picking a

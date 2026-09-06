@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import GlassineCore
 import PDFKit
 
 /// The sidebar: page thumbnails or the document's outline, chosen by a
@@ -168,43 +169,29 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     // MARK: Selection
 
     private func destination(of node: PDFOutline) -> PDFDestination? {
-        // Real PDFs use either form.
-        node.destination ?? (node.action as? PDFActionGoTo)?.destination
-    }
-
-    /// Page index and downward offset of a destination, so positions compare
-    /// as a plain tuple (PDF y grows upwards). The y is clamped to the top of
-    /// the page: PDFView's own destination sits a gutter's height above it, and
-    /// an unspecified destination in a real PDF is a huge number.
-    private func ordinal(_ page: PDFPage, _ y: CGFloat) -> (Int, CGFloat)? {
-        guard let index = pdfView.document?.index(for: page), index != NSNotFound else {
-            return nil
-        }
-        return (index, -min(y, page.bounds(for: .cropBox).maxY))
-    }
-
-    private var currentOrdinal: (Int, CGFloat)? {
-        if let destination = pdfView.currentDestination, let page = destination.page,
-           let ordinal = ordinal(page, destination.point.y) {
-            return ordinal
-        }
-        guard let page = pdfView.currentPage else { return nil }
-        return ordinal(page, page.bounds(for: .mediaBox).maxY)
+        OutlineSync.destination(of: node)
     }
 
     /// Highlight the last entry, in pre-order, that starts at or before the
-    /// reading position. Never navigates.
+    /// reading position. Never navigates. The rule and the ordinal arithmetic
+    /// are `OutlineSync`'s; the rows come from the outline view, so a chapter
+    /// the reader has collapsed is not a candidate.
     func syncSelection() {
         guard isViewLoaded, !outlineScrollView.isHidden, hasOutline,
-              let here = currentOrdinal else { return }
+              let here = OutlineSync.currentOrdinal(of: pdfView) else { return }
 
-        var best = -1
-        for row in 0..<outlineView.numberOfRows {
-            guard let node = outlineView.item(atRow: row) as? PDFOutline,
-                  let target = destination(of: node), let page = target.page,
-                  let start = ordinal(page, target.point.y) else { continue }
-            if start <= here { best = row }
+        let document = pdfView.document
+        let rows: [OutlineEntry] = (0..<outlineView.numberOfRows).map { row in
+            guard let node = outlineView.item(atRow: row) as? PDFOutline else {
+                return OutlineEntry(node: PDFOutline(), depth: 0, ordinal: nil)
+            }
+            var start: OutlineSync.Ordinal?
+            if let target = OutlineSync.destination(of: node), let page = target.page {
+                start = OutlineSync.ordinal(of: page, y: target.point.y, in: document)
+            }
+            return OutlineEntry(node: node, depth: 0, ordinal: start)
         }
+        let best = OutlineSync.index(atOrBefore: here, in: rows)
         guard best != outlineView.selectedRow else { return }
 
         isSyncingSelection = true
