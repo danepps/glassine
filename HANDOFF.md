@@ -766,6 +766,19 @@ Steps 1–4 are kept for setting up any further machine.
 6. **End to end:** `./build.sh --notarize` should finish with `accepted` and
    `source=Notarized Developer ID`.
 
+## Website and domains
+
+The product page is https://www.danepps.com/glassine, part of Dan's Next.js
+site (private repo `danepps/website`, cloned at `~/ClaudeCode/website`,
+Vercel project `website`; pushing `main` deploys production, pushing a branch
+makes a preview). The page lives in `app/glassine/`; its Download button is
+`https://github.com/danepps/glassine/releases/latest/download/Glassine.zip`,
+which works because `release.sh` uploads an unversioned `Glassine.zip` next to
+the versioned one on every release — keep that in place. `glassineapp.com`
+(DNS at Squarespace, A @ 76.76.21.21 / CNAME www → cname.vercel-dns.com) is
+attached to the same Vercel project and redirected to the page by a host rule
+in the site's `next.config.ts`; the canonical URL stays on danepps.com.
+
 ## Gotchas learned the hard way
 
 - **`release.sh <fake version>` is not a dry run.** With all three secrets
