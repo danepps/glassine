@@ -39,12 +39,13 @@ updated in place.
   pages, or one uninterrupted column with no page breaks at all. Reading
   continuously, the toolbar's page counter becomes a progress percentage, and
   ⌥⌘G jumps to one.
-- **One window, native tabs.** Every PDF opens as a tab (⌘T opens another,
-  ⇧⌘[ / ⇧⌘] switch, drag tabs out to split).
+- **One window, native tabs.** Every PDF opens as a tab (⇧⌘[ / ⇧⌘] switch, drag
+  tabs out to split). ⌘T and the tab bar's "+" open a start tab: the new tab
+  itself shows your recent files, and picking one fills that tab in place.
 - **Opens to your recent files, not a file dialog.** With nothing on screen
-  Glassine shows a Recents window (⇧⌘O any time): the last thirty files you
-  read, with where you left off in each, a filter field, drag-and-drop, and
-  "Open Other…" for everything else.
+  Glassine shows a Recents window (⇧⌘O any time), and a new tab shows the same
+  picker: the last thirty files you read, with where you left off in each, a
+  filter field, drag-and-drop, and "Open Other…" for everything else.
 - **Zippy.** Renders through PDFKit, the same engine as Preview. Launches cold in
   well under a second.
 - **Remembers where you were** in each file.
@@ -94,7 +95,9 @@ Sources/Glassine/
   MarkdownHTML.swift          Markdown -> HTML + headings + the print stylesheet
   MarkdownRenderer.swift      offscreen WKWebView that typesets HTML into a PDF
   FileWatcher.swift           vnode watcher behind Markdown auto-refresh
-  RecentsWindowController.swift the launch window: the files you have been in
+  RecentsViewController.swift   the recents picker: list, filter, drop target
+  RecentsWindowController.swift the launch window around that picker
+  StartTabWindowController.swift a new tab showing the picker until you pick
   ReaderWindowController.swift  window, toolbar, tabs, find, page field
   ReaderViewController.swift  the PDFView and dark-mode handling
   SidebarViewController.swift sidebar: page thumbnails and the outline pane

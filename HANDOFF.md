@@ -215,6 +215,26 @@ Dan's stated requirements, all met as of this handoff:
   The screen locked for part of the session, which blanks `screencapture` and
   empties the System Events window list; `CGWindowListCopyWindowInfo` keeps
   working through a lock and is how the window-presence checks were made.
+- **Start tabs landed 2026-09-05** on branch `start-tab`: ⌘T and the tab bar's
+  "+" no longer raise an Open panel. They add a `StartTabWindowController` — a
+  reader-group window titled "Recents" whose content is the same picker the
+  launch window shows — beside the current tab, and picking a document there
+  fills that tab in place (design bullet below). The picker came out of
+  `RecentsWindowController` into `RecentsViewController`, which both hosts use;
+  the launch window is unchanged to the eye. Runtime-verified on the ad-hoc
+  build, two documents open in one group: ⌘T giving a "Recents" tab with the
+  same title-bar and tab-bar height as the document tab, the picker on the
+  reader's black; a double-clicked row replacing that tab, in place, with the
+  first tab untouched; the "+" button doing the same; picking a document that is
+  already open selecting its tab and dropping the start tab; ⌘F reaching the
+  filter and narrowing the list; "Open Other…" from a start tab opening a
+  Markdown file into that tab's place; ⌘W closing a start tab like any tab; a
+  start tab as the last window *not* drawing the launch Recents window over
+  itself, and ⌘W on it bringing that window back exactly once; the same for
+  closing the last document tab; and the light (`appearance -int 1`) and dark
+  (`-int 2`) looks. **Not verified: a real drag onto a start tab** — still not
+  drivable from System Events; it is the same `RecentsDropView` the launch
+  window uses, wired to the same `onOpen`.
 
 ## Build, run, test
 
@@ -239,6 +259,17 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 - `screencapture -x /abs/path.png` works on this machine for visual checks;
   crop with `sips -c`. GUI keystroke automation via System Events is flaky
   (keystrokes can land in other apps); guard on Glassine being frontmost.
+- **A second copy of the app can be run alongside an already-running one** with
+  `open -n -a build/Glassine.app <file>` — worth knowing when another session
+  has left a Glassine running and quitting it would trample their work. Both are
+  called "Glassine", so drive yours by pid: `AXUIElementCreateApplication(pid)`
+  for the window list and frames, `NSRunningApplication(processIdentifier:)`
+  `.activate()` before any click (the frontmost app's window is the one a
+  CGEvent click lands in), and `CGEvent.postToPid` for key equivalents, which
+  goes into one process's queue rather than the HID tap. Screenshots still come
+  off the screen, so activate first and the right window is on top.
+  `postToPid` does *not* get past a locked screen: nothing becomes key there, so
+  ⌘T lands nowhere.
 - A locked screen blanks `screencapture` **and** empties System Events' window
   list, but `CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements],
   kCGNullWindowID)` keeps reporting every window's title, bounds and
@@ -262,7 +293,9 @@ swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
 | `MarkdownHTML.swift` | Markdown → HTML. Decode (UTF-8, UTF-16 by BOM), strip YAML front matter, `Markdown.Document` + `HTMLFormatter`, an `ImageInliner` rewriter that turns relative local images into `data:` URIs, a `HeadingAnchorer` rewriter that wraps each heading in an invisible `glassine-outline://` anchor and returns the heading list beside the HTML, a `TextCollector` walker behind the word count, and the stylesheet: a base layer of structure driven by CSS variables plus one style layer (six built-ins, or a custom file). Pure Swift, no AppKit, safe off-main. |
 | `MarkdownRenderer.swift` | `@MainActor` singleton. One offscreen `WKWebView` in a never-shown borderless window; serial job queue (a newer job for the same document supersedes a queued one); prints to a temp PDF and hands back `(Data, PDFDocument)`. A `.continuous` job is measured with `scrollHeight` after it loads and printed onto one page as tall as its content. Tears the web view down 30 s after the last Markdown document closes. |
 | `FileWatcher.swift` | vnode `DispatchSource` on the file *and* its parent directory, 250 ms debounce, `(inode, mtime, size)` gate, reopens the descriptor when the file is replaced or recreated. |
-| `RecentsWindowController.swift` | The launch window. A shared, non-tabbed 680×520 window listing `Prefs.recentDocuments` most recent first: icon, name, folder (tilde-abbreviated) plus the saved reading position, and a relative date. Filter field (⌘F, via the same `focusSearch:` selector the reader uses), Return/double-click to open, Delete or "Remove from List" to forget a row, "Open Other…" for the Open panel, Escape to leave (a beep if there is no document to go back to), and file URLs dropped anywhere on it. Also holds `RecentsTableView` (Return/Delete/Escape, which NSTableView handles for you otherwise), `RecentsDropView` and `RecentRowView`. |
+| `RecentsViewController.swift` | The recents picker itself, hosted by the launch window and by every start tab. Lists `Prefs.recentDocuments` most recent first: icon, name, folder (tilde-abbreviated) plus the saved reading position, and a relative date. Filter field (⌘F, via the same `focusSearch:` selector the reader uses), Return/double-click to open, Delete or "Remove from List" to forget a row, and file URLs dropped anywhere on it. It opens nothing itself: `onOpen`, `onOpenOther` and `onCancel` leave that to the host. `drawsListBackground: false` (a start tab) lets the window's black through instead of painting the control background over it. Also holds `RecentsTableView` (Return/Delete/Escape, which NSTableView handles for you otherwise), `RecentsDropView` and `RecentRowView`. |
+| `RecentsWindowController.swift` | The launch window: a shared, non-tabbed 680×520 window around a `RecentsViewController`. Opening a document hides it; Escape leaves (a beep if there is no document to go back to). |
+| `StartTabWindowController.swift` | A new tab with nothing in it yet. A reader-group window (same `tabbingIdentifier`, `.preferred` tabbing, unified toolbar with its own identifier and nothing in it but a flexible space) titled "Recents", holding a `RecentsViewController`. `present(besides:)` is what ⌘T and the "+" button call. Picking, dropping or "Open Other…" replaces it in place. |
 | `ReaderWindowController.swift` | Window, `NSSplitViewController` (sidebar + reader), unified toolbar, page indicator, search field + hit counter + previous/next match segmented control (⇧⌘G/⌘G equivalents), tabs, reading-position memory, black chrome in dark mode, window translucency and the backdrop blur. |
 | `ReaderViewController.swift` | `ReaderPDFView` (PDFView subclass: arrow-key paging, per-page highlight bookkeeping), appearance routine that installs the inversion filters. |
 | `SidebarViewController.swift` | Two panes behind a segmented control: `PDFThumbnailView` (mirrors the inversion filters) and an `NSOutlineView` table of contents driven from `PDFDocument.outlineRoot`, with `PDFOutline` objects as the items. Clicking a row navigates; `syncSelection()` follows the reading position. The outline is native text and is deliberately *not* filtered. |
@@ -572,6 +605,32 @@ tiles are the ones worth tuning.
   a privacy prompt for every protected folder they sit in (observed: a Desktop
   prompt on the first run) before the reader has asked for anything. An entry
   earns its bookmark the first time it is really opened.
+- **A start tab is replaced in place by the document window, not filled in.**
+  Nothing loads a document *into* a start tab: the tab is a window, and the
+  document gets a window of its own. What makes it read as "this tab became the
+  document" is the order of two things that already existed.
+  `ReaderWindowController.showWindow` adopts the frontmost visible reader-group
+  window as its tab host and inserts itself `.above` it — and the frontmost
+  reader-group window is the start tab the reader just picked in, so the
+  document lands immediately to its right. The start tab then closes itself from
+  `openDocument`'s completion handler, i.e. only once the document window is on
+  screen, so the group never momentarily collapses and the surviving tabs never
+  shuffle. Net effect: same position, other tabs untouched. A document that is
+  already open needs no special case — `openDocument` selects its existing tab
+  and calls back the same way, and the start tab closes behind it. A failed open
+  returns early and leaves the start tab exactly as it was. The one thing this
+  costs is "Open Other…": `NSDocumentController.openDocument(_:)` runs the panel
+  and opens the file with no callback at all, so a start tab uses
+  `beginOpenPanel(completionHandler:)` and opens the result itself.
+- **A start tab is a reader-group window on purpose.** Same `tabbingIdentifier`,
+  so `ReaderWindowController.anyWindowIsOpen`, the app delegate's
+  `isReaderWindow` check and the launch-window timing all count it without
+  knowing it exists: the launch Recents window does not appear behind a start
+  tab, and closing the last start tab brings it back like closing the last
+  document. It carries a toolbar with nothing in it but a flexible space purely
+  so the title bar keeps the reader's height — an untoolbared window in the same
+  tab group is a shorter title bar and a jump when switching tabs — and its
+  toolbar identifier is per-window for the reason below.
 - **The launch check is deferred, not immediate.** A file double-clicked in the
   Finder arrives as its own Apple Event that can be delivered either side of
   `applicationDidFinishLaunching`, and macOS window restoration reopens the last
@@ -725,6 +784,19 @@ Steps 1–4 are kept for setting up any further machine.
   all — a continuous document shows a percentage in the same capsule — so the
   per-window identifier is belt and braces. Keep it: any future item that comes
   and goes would hit exactly this again.
+- **`contentViewController =` resizes the window to the view's fitting size**,
+  the same trap `sizeWindowInitially` documents for the reader's split view. The
+  Recents window moved from `contentView` to a content view *controller* when
+  the picker was extracted, and had to restate `setContentSize` afterwards — and
+  before `center()` and `setFrameAutosaveName`, or it would autosave the
+  collapsed frame.
+- **Anything opaque inside a window whose background is the reader's black shows
+  up as a slab.** A start tab's window background is painted by
+  `WindowChrome.apply` like a reader window's, and the picker sits straight on
+  it, so its scroll view and table have to stop drawing their own
+  `controlBackgroundColor` (`drawsListBackground: false`) or the list is a dark
+  grey rectangle inside black chrome with black margins around it. The launch
+  window is a plain window and keeps the default.
 - **A locked screen breaks notarization, and only notarization.** `notarytool`
   keeps its `notary` profile in the data-protection keychain, which locks with
   the screen; the Developer ID identity and the Sparkle key live in the login
