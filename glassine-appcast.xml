@@ -10,6 +10,16 @@
         <description>Most recent updates to Glassine.</description>
         <language>en</language>
         <item>
+            <title>1.3.1</title>
+            <pubDate>Sat, 05 Sep 2026 20:31:32 -0500</pubDate>
+            <link>https://github.com/danepps/glassine</link>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>1.3.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/danepps/glassine/releases/download/v1.3.1/Glassine-1.3.1.zip" length="5025018" type="application/octet-stream" sparkle:edSignature="9sD2YUzEcWf4Xz9zyElJ2+J88JO3ctvOOFxlMTFovoj5AH2cWzkJoPijiGYO6e2CMgOD+zg4fK1P0S0dhA2hDA=="/>
+        </item>
+        <item>
             <title>1.3.0</title>
             <pubDate>Sat, 05 Sep 2026 20:07:25 -0500</pubDate>
             <link>https://github.com/danepps/glassine</link>
