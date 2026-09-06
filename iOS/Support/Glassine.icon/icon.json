@@ -1,0 +1,52 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.23529,0.29020,0.35294,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Glassine-Dark-1024.png",
+          "name": "Dark Artwork",
+          "opacity-specializations": [
+            {
+              "value": 0
+            },
+            {
+              "appearance": "dark",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "image-name": "Glassine-Light-1024.png",
+          "name": "Default Artwork",
+          "opacity-specializations": [
+            {
+              "value": 1
+            },
+            {
+              "appearance": "dark",
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "name": "Page",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "iOS",
+      "macOS"
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Glassine is a reader. It has no network code at all: the only URL
+	     loading in the app is a WKWebView with a "default-src 'none'" CSP,
+	     content JavaScript off, and a data: URI for the one image source it
+	     allows. Nothing leaves the device, so there is nothing to track and
+	     nothing to collect. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<!-- Required-reason APIs. Grepped, not guessed: the only two categories the
+	     app or GlassineCore touch are UserDefaults and file timestamps. No
+	     disk-space, system-boot-time or active-keyboard API is called anywhere
+	     in Core, iOS/Sources, or the one dependency (swift-markdown +
+	     swift-cmark, checked too). -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!-- GlassineCore.Prefs is a UserDefaults façade over the app's own
+			     suite (appearance, invert, dark paper, Markdown style/size/
+			     layout, the recent-documents list and the last-position LRU),
+			     and DocumentSession/RootView read NSArgumentDomain for the
+			     DEBUG -open hook. Never an App Group; the data stays in this
+			     app's container. -->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- GlassineCore.FileWatcher.signature(of:) calls stat(2) and reads
+			     st_mtimespec to tell an edit from a touch, which is what drives
+			     Markdown auto-refresh. The file is either in the app's own
+			     Documents container (C617.1) or one the person picked with a
+			     document picker (3B52.1); both cases happen. -->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+				<string>3B52.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

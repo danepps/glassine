@@ -1,0 +1,102 @@
+# XcodeGen spec for the iOS app. The Mac app has no Xcode project — it is a
+# Swift Package plus build.sh — but an iOS app bundle needs a project, so this
+# file is the source of truth and iOS/Glassine.xcodeproj is generated (and
+# gitignored). Regenerate with build-ios.sh, which runs xcodegen every time.
+name: Glassine
+options:
+  bundleIdPrefix: com.epps
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  # The portable half of the app, shared with the Mac executable. A local path
+  # dependency, so there is nothing to resolve and nothing to check in.
+  GlassineCore:
+    path: ../Core
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_CONCURRENCY: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: 82H77TF7AH
+    CODE_SIGN_STYLE: Automatic
+    SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+targets:
+  Glassine:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources
+      - path: Support/Glassine.icon
+        buildPhase: resources
+      # The app icon lives in the .icon package above, not here. This catalog
+      # holds one colour set, LaunchBackground, which UILaunchScreen names.
+      - path: Support/Assets.xcassets
+        buildPhase: resources
+      # Required by App Store Connect for every upload; the app declares
+      # UserDefaults and file timestamps and nothing else.
+      - path: Support/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    dependencies:
+      - package: GlassineCore
+        product: GlassineCore
+    # No `info:` key: XcodeGen *writes* the plist named there, clobbering a
+    # hand-written one. INFOPLIST_FILE alone points the build at
+    # Support/Info.plist and leaves it untouched.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.epps.Glassine
+        PRODUCT_NAME: Glassine
+        INFOPLIST_FILE: Support/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: Glassine
+        ENABLE_PREVIEWS: YES
+
+  # XCUITest. Drives the built app through the simulator: everything in the
+  # reader that only a finger can reach.
+  GlassineUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Glassine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.epps.GlassineUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Glassine
+        # Swift 5 language mode for the tests only. XCTest's own API is
+        # main-actor-isolated but its `expectation(for:evaluatedWith:)` sends
+        # the (non-Sendable) XCTestCase, so a Swift 6 XCUITest cannot use the
+        # predicate expectations at all. The app itself stays Swift 6 with
+        # strict concurrency `complete`.
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+
+schemes:
+  Glassine:
+    build:
+      targets:
+        Glassine: all
+        GlassineUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - GlassineUITests
+    archive:
+      config: Release

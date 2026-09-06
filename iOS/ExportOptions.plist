@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The real one: export the archive and hand it straight to App Store
+	     Connect, from which TestFlight distributes it. `release-ios.sh` uses
+	     ExportOptions-local.plist instead under --no-upload, which is the same
+	     signing with `destination` set to `export`. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<!-- Manual signing, on purpose. Automatic export insists on *cloud-managed*
+	     signing and this account has no access to it (403 FORBIDDEN_ERROR,
+	     "You haven't been given access to cloud-managed distribution
+	     certificates", 2026-09-06), so the export names the local Apple
+	     Distribution certificate and the App Store profile "Glassine iOS App
+	     Store" (created through the App Store Connect API, installed in
+	     ~/Library/Developer/Xcode/UserData/Provisioning Profiles/). A second
+	     Mac needs that profile installed too; the release script's preflight
+	     checks for it. See HANDOFF, "Releasing to TestFlight". -->
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.epps.Glassine</key>
+		<string>Glassine iOS App Store</string>
+	</dict>
+	<key>teamID</key>
+	<string>82H77TF7AH</string>
+	<!-- dSYMs go up with the build, so a TestFlight crash report comes back
+	     symbolicated. -->
+	<key>uploadSymbols</key>
+	<true/>
+	<!-- The version and build number are set in iOS/project.yml by the release
+	     script, which is the only place they are decided. Letting Xcode manage
+	     them would silently renumber a build behind the script's back. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
