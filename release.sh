@@ -156,7 +156,12 @@ git -C "$ROOT" commit -m "Release v$VERSION"
 git -C "$ROOT" tag "v$VERSION"
 git -C "$ROOT" push origin "v$VERSION"
 
-gh release create "v$VERSION" "$ZIP" \
+# The versioned zip is what the appcast signs and points at. The unversioned
+# copy exists so .../releases/latest/download/Glassine.zip is a stable
+# direct-download URL for the website.
+STABLE_ZIP="$RELEASES/Glassine.zip"
+cp "$ZIP" "$STABLE_ZIP"
+gh release create "v$VERSION" "$ZIP" "$STABLE_ZIP" \
   --repo "$REPO" \
   --title "Glassine $VERSION" \
   --notes "$NOTES"
