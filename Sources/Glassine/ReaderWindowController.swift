@@ -69,6 +69,39 @@ private enum BackdropBlur {
     }()
 }
 
+/// Chrome, translucency and the backdrop blur in one pass, because they share
+/// the window's background colour. In dark mode the title bar and tab bar sit on
+/// the same tone as the inverted page paper; the toolbar controls keep their own
+/// glass capsules. Tabs are separate windows, so every window does this for
+/// itself -- a start tab included, which is why this is not a method on the
+/// reader's controller.
+enum WindowChrome {
+
+    static func apply(to window: NSWindow, content: NSView?) {
+        let dark = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        window.titlebarAppearsTransparent = dark
+        window.titlebarSeparatorStyle = dark ? .none : .automatic
+        // Black unless the pages are actually being lifted off black.
+        let level = Prefs.darkPaper
+        let paper: NSColor = (level != .black && Prefs.invertInDarkMode)
+            ? NSColor(white: level.lift, alpha: 1) : .black
+
+        let opacity = Prefs.windowOpacity
+        let translucent = opacity < Prefs.maxWindowOpacity
+        // Fading the window itself (alphaValue) leaves the desktop behind it
+        // perfectly sharp. Fading only the content leaves the window's own
+        // pixels transparent, and transparent pixels are what the compositor
+        // blurs behind.
+        window.isOpaque = !translucent
+        window.backgroundColor = translucent ? .clear : (dark ? paper : .windowBackgroundColor)
+        if let content {
+            content.wantsLayer = true
+            content.alphaValue = translucent ? opacity : 1
+        }
+        BackdropBlur.apply?(window, translucent && Prefs.windowBlur ? BackdropBlur.radius : 0)
+    }
+}
+
 /// One window (or tab) per document: sidebar + PDFView, a unified toolbar with
 /// a page indicator and a search field, incremental find, and reading-position
 /// memory.
@@ -229,34 +262,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         applyWindowAppearance()
     }
 
-    /// Chrome and translucency in one pass, because they share the window's
-    /// background colour. In dark mode the title bar and tab bar sit on the same
-    /// tone as the inverted page paper; the toolbar controls keep their own
-    /// glass capsules. Tabs are separate windows, so every controller does this
-    /// for its own.
     private func applyWindowAppearance() {
         guard let window else { return }
-        let dark = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        window.titlebarAppearsTransparent = dark
-        window.titlebarSeparatorStyle = dark ? .none : .automatic
-        // Black unless the pages are actually being lifted off black.
-        let level = Prefs.darkPaper
-        let paper: NSColor = (level != .black && Prefs.invertInDarkMode)
-            ? NSColor(white: level.lift, alpha: 1) : .black
-
-        let opacity = Prefs.windowOpacity
-        let translucent = opacity < Prefs.maxWindowOpacity
-        // Fading the window itself (alphaValue) leaves the desktop behind it
-        // perfectly sharp. Fading only the content leaves the window's own
-        // pixels transparent, and transparent pixels are what the compositor
-        // blurs behind.
-        window.isOpaque = !translucent
-        window.backgroundColor = translucent ? .clear : (dark ? paper : .windowBackgroundColor)
-        if let content = contentViewController?.view {
-            content.wantsLayer = true
-            content.alphaValue = translucent ? opacity : 1
-        }
-        BackdropBlur.apply?(window, translucent && Prefs.windowBlur ? BackdropBlur.radius : 0)
+        WindowChrome.apply(to: window, content: contentViewController?.view)
     }
 
     /// Dark mode recolours the matched glyphs green in ReaderPage; light mode
@@ -1061,10 +1069,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         return true
     }
 
-    /// Opening a new tab means opening another document, which also makes
-    /// AppKit show the "+" button in the tab bar.
+    /// A new tab is a start tab -- the recents picker, in the tab, rather than
+    /// an Open panel in front of the window. Implementing this is also what
+    /// makes AppKit show the "+" button in the tab bar.
     override func newWindowForTab(_ sender: Any?) {
-        NSDocumentController.shared.openDocument(sender)
+        StartTabWindowController.present(besides: window)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
