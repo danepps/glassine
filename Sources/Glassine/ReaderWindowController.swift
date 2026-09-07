@@ -1,5 +1,6 @@
 import AppKit
 import GlassineCore
+import ObjectiveC
 import PDFKit
 
 extension NSToolbarItem.Identifier {
@@ -70,6 +71,81 @@ private enum BackdropBlur {
     }()
 }
 
+/// Stable, unique address used as the associated-object key that ties a
+/// window's title-bar backdrop to the window itself.
+nonisolated(unsafe) private let titlebarBackdropKey =
+    UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+
+/// The band above the content view -- title bar, toolbar, tab bar -- painted in
+/// the page's own colour at the page's own alpha.
+///
+/// Translucency fades the *content* view, so without this the band has alpha 0:
+/// no colour of its own, and no pixels for the compositor to blur behind, which
+/// left the desktop showing through the toolbar razor-sharp above a blurred
+/// page, with the glass capsules refracting that sharp edge. The plate sits in
+/// the window's theme frame *below* the title-bar container, so the capsules,
+/// the title and the tab bar still draw on top of it.
+private final class TitlebarBackdrop: NSView {
+
+    /// The content view whose top edge is the band's bottom edge. Its frame
+    /// moves when the tab bar comes and goes, and when the window resizes.
+    private weak var content: NSView?
+
+    init(content: NSView) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        track(content)
+    }
+
+    /// Follow this content view's top edge. Re-pointing is cheap and covers a
+    /// window whose content view is swapped out from under the plate.
+    func track(_ content: NSView) {
+        guard content !== self.content else { return }
+        if let old = self.content {
+            NotificationCenter.default.removeObserver(
+                self, name: NSView.frameDidChangeNotification, object: old)
+        }
+        self.content = content
+        content.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(relayout),
+            name: NSView.frameDidChangeNotification, object: content)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        // The theme frame resizes with the window; the content view's own
+        // notification covers most of it, but not a window that grows without
+        // changing its content height (a sheet, a full-screen transition).
+        superview?.postsFrameChangedNotifications = true
+        if let superview {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(relayout),
+                name: NSView.frameDidChangeNotification, object: superview)
+        }
+        relayout()
+    }
+
+    /// Everything in the theme frame above the content view, full width.
+    @objc func relayout() {
+        guard let themeFrame = superview, let content else { return }
+        let bottom = content.frame.maxY
+        frame = NSRect(x: themeFrame.bounds.minX, y: bottom,
+                       width: themeFrame.bounds.width,
+                       height: max(0, themeFrame.bounds.maxY - bottom))
+    }
+
+    func paint(_ color: NSColor, alpha: CGFloat) {
+        layer?.backgroundColor = color.cgColor
+        alphaValue = alpha
+    }
+}
+
 /// Chrome, translucency and the backdrop blur in one pass, because they share
 /// the window's background colour. In dark mode the title bar and tab bar sit on
 /// the same tone as the inverted page paper; the toolbar controls keep their own
@@ -80,8 +156,6 @@ enum WindowChrome {
 
     static func apply(to window: NSWindow, content: NSView?) {
         let dark = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        window.titlebarAppearsTransparent = dark
-        window.titlebarSeparatorStyle = dark ? .none : .automatic
         // Black unless the pages are actually being lifted off black.
         let level = Prefs.darkPaper
         let paper: NSColor = (level != .black && Prefs.invertInDarkMode)
@@ -89,6 +163,11 @@ enum WindowChrome {
 
         let opacity = Prefs.windowOpacity
         let translucent = opacity < Prefs.maxWindowOpacity
+        // Translucent, the band is painted by the backdrop below rather than by
+        // AppKit's own material: light mode's opaque title bar would otherwise
+        // stand as a hard seam above a see-through page.
+        window.titlebarAppearsTransparent = dark || translucent
+        window.titlebarSeparatorStyle = (dark || translucent) ? .none : .automatic
         // Fading the window itself (alphaValue) leaves the desktop behind it
         // perfectly sharp. Fading only the content leaves the window's own
         // pixels transparent, and transparent pixels are what the compositor
@@ -99,7 +178,50 @@ enum WindowChrome {
             content.wantsLayer = true
             content.alphaValue = translucent ? opacity : 1
         }
+        // "Same as the page" is literal: black or the Dark Paper lift in dark
+        // mode, the page's white in light mode -- not `.windowBackgroundColor`.
+        applyTitlebarBackdrop(to: window, translucent: translucent,
+                              color: dark ? paper : .white, opacity: opacity)
         BackdropBlur.apply?(window, translucent && Prefs.windowBlur ? BackdropBlur.radius : 0)
+    }
+
+    /// Installs, repaints or removes the window's title-bar backdrop. At 100%
+    /// the view goes away entirely, so an opaque window is what it always was.
+    private static func applyTitlebarBackdrop(to window: NSWindow, translucent: Bool,
+                                              color: NSColor, opacity: Double) {
+        let existing = objc_getAssociatedObject(window, titlebarBackdropKey) as? TitlebarBackdrop
+        guard translucent, let content = window.contentView, let themeFrame = content.superview
+        else {
+            existing?.removeFromSuperview()
+            objc_setAssociatedObject(window, titlebarBackdropKey, nil,
+                                     .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            return
+        }
+        let backdrop = existing ?? TitlebarBackdrop(content: content)
+        if backdrop.superview !== themeFrame {
+            // Private view hierarchy: the title-bar container is the ancestor of
+            // the close button that the theme frame owns directly. Going below
+            // it keeps the toolbar, the title and the tab bar drawing on top; if
+            // AppKit ever renames or reparents it, the plate lands at the very
+            // back instead, which still covers the band (nothing else paints
+            // there) and still sits under the content view.
+            let container = titlebarContainer(of: window, in: themeFrame)
+            themeFrame.addSubview(backdrop, positioned: .below, relativeTo: container)
+            objc_setAssociatedObject(window, titlebarBackdropKey, backdrop,
+                                     .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+        backdrop.track(content)
+        backdrop.paint(color, alpha: opacity)
+        backdrop.relayout()
+    }
+
+    private static func titlebarContainer(of window: NSWindow, in themeFrame: NSView) -> NSView? {
+        var view = window.standardWindowButton(.closeButton)?.superview
+        while let candidate = view {
+            if candidate.superview === themeFrame { return candidate }
+            view = candidate.superview
+        }
+        return nil
     }
 }
 

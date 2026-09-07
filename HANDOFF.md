@@ -714,6 +714,47 @@ Dan's stated requirements, all met as of this handoff:
   the same principle without waiting to find out); ⌘N from a hardware
   keyboard; and New Window showing Recents on the iPad after the fix (Dan was
   asked to try it from a clean launch).
+- **The title bar carried no colour at reduced opacity, and now it does
+  (2026-09-06).** Dan's screenshot of a dark reader at reduced opacity over a
+  Terminal showed the toolbar band razor-sharp — the window behind it reading
+  straight through while the page below was blurred — and macOS 26's glass
+  capsules (sidebar toggle, the page capsule, the search field, the find
+  chevrons) drawing notched grey outlines around that sharp edge. Cause:
+  `WindowChrome.apply` fades only the *content* view, so the band above it had
+  alpha 0; a band with no colour of its own is also nothing for
+  `CGSSetWindowBackgroundBlurRadius` — which weights the blur by the window's
+  own alpha — to blur behind, so the band never got the blur the page did. The
+  fix is `TitlebarBackdrop`: a layer-backed plate painted the page's own colour
+  (black, or the Dark Paper lift, in dark mode; in light mode `.white`, the
+  paper, not `.windowBackgroundColor`) at the content view's alpha, inserted
+  into the window's theme frame *below* the title-bar container so the toolbar,
+  the title and the tab bar still draw on top of it, sized from
+  `contentView.frame.maxY` to the top of the theme frame and re-laid-out from
+  the content view's `frameDidChange` so it grows when the tab bar appears. It
+  hangs off the window as an associated object and is removed the moment opacity
+  is back to 1. Light mode now also gets `titlebarAppearsTransparent` while
+  translucent, or its own opaque material stands as a hard seam over a
+  see-through page. Measured pid-isolated over a high-contrast test card ordered
+  *below* the reader window, with the app never activated (ScreenCaptureKit
+  composites the window over what is behind it with everything in front of it
+  excluded, so nothing on Dan's screen had to be raised): dark at 60 %, band vs
+  page across the seam **78.4 vs 78.8** of 255, where the old build read 150–240
+  vs 78.8; light at 60 %, **231.6 vs 231.8**, where the old build's opaque title
+  bar read 253 vs 236.5; dark at 30 %, 146.4 vs 145.7; Gray Paper at 60 %, 113.0
+  vs 109.3. In every one of them the card's sharp text is gone from the band and
+  the same blur runs through the toolbar as through the page, and the capsules
+  read as glass instead of notched outlines. At 100 % the old build and the new
+  one are **byte-identical, worst channel delta 0** (window-only captures,
+  1264 × 824, dark and light). The faint 1 pt line AppKit draws at the content
+  edge is unchanged and pre-existing (value 24 on black at 100 %). Not verified:
+  the plate being *removed* on the way back to 100 % (⌥⌘↑ needs a key window and
+  the app was deliberately never activated, so only the launch-at-100 % path was
+  measured); the start tab's own window (⌘T likewise). And one thing the plate
+  cannot reach: the tab bar draws a ~54 % black scrim over whatever is behind it
+  inside the window, so with the plate there the tab strip reads about half the
+  band's tone (37 vs 78 at 60 %, 60 vs 130 at 30 %) — a flat band in the right
+  colour family rather than the sharp desktop it used to be, but not the page's
+  tone.
 
 ## Build, run, test
 
@@ -939,6 +980,22 @@ tiles are the ones worth tuning.
   bottom-most view) was therefore never needed, and would have meant
   re-parenting the split view controller's view — which is what gives the
   sidebar its full-height layout — so it stayed unwritten.
+- **The title bar gets a plate of its own, in the theme frame.** Content alpha
+  leaves the band above the content view at alpha 0, which is why a translucent
+  window used to show the desktop through its toolbar razor-sharp while the page
+  was blurred. `WindowChrome` inserts a `TitlebarBackdrop` — the page's colour at
+  the page's alpha — into `window.contentView!.superview!` (the `NSThemeFrame`),
+  `positioned: .below` the title-bar container, so the toolbar's glass capsules,
+  the title and the tab bar still draw over it. That is a dependency on a private
+  view hierarchy and is written to survive its going away: the container is found
+  as the ancestor of `standardWindowButton(.closeButton)` that the theme frame
+  owns directly, and if that lookup ever returns nil the plate is added with
+  `relativeTo: nil`, which puts it at the very back — still covering the band
+  (nothing else paints there) and still under the content view. This is *not*
+  `.fullSizeContentView` returning: content still stops below the toolbar, for
+  the reason in the decision above. In translucent mode light windows get
+  `titlebarAppearsTransparent` too, so the plate is what colours the band in both
+  appearances; opaque windows are untouched, and the plate is removed at 100 %.
 - **`pageShadowsEnabled = false` when inverted.** Inverted drop shadows
   showed as bright halos and a light band at the bottom of the view.
 - **Find highlights in dark mode are custom-drawn** in `ReaderPage.draw`: a
