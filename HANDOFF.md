@@ -1951,3 +1951,24 @@ in the site's `next.config.ts`; the canonical URL stays on danepps.com.
 - A custom Markdown style is trusted: it is the style layer, so it can override
   anything the base layer sets, including the geometry that makes continuous
   layout measurable. Only the CSP still applies.
+- **TO FIX NEXT (Dan, 2026-09-06 night): the Recents start tab is not
+  translucent, it is transparent.** His screenshot (`AI Memos/
+  translucent-recents-tab-2026-09-06.png`, local only) shows a Recents tab at
+  reduced opacity in dark mode with the Passwords app's lock screen showing
+  through it **sharp** — no backdrop blur anywhere in the list area — and every
+  row label drawn with a dark outlined, embossed look. Same family as the
+  title-bar band fixed in 1.4.1, one level down: the start tab's content view
+  is faded to `Prefs.windowOpacity`, but the Recents list (`RecentsViewController`
+  in a `StartTabWindowController`) paints no background of its own, so the
+  window's pixels there have alpha ≈ 0, `CGSSetWindowBackgroundBlurRadius`
+  (weighted by alpha) skips them, and the labels are antialiased onto a clear
+  layer with nothing behind — which is where the halo comes from (AppKit's
+  font smoothing needs an opaque backing; the row text looks stroked without
+  it). Fix shape: give the start tab's content the same page-coloured backing
+  the reader has (paper at full alpha *inside* the faded content view — black,
+  the Dark Paper lift, or white in light mode), so the window's alpha is
+  uniform and the blur and the text both behave, and check the sidebar's
+  Recents pane and the standalone Recents window (`RecentsWindowController`,
+  which never calls `WindowChrome.apply` at all) for the same hole. Verify at
+  0.6 and 0.3 over something with sharp text behind, pid-isolated, both
+  appearances, and re-check the tab-bar strip while there. Not started.
