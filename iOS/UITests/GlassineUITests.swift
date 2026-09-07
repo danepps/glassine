@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// XCUITest over the built app. Everything here needs a finger: `simctl` can
@@ -277,6 +278,41 @@ final class GlassineUITests: XCTestCase {
         // The new scene takes a moment to connect and lay out.
         _ = app.buttons["pageCapsule"].waitForExistence(timeout: 20)
         attachScreenshot("second-scene")
+    }
+
+    /// "New Window" in the reader's ellipsis menu -- the discoverable route to a
+    /// second document, and the iPad's answer to the Mac's Cmd-T. iPad only: an
+    /// iPhone has one scene and the item is not in the menu there.
+    ///
+    /// What is asserted is the item and what it does *not* do: the document that
+    /// was open is still open afterwards, which is the whole complaint the item
+    /// answers -- until now a second document meant losing the first. The new
+    /// scene itself is not asserted, because the iPadOS 26 simulator does not
+    /// bring it forward: measured from inside the app, `connectedScenes` goes
+    /// from one to two and the second `RootView` appears with no document (so it
+    /// is the Recents picker), but the shell leaves that scene behind the
+    /// reader and its window carries no content in the accessibility tree, so
+    /// XCUITest can see neither its list nor its "Open Other…" button.
+    func testNewWindowFromMoreMenu() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad,
+                          "a second scene needs an iPad")
+        let app = launch()
+        waitForReader(app)
+        // Not the `pageCapsule` helper: once a second scene exists the query
+        // matches a capsule in more than one window, and reading `.value` off a
+        // query that matches several is an error rather than an answer.
+        let capsule = app.buttons["pageCapsule"].firstMatch
+        let readout = (capsule.value as? String) ?? ""
+        app.buttons["moreMenu"].firstMatch.tap()
+        let item = app.buttons["newWindowButton"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5), "no New Window item in the menu")
+        item.tap()
+        // The scene takes a moment to connect; the reader must survive it.
+        XCTAssertTrue(capsule.waitForExistence(timeout: 20),
+                      "the reader went away when a new window was asked for")
+        XCTAssertEqual((capsule.value as? String) ?? "", readout,
+                       "the open document should be untouched by a new window")
+        attachScreenshot("new-window-from-menu")
     }
 
     /// The system document picker, and an attempt at actually choosing a file

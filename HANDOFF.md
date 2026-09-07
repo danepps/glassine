@@ -625,6 +625,95 @@ Dan's stated requirements, all met as of this handoff:
   simulator timings; and still, as before, touch by hand (tap, drag, pinch,
   text selection under the filter), iCloud files, dark mode judged by eye, and
   the Share and Print sheets.
+- **A second window became a menu item on 2026-09-06**, because Dan's hand
+  testing on the iPad turned up the one thing the port had no answer for:
+  "there's no way to open a new doc without closing the existing one". The
+  sidebar's Recents pane opens *in place of* what is on screen, and the only
+  route to a second scene was "Open in New Window" inside a long-press context
+  menu — the Mac's ⌘T with nothing discoverable in front of it. So the reader's
+  ellipsis menu now carries **New Window** (`plus.rectangle.on.rectangle`, ⌘N,
+  its own group above Print), shown only where
+  `UIApplication.supportsMultipleScenes` is true so an iPhone — one scene, one
+  window — never sees an item that would do nothing; `ReaderPDFView` carries the
+  matching `UIKeyCommand`, routed through `ReaderCommand.newWindow` like ⌘F and
+  ⌥⌘G, so ⌘N works with the menu shut; and every Recents row has a **leading
+  swipe** to the same action, tinted blue, absent from the dimmed "Not found"
+  row (which keeps its trailing Remove, the one thing it is still for). The
+  context-menu item stays.
+  **`RootView.newWindow()` activates a scene with an *empty* activity of the
+  app's own type**, which `DocumentSession.url(from:)` reads as nothing, so the
+  new scene's `session` stays nil and it opens on the Recents picker — the iOS
+  start tab. The empty activity is not decoration: activating with
+  `userActivity: nil`, and with `activateSceneSession(for:)` (the iOS 17
+  spelling of the same call), *did* create the scene but left it in the
+  **background** — `connectedScenes` went one → two with states foregroundActive
+  and background, and that scene's window carried no content at all in the
+  accessibility tree — where with the activity it attaches and its `RootView`
+  appears with no document. `options` stays nil for the same kind of reason: a
+  `requestingScene`, or a `UIWindowSceneProminentPlacement`, moved the whole app
+  into iPadOS 26's **windowed** presentation, the reader becoming a floating
+  window with a close button and a "21 Hidden Windows" banner, which is not
+  something a menu item should do to a reader. Verified: **26 XCUITests pass on
+  the iPad Pro 13-inch (M5) simulator** (25 + the new
+  `testNewWindowFromMoreMenu`, which skips on iPhone through
+  `UIDevice.current.userInterfaceIdiom` and asserts what is observable — the
+  item is in the menu, and the document that was open is still open, at the same
+  page, afterwards), zero Swift warnings there and on the `iPhone 17 Pro` build,
+  `./build.sh --adhoc` still clean, and the open menu photographed on the
+  simulator: New Window in its own group over Print/Share, then Settings/Close.
+  The 13-inch simulator was **erased and re-seeded** at the end of that work —
+  the placement experiment had left it in windowed mode with 21 stray scene
+  sessions — so its container is new and the fixtures were copied in again.
+  Not verified: **that the new scene comes to the front**. The iPadOS 26
+  simulator leaves it behind the reader, so nothing visibly happens there and
+  XCUITest can see neither the new window's Recents list nor its "Open Other…"
+  button; the existing "Open in New Window" behaves the same way, so this is the
+  shell, not the call. Also unverified: ⌘N from a hardware keyboard, the leading
+  swipe by finger, and every bit of it on Dan's iPad.
+
+- **The XCUITests ran on the iPad (2026-09-06 evening): 26 of 26 passed in
+  381 s**, on Dan's iPad Pro 11-inch (3rd generation, iPadOS 26.6), with the
+  New Window test among them — the run compiled whatever was on disk, which by
+  then included the menu item. Getting the runner to start took two things, not
+  one: **Settings ▸ Developer ▸ UI Automation ▸ Enable UI Automation** on, *and
+  a restart of the iPad* — with the toggle on and the device unlocked the
+  runner still died after its 60 s "Timed out while enabling automation mode",
+  and only after the reboot (which asks for the passcode before the Mac's
+  developer services reconnect; `devicectl` shows the device as `connecting`
+  until then and `lockState` errors with "capability not supported") did the
+  first test start. Auto-Lock at Never for the duration. The recipe is the
+  simulator's `xcodebuild test` line with `-destination 'platform=iOS,id=<devicectl
+  identifier>'`, `-derivedDataPath iOS/DerivedData-device`, the
+  `TEST_RUNNER_GLASSINE_DOC`/`_MD` settings, and `-allowProvisioningUpdates`
+  with the API key so the runner app can be signed; the result bundle's
+  screenshots (`xcrun xcresulttool export attachments`) are **1668 × 2388**,
+  the 11-inch panel at 2×. **The run also produced a crash report that no test
+  noticed**: an `.ips` attachment timestamped at the end of
+  `testHardwareKeyboard`, `EXC_BAD_ACCESS … stack guard region` on the main
+  thread, with the stack a repeating cycle of `-[PDFView goToNextPage:]` →
+  `@objc ReaderPDFView.nextPage()` → `goToNextPage:` → … — **on iPadOS 26.6
+  PDFKit's `goToNextPage:` sends the view a selector named `nextPage`**, which
+  the runtime resolved to our private `@objc nextPage()` handler, which called
+  `goToNextPage:` again, forever. The iOS 26.5 simulator's PDFKit does not do
+  this, which is why 26 green simulator runs never saw it, and the test passed
+  because its assertions had run before the app fell over. Fixed by renaming
+  every `@objc` key-command handler in `ReaderPDFView` with a `command…`
+  prefix (`commandNextPage` and so on; the comment above them says why a
+  private `@objc` name is not private at all). Verified on the iPad: after the
+  rename, `testHardwareKeyboard` and `testNewWindowFromMoreMenu` passed there
+  and the result bundle carried **no** `.ips` at all, where the full run's had
+  one; the simulator build is warning-free. The same hand session found a
+  second thing the simulator could not: **New Window opened a second window
+  that showed report.pdf again instead of Recents.** That was the DEBUG
+  `-open report.pdf` launch argument the app had been started with —
+  `openLaunchArgumentIfNeeded()` runs from every scene's `onAppear` with
+  `session == nil`, and the argument sits in NSArgumentDomain for the life of
+  the process — so it now fires once per process (`launchArgumentConsumed`).
+  A TestFlight build has no such hook and was never affected. Not verified:
+  whether `previousPage`, `firstPage` or `lastPage` collided too (renamed on
+  the same principle without waiting to find out); ⌘N from a hardware
+  keyboard; and New Window showing Recents on the iPad after the fix (Dan was
+  asked to try it from a clean launch).
 
 ## Build, run, test
 
@@ -1118,8 +1207,8 @@ it; it consumes `GlassineCore` and nothing under `Sources/Glassine`.
 | `PrefsModel.swift` | `@Observable` mirror of the four preferences the reader reacts to, refreshed from `.glassinePrefsChanged`. Writes go through `Prefs`, never to the mirror. |
 | `DocumentSession.swift` | One document for one scene: URL + security scope held for the session, the coordinated read, the iCloud download wait, the `PDFDocument`, `FindController` (this class is its delegate), `ReadingPosition` plus the iOS-specific position *save*, the outline entries and current selection, the page readout, the go-to-page dialog's state, and a `kind` with `.markdown` reserved. `PDFDocumentBridge` is the `PDFDocumentDelegate`: `ReaderPage.self` for pages, PDFKit's find callbacks hopped to the main actor. |
 | `RootView.swift` | The scene. `NavigationSplitView` on iPad with a Recents/Thumbnails/Contents picker over the pane; a `NavigationStack` with the panes as a detented sheet on iPhone. Opening (`onOpenURL`, `onContinueUserActivity`, the document picker, the DEBUG `-open` argument), closing, and "Open in New Window" through `requestSceneSessionActivation`. |
-| `RecentsList.swift` | `RecentsModel.rows()` as a `List` with `.searchable`, a context menu, swipe-to-remove, a drop destination, and a dimmed "Not found" row that opens nothing. Plus `DocumentPicker`, the `asCopy: false` document-picker wrapper behind "Open Other…". |
-| `ReaderView.swift` | The chrome: title (with Phase 3's subtitle slot), the page capsule and its Go to Page alert, the search button, the ellipsis menu (panes on iPhone, Print, Share, Settings, Close), and the bottom find bar with its counter and chevrons. Only the page goes inside `pageInversion`. |
+| `RecentsList.swift` | `RecentsModel.rows()` as a `List` with `.searchable`, a context menu, swipe-to-remove trailing, a leading swipe to New Window (iPad only, and never on a missing row), a drop destination, and a dimmed "Not found" row that opens nothing. Plus `DocumentPicker`, the `asCopy: false` document-picker wrapper behind "Open Other…". |
+| `ReaderView.swift` | The chrome: title (with Phase 3's subtitle slot), the page capsule and its Go to Page alert, the search button, the ellipsis menu (panes on iPhone, New Window above Print wherever `supportsMultipleScenes` is true, Print, Share, Settings, Close), and the bottom find bar with its counter and chevrons. Only the page goes inside `pageInversion`. |
 | `ReaderPDFView.swift` | `PDFView` subclass hosting `FindHighlighter`, exposing PDFKit's inner `UIScrollView`, and carrying the key commands (←/↑/→/↓, ⌘↑/⌘↓, ⌘F, ⌘G, ⇧⌘G, ⌥⌘G, Escape, ⌘+/⌘−/⌘0). Plus the representable that configures it and sets the pre-filter background. |
 | `ThumbnailsPane.swift` | `PDFThumbnailView` bound to the reader's `PDFView`, under the same inversion chain so thumbnails match the pages. |
 | `ContentsPane.swift` | `List` over `OutlineSync.entries(of:in:)`, indented by depth, the entry the reader is inside highlighted and scrolled to. Native text, deliberately unfiltered. |

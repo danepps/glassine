@@ -12,6 +12,7 @@ enum ReaderCommand {
     case previousMatch
     case endFind
     case goToPage
+    case newWindow
 }
 
 /// `PDFView` with the three additions the Mac's `ReaderPDFView` has: the
@@ -22,6 +23,18 @@ enum ReaderCommand {
 /// shortcuts, so most of these are one-line forwards -- but they have to be
 /// declared, because `UIKeyCommand` has no equivalent of AppKit's responder
 /// chain picking up `goToNextPage:` from a menu item.
+///
+/// Every handler is named `command…`, and that prefix is load-bearing. The
+/// handlers were once `nextPage()`, `previousPage()` and so on, and on Dan's
+/// iPad Pro (iPadOS 26.6) PDFKit's own `goToNextPage:` turned out to call a
+/// selector of exactly that name on the view -- which the Objective-C runtime
+/// resolved to *our* `@objc nextPage`, which called `goToNextPage:`, which
+/// called `nextPage`… until the stack guard page was hit and the app died with
+/// `EXC_BAD_ACCESS` at the end of the hardware-keyboard test (the iOS 26.5
+/// simulator's PDFKit does no such thing, so 26 green tests there never saw
+/// it). A private `@objc` method is still a selector on the class, and a
+/// subclass has no way to know which unpublished selectors its superclass
+/// sends itself; a prefix no framework would use is the only defence.
 final class ReaderPDFView: PDFView {
 
     /// Platform-independent highlight bookkeeping; this view is just its host.
@@ -65,23 +78,27 @@ final class ReaderPDFView: PDFView {
 
     override var keyCommands: [UIKeyCommand]? {
         var commands: [UIKeyCommand] = [
-            key(UIKeyCommand.inputUpArrow, [], #selector(previousPage)),
-            key(UIKeyCommand.inputLeftArrow, [], #selector(previousPage)),
-            key(UIKeyCommand.inputDownArrow, [], #selector(nextPage)),
-            key(UIKeyCommand.inputRightArrow, [], #selector(nextPage)),
-            key(UIKeyCommand.inputUpArrow, .command, #selector(firstPage)),
-            key(UIKeyCommand.inputDownArrow, .command, #selector(lastPage)),
-            key("f", .command, #selector(focusFind)),
-            key("g", .command, #selector(nextMatch)),
-            key("g", [.command, .shift], #selector(previousMatch)),
-            key("g", [.command, .alternate], #selector(goToPage)),
-            key(UIKeyCommand.inputEscape, [], #selector(endFind)),
+            key(UIKeyCommand.inputUpArrow, [], #selector(commandPreviousPage)),
+            key(UIKeyCommand.inputLeftArrow, [], #selector(commandPreviousPage)),
+            key(UIKeyCommand.inputDownArrow, [], #selector(commandNextPage)),
+            key(UIKeyCommand.inputRightArrow, [], #selector(commandNextPage)),
+            key(UIKeyCommand.inputUpArrow, .command, #selector(commandFirstPage)),
+            key(UIKeyCommand.inputDownArrow, .command, #selector(commandLastPage)),
+            key("f", .command, #selector(commandFocusFind)),
+            key("g", .command, #selector(commandNextMatch)),
+            key("g", [.command, .shift], #selector(commandPreviousMatch)),
+            key("g", [.command, .alternate], #selector(commandGoToPage)),
+            // The Mac's Cmd-T, spelled the way iPadOS spells a second window.
+            // The menu item declares the same shortcut; this is what answers the
+            // key while the menu is shut and the reader has the responder.
+            key("n", .command, #selector(commandNewWindow)),
+            key(UIKeyCommand.inputEscape, [], #selector(commandEndFind)),
             // Both, because ⌘+ is typed as ⌘⇧= on most layouts and iOS reports
             // whichever character the key produced.
-            key("+", .command, #selector(zoomInCommand)),
-            key("=", .command, #selector(zoomInCommand)),
-            key("-", .command, #selector(zoomOutCommand)),
-            key("0", .command, #selector(zoomToFit))
+            key("+", .command, #selector(commandZoomInCommand)),
+            key("=", .command, #selector(commandZoomInCommand)),
+            key("-", .command, #selector(commandZoomOutCommand)),
+            key("0", .command, #selector(commandZoomToFit))
         ]
         // Without this the scroll view swallows the plain arrows and the page
         // creeps by a line instead of turning.
@@ -132,33 +149,34 @@ final class ReaderPDFView: PDFView {
                                     animated: false)
     }
 
-    @objc private func previousPage() {
+    @objc private func commandPreviousPage() {
         if scrollsRatherThanPages { scroll(byViewports: -1) } else { goToPreviousPage(nil) }
     }
 
-    @objc private func nextPage() {
+    @objc private func commandNextPage() {
         if scrollsRatherThanPages { scroll(byViewports: 1) } else { goToNextPage(nil) }
     }
 
-    @objc private func firstPage() {
+    @objc private func commandFirstPage() {
         if scrollsRatherThanPages { scroll(toOffset: 0) } else { goToFirstPage(nil) }
     }
 
-    @objc private func lastPage() {
+    @objc private func commandLastPage() {
         if scrollsRatherThanPages {
             scroll(toOffset: .greatestFiniteMagnitude)
         } else {
             goToLastPage(nil)
         }
     }
-    @objc private func zoomInCommand() { zoomIn(nil) }
-    @objc private func zoomOutCommand() { zoomOut(nil) }
-    @objc private func zoomToFit() { autoScales = true }
-    @objc private func focusFind() { onCommand?(.focusFind) }
-    @objc private func nextMatch() { onCommand?(.nextMatch) }
-    @objc private func previousMatch() { onCommand?(.previousMatch) }
-    @objc private func endFind() { onCommand?(.endFind) }
-    @objc private func goToPage() { onCommand?(.goToPage) }
+    @objc private func commandZoomInCommand() { zoomIn(nil) }
+    @objc private func commandZoomOutCommand() { zoomOut(nil) }
+    @objc private func commandZoomToFit() { autoScales = true }
+    @objc private func commandFocusFind() { onCommand?(.focusFind) }
+    @objc private func commandNextMatch() { onCommand?(.nextMatch) }
+    @objc private func commandPreviousMatch() { onCommand?(.previousMatch) }
+    @objc private func commandEndFind() { onCommand?(.endFind) }
+    @objc private func commandGoToPage() { onCommand?(.goToPage) }
+    @objc private func commandNewWindow() { onCommand?(.newWindow) }
 }
 
 /// Off, as on the Mac: scanning page text for phone numbers and addresses and

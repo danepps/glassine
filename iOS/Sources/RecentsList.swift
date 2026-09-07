@@ -22,6 +22,11 @@ struct RecentsList: View {
 
     private var filtered: [RecentRow] { RecentsModel.filter(rows, query: query) }
 
+    /// One scene is all an iPhone has, so there is nothing to swipe towards.
+    private var supportsMultipleScenes: Bool {
+        UIApplication.shared.supportsMultipleScenes
+    }
+
     var body: some View {
         List {
             if filtered.isEmpty {
@@ -48,6 +53,20 @@ struct RecentsList: View {
                     }
                     .swipeActions(edge: .trailing) {
                         Button("Remove", role: .destructive) { remove(row) }
+                    }
+                    // The context menu keeps the same item, but a long press is
+                    // not something anyone finds; a swipe is the visible route
+                    // to a second window. A file that is gone opens nothing, so
+                    // it gets no leading action -- the trailing Remove, which is
+                    // the one thing a missing row is still for, stays.
+                    .swipeActions(edge: .leading) {
+                        if supportsMultipleScenes && !row.isMissing {
+                            Button("New Window",
+                                   systemImage: "plus.rectangle.on.rectangle") {
+                                onOpenInNewWindow(row.url)
+                            }
+                            .tint(.blue)
+                        }
                     }
             }
         }

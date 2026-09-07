@@ -70,6 +70,7 @@ struct RootView: View {
             ReaderView(session: session,
                        onShowPanes: { showsPanes = true },
                        onShowSettings: { showsSettings = true },
+                       onNewWindow: { newWindow() },
                        onClose: { close() })
         } else {
             launchScreen
@@ -203,6 +204,37 @@ struct RootView: View {
                                                            options: nil, errorHandler: nil)
     }
 
+    /// A second window: the iPad answer to the Mac's Cmd-T, reached from the
+    /// reader's ellipsis menu and from Cmd-N. The activity carries no path, so
+    /// `DocumentSession.url(from:)` reads it as nothing, the new scene's
+    /// `session` stays nil and `detail` shows `launchScreen` -- the Recents
+    /// picker, which is exactly what a start tab shows. (The requesting scene
+    /// gets the empty activity back through `onContinueUserActivity` as well;
+    /// the same nil is what makes that a no-op.)
+    ///
+    /// The empty activity is not decoration. Activating with `userActivity: nil`
+    /// -- and `activateSceneSession(for:)`, the iOS 17 spelling of the same call
+    /// -- does create the scene, but on the iPad Pro 13-inch (M5) simulator it
+    /// connects in the *background*: `connectedScenes` went from one to two with
+    /// states foregroundActive and background, and the scene's window carried no
+    /// content at all in the accessibility tree. Handing over an activity of the
+    /// type the app declares in `NSUserActivityTypes` is the same call "Open in
+    /// New Window" makes, and it gets the scene attached and rendered.
+    ///
+    /// `options` stays nil deliberately: a `requestingScene`, or a
+    /// `UIWindowSceneProminentPlacement`, moved the whole app into iPadOS 26's
+    /// windowed presentation -- the reader became a floating window with a
+    /// close button -- which is not something a menu item should do.
+    private func newWindow() {
+        let activity = NSUserActivity(activityType: AppLaunch.activityType)
+        UIApplication.shared.requestSceneSessionActivation(nil, userActivity: activity,
+                                                           options: nil, errorHandler: nil)
+    }
+
+    #if DEBUG
+    private static var launchArgumentConsumed = false
+    #endif
+
     private func openLaunchArgumentIfNeeded() {
         #if DEBUG
         // `-open <path>` at launch, for the UI tests and for driving the app
@@ -212,8 +244,17 @@ struct RootView: View {
         // A bare name is resolved against the app's own Documents folder,
         // because `simctl install` of a new build gives the app a *new* data
         // container UUID and any absolute path captured beforehand is stale.
-        guard session == nil, let argument = UserDefaults.standard.string(forKey: "open")
+        //
+        // Once per *process*, not per scene. The argument lives in
+        // NSArgumentDomain for the app's whole life, and every new scene's
+        // RootView appears with `session == nil` -- so on Dan's iPad a New
+        // Window from an app launched with `-open report.pdf` came up showing
+        // report.pdf again instead of Recents. A TestFlight build has no hook
+        // at all, but the Debug one has to behave like it.
+        guard session == nil, !Self.launchArgumentConsumed,
+              let argument = UserDefaults.standard.string(forKey: "open")
         else { return }
+        Self.launchArgumentConsumed = true
         let fileManager = FileManager.default
         var path = argument
         if !fileManager.fileExists(atPath: path) {

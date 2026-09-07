@@ -12,6 +12,7 @@ struct ReaderView: View {
     @Bindable var session: DocumentSession
     let onShowPanes: () -> Void
     let onShowSettings: () -> Void
+    let onNewWindow: () -> Void
     let onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -24,6 +25,12 @@ struct ReaderView: View {
     @State private var isExporting = false
 
     private var inverted: Bool { prefs.isInverted(in: colorScheme) }
+
+    /// One scene is all an iPhone has, so a "New Window" there would be a menu
+    /// item that does nothing; the same check gates the keyboard shortcut.
+    private var supportsMultipleScenes: Bool {
+        UIApplication.shared.supportsMultipleScenes
+    }
 
     var body: some View {
         ZStack {
@@ -211,6 +218,17 @@ struct ReaderView: View {
                 }
                 Divider()
             }
+            // A second document without giving up this one -- the iPad answer
+            // to the Mac's Cmd-T. The new scene comes up on the Recents picker,
+            // which is what a start tab shows; see `RootView.newWindow`.
+            if supportsMultipleScenes {
+                Button("New Window", systemImage: "plus.rectangle.on.rectangle") {
+                    onNewWindow()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                .accessibilityIdentifier("newWindowButton")
+                Divider()
+            }
             Button("Print", systemImage: "printer") { printDocument() }
             ShareLink(item: session.url) { Label("Share", systemImage: "square.and.arrow.up") }
             if session.kind == .markdown {
@@ -225,7 +243,7 @@ struct ReaderView: View {
         }
         .accessibilityIdentifier("moreMenu")
         .accessibilityLabel("More")
-        .accessibilityHint("Panes, printing, sharing, settings and closing")
+        .accessibilityHint("New window, printing, sharing, settings and closing")
     }
 
     // MARK: Find bar
@@ -376,6 +394,8 @@ struct ReaderView: View {
         case .goToPage:
             session.pageEntry = ""
             session.isPageDialogVisible = true
+        case .newWindow:
+            if supportsMultipleScenes { onNewWindow() }
         }
     }
 
