@@ -1,6 +1,19 @@
 import AppKit
+import GlassineCore
 import Sparkle
 import UniformTypeIdentifiers
+
+extension AppearanceMode {
+    /// The Mac's half of the appearance override. Core knows only the three
+    /// modes; turning one into an `NSAppearance` is AppKit's business.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
 
 /// Application delegate. Deliberately thin: NSDocumentController does the file
 /// handling, and each window controller owns its own state.
@@ -17,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // Before anything reads a preference, and so before a window exists.
         FolioMigration.runIfNeeded()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)
+        // The hook Prefs calls from its `appearance` setter, installed before
+        // anything can write the preference.
+        Prefs.applyAppearanceOverride = { mode in
+            MainActor.assumeIsolated { NSApp.appearance = mode.nsAppearance }
+        }
         // Apply a saved Light/Dark override before any window exists.
         NSApp.appearance = Prefs.appearance.nsAppearance
         // Instantiating the shared controller early makes Finder opens and the
@@ -146,6 +164,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Prefs.markdownFontSize = sender.tag
     }
 
+    /// Larger/Smaller Text walk the same four sizes the Text Size submenu
+    /// lists, and are disabled at either end rather than wrapping around.
+    @objc func increaseMarkdownFontSize(_ sender: Any?) {
+        stepMarkdownFontSize(by: 1)
+    }
+
+    @objc func decreaseMarkdownFontSize(_ sender: Any?) {
+        stepMarkdownFontSize(by: -1)
+    }
+
+    private func stepMarkdownFontSize(by delta: Int) {
+        let sizes = Prefs.markdownFontSizes
+        guard let index = sizes.firstIndex(of: Prefs.markdownFontSize) else { return }
+        let next = index + delta
+        guard sizes.indices.contains(next) else { return }
+        Prefs.markdownFontSize = sizes[next]
+    }
+
     /// Open ~/Library/Application Support/Glassine/Styles in the Finder, creating
     /// it the first time, so a custom stylesheet has somewhere obvious to go.
     @objc func openMarkdownStylesFolder(_ sender: NSMenuItem) {
@@ -217,6 +253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = (menuItem.tag == Prefs.markdownLayout.rawValue) ? .on : .off
         case #selector(setMarkdownFontSize(_:)):
             menuItem.state = (menuItem.tag == Prefs.markdownFontSize) ? .on : .off
+        case #selector(increaseMarkdownFontSize(_:)):
+            return Prefs.markdownFontSize != Prefs.markdownFontSizes.last
+        case #selector(decreaseMarkdownFontSize(_:)):
+            return Prefs.markdownFontSize != Prefs.markdownFontSizes.first
         case #selector(makeDefaultMarkdownApp(_:)):
             menuItem.state = isDefaultMarkdownApp ? .on : .off
         default:
@@ -279,5 +319,51 @@ enum FolioMigration {
         try? fm.createDirectory(at: destination.deletingLastPathComponent(),
                                 withIntermediateDirectories: true)
         try? fm.copyItem(at: source, to: destination)
+    }
+}
+
+extension Prefs {
+    /// First launch after the recents list arrived: adopt whatever
+    /// NSDocumentController remembers, then any file with a saved reading
+    /// position it did not mention. The second source matters because the
+    /// system recent-documents list is empty whenever macOS is set to keep no
+    /// recent items, while the position table is Glassine's own and dated.
+    ///
+    /// Mac-side, because NSDocumentController is: Core keeps the storage and
+    /// the seeded-flag key, this supplies the one list it cannot reach.
+    static func seedRecentDocumentsIfNeeded() {
+        guard defaults.object(forKey: recentDocumentsSeededKey) == nil else { return }
+        defaults.set(true, forKey: recentDocumentsSeededKey)
+        guard recentDocuments.isEmpty else { return }
+
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var seeded: [RecentDocument] = []
+
+        for url in NSDocumentController.shared.recentDocumentURLs {
+            let path = url.standardizedFileURL.path
+            guard fm.fileExists(atPath: path), seen.insert(path).inserted else { continue }
+            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+        }
+        for path in positionedPaths() where !seen.contains(path) && fm.fileExists(atPath: path) {
+            seen.insert(path)
+            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+        }
+
+        // The two sources are each in their own order, so sort the whole thing.
+        recentDocuments = seeded.sorted { $0.lastOpened > $1.lastOpened }
+    }
+
+    /// Deliberately no bookmark: making one reads the file, and doing that for
+    /// thirty files during launch draws a privacy prompt for every protected
+    /// folder they sit in, before the reader has asked for anything. A seeded
+    /// entry earns its bookmark the first time it is actually opened.
+    private static func entry(forSeeding url: URL) -> RecentDocument {
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate
+        return RecentDocument(path: url.path,
+                              bookmark: nil,
+                              lastOpened: lastAccess(for: url) ?? modified ?? .distantPast,
+                              pageCount: nil)
     }
 }

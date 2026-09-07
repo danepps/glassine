@@ -1,4 +1,5 @@
 import AppKit
+import GlassineCore
 
 /// What Glassine shows when it has nothing open: a window around the recent
 /// documents picker.

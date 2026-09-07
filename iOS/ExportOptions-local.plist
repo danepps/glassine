@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- `release-ios.sh --no-upload`: identical to ExportOptions.plist in every
+	     way that affects the binary -- same method, same team, same automatic
+	     signing, so the .ipa is signed with the same Apple Distribution identity
+	     and the same App Store provisioning profile -- but written to disk
+	     instead of sent. It exists so the archive-and-export half of a release
+	     can be exercised without an upload, which is a thing that cannot be
+	     taken back. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>export</string>
+	<!-- Manual signing, on purpose. Automatic export insists on *cloud-managed*
+	     signing and this account has no access to it (403 FORBIDDEN_ERROR,
+	     "You haven't been given access to cloud-managed distribution
+	     certificates", 2026-09-06), so the export names the local Apple
+	     Distribution certificate and the App Store profile "Glassine iOS App
+	     Store" (created through the App Store Connect API, installed in
+	     ~/Library/Developer/Xcode/UserData/Provisioning Profiles/). A second
+	     Mac needs that profile installed too; the release script's preflight
+	     checks for it. See HANDOFF, "Releasing to TestFlight". -->
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.epps.Glassine</key>
+		<string>Glassine iOS App Store</string>
+	</dict>
+	<key>teamID</key>
+	<string>82H77TF7AH</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

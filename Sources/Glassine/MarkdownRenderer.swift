@@ -1,36 +1,19 @@
 import AppKit
+import GlassineCore
 import PDFKit
 import WebKit
 
-/// Errors the Markdown render pipeline can report.
-enum MarkdownRenderError: LocalizedError {
-    /// A newer render of the same document replaced this one before it started.
-    case superseded
-    case timedOut
-    case printFailed
-    case emptyDocument
-
-    var errorDescription: String? {
-        switch self {
-        case .superseded: return "The render was replaced by a newer one."
-        case .timedOut: return "Typesetting the Markdown timed out."
-        case .printFailed: return "Typesetting the Markdown failed."
-        case .emptyDocument: return "Typesetting the Markdown produced no pages."
-        }
-    }
-}
-
-/// Typesets HTML into a paginated PDF with an offscreen WKWebView.
+/// Typesets HTML into a paginated PDF with an offscreen WKWebView -- the Mac's
+/// half of the render pipeline. The queue, superseding, the watchdog, the one
+/// retry and the idle teardown live in `GlassineCore.RenderQueue`; this is only
+/// the primitive it drives.
 ///
 /// Nothing on screen is ever a web view: the view lives in a borderless window
 /// that is never ordered in, and its only job is to run WebKit's print path,
 /// which is what gives us real page breaks, selectable text, and link
-/// annotations. Jobs run one at a time; a newer job for the same document
-/// supersedes one still waiting in the queue.
+/// annotations.
 @MainActor
-final class MarkdownRenderer: NSObject {
-
-    static let shared = MarkdownRenderer()
+final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
 
     /// US Letter at 72 dpi.
     static let paperSize = NSSize(width: 612, height: 792)
@@ -42,30 +25,16 @@ final class MarkdownRenderer: NSObject {
     /// only matches the print if the web view is that much wider too -- and the
     /// height it reports has to be scaled back down by the same amount.
     private static let printShrinkFactor: CGFloat = 1.25
-    private static let timeout: TimeInterval = 10
-    private static let idleTeardownDelay: TimeInterval = 30
-
-    struct Result {
-        let data: Data
-        let document: PDFDocument
-    }
-
-    private struct Job {
-        let key: String
-        let html: String
-        let baseURL: URL?
-        let layout: MarkdownLayout
-        let completion: (Swift.Result<Result, Error>) -> Void
-    }
 
     private var webView: WKWebView?
     private var hostWindow: NSWindow?
 
-    private var queue: [Job] = []
-    private var current: Job?
-    private var watchdog: DispatchWorkItem?
-    private var idleTeardown: DispatchWorkItem?
     private var outputURL: URL?
+    /// The completion for the print in flight. Nil means nothing is expected,
+    /// and any callback that arrives anyway is dropped.
+    private var pendingCompletion: ((Swift.Result<Data, Error>) -> Void)?
+    private var pendingHTML: String?
+    private var pendingBaseURL: URL?
     /// The operation whose completion we are waiting for. A callback from any
     /// other (say, one the watchdog already gave up on) is ignored rather than
     /// being credited to whatever job is current by then.
@@ -74,97 +43,51 @@ final class MarkdownRenderer: NSObject {
     /// to start the next job makes the old one report failure, and that failure
     /// must not be charged to the job that displaced it.
     private var activeNavigation: WKNavigation?
-    private var didRetryPrint = false
     private var didRestartWebProcess = false
+    /// True while the job in flight wants one very tall page.
+    private var wantsContinuous = false
     /// The measured height of a continuous job's content, in points; nil for a
     /// paginated job, and also when the measurement failed and the job has to
     /// fall back to Letter pages.
     private var continuousHeight: CGFloat?
 
-    private override init() { super.init() }
+    override init() { super.init() }
 
-    // MARK: API
+    // MARK: HTMLPrinter
 
-    /// Render `html` into a PDF. `key` identifies the document: queuing a second
-    /// job with the same key drops the first (its completion gets `.superseded`).
-    /// A `.continuous` job is measured after it loads and printed onto a single
-    /// page as tall as its content.
-    func render(html: String,
-                baseURL: URL?,
-                key: String,
-                layout: MarkdownLayout,
-                completion: @escaping (Swift.Result<Result, Error>) -> Void) {
-        idleTeardown?.cancel()
-        idleTeardown = nil
-
-        if let index = queue.firstIndex(where: { $0.key == key }) {
-            let dropped = queue.remove(at: index)
-            dropped.completion(.failure(MarkdownRenderError.superseded))
-        }
-        queue.append(Job(key: key, html: html, baseURL: baseURL,
-                         layout: layout, completion: completion))
-        pump()
-    }
-
-    /// Tear the web view down once nothing has needed it for a while: the
-    /// WebContent process costs 60-120 MB and a Markdown-free session should
-    /// not pay for it.
-    func releaseIfIdle() {
-        idleTeardown?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.current == nil, self.queue.isEmpty else { return }
-            self.teardownWebView()
-            self.idleTeardown = nil
-        }
-        idleTeardown = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleTeardownDelay, execute: work)
-    }
-
-    // MARK: Queue
-
-    private func pump() {
-        guard current == nil, !queue.isEmpty else { return }
-        let job = queue.removeFirst()
-        current = job
-        didRetryPrint = false
+    func print(html: String,
+               baseURL: URL?,
+               layout: MarkdownLayout,
+               completion: @escaping (Swift.Result<Data, Error>) -> Void) {
+        pendingCompletion = completion
+        pendingHTML = html
+        pendingBaseURL = baseURL
+        wantsContinuous = (layout == .continuous)
         didRestartWebProcess = false
         continuousHeight = nil
-        startWatchdog()
         let view = makeWebView()
         // Lay a continuous job out at the width WebKit will print it at, so its
         // measured height is the printed height; a paginated job is never
         // measured and its frame does not matter.
-        view.frame.size.width = job.layout == .continuous
+        view.frame.size.width = wantsContinuous
             ? Self.paperSize.width * Self.printShrinkFactor
             : Self.paperSize.width
-        activeNavigation = view.loadHTMLString(job.html, baseURL: job.baseURL)
+        activeNavigation = view.loadHTMLString(html, baseURL: baseURL)
     }
 
-    private func startWatchdog() {
-        watchdog?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            // Abandon the stuck load rather than let the next job inherit it.
-            self.teardownWebView()
-            self.finish(.failure(MarkdownRenderError.timedOut))
-        }
-        watchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout, execute: work)
+    func reprint(completion: @escaping (Swift.Result<Data, Error>) -> Void) {
+        pendingCompletion = completion
+        printLoadedPage()
     }
 
-    private func finish(_ result: Swift.Result<Result, Error>) {
-        watchdog?.cancel()
-        watchdog = nil
-        if let url = outputURL {
-            try? FileManager.default.removeItem(at: url)
-            outputURL = nil
-        }
+    func teardown() {
+        dropWebView()
         activeOperation = nil
         activeNavigation = nil
-        guard let job = current else { return }
-        current = nil
-        job.completion(result)
-        pump()
+        pendingCompletion = nil
+        pendingHTML = nil
+        pendingBaseURL = nil
+        discardOutput()
     }
 
     // MARK: Web view
@@ -195,11 +118,26 @@ final class MarkdownRenderer: NSObject {
         return view
     }
 
-    private func teardownWebView() {
+    private func dropWebView() {
         webView?.navigationDelegate = nil
         hostWindow?.contentView = nil
         webView = nil
         hostWindow = nil
+    }
+
+    private func discardOutput() {
+        if let url = outputURL {
+            try? FileManager.default.removeItem(at: url)
+            outputURL = nil
+        }
+    }
+
+    private func deliver(_ result: Swift.Result<Data, Error>) {
+        guard let completion = pendingCompletion else { return }
+        pendingCompletion = nil
+        activeOperation = nil
+        activeNavigation = nil
+        completion(result)
     }
 
     // MARK: Printing
@@ -207,13 +145,13 @@ final class MarkdownRenderer: NSObject {
     /// A continuous job needs its content measured before it can be printed;
     /// everything else goes straight to the press.
     private func printWhenMeasured() {
-        guard let job = current else { return }
-        guard job.layout == .continuous else {
+        guard pendingCompletion != nil else { return }
+        guard wantsContinuous else {
             printLoadedPage()
             return
         }
         measureContentHeight { [weak self] height in
-            guard let self, self.current != nil else { return }
+            guard let self, self.pendingCompletion != nil else { return }
             self.continuousHeight = height
             self.printLoadedPage()
         }
@@ -222,7 +160,7 @@ final class MarkdownRenderer: NSObject {
     /// The document's laid-out height. Page scripts are disabled and the CSP
     /// blocks them anyway, but an evaluation in the client content world still
     /// runs; if it ever stops, `nil` falls back to ordinary Letter pages.
-    private func measureContentHeight(_ completion: @escaping (CGFloat?) -> Void) {
+    private func measureContentHeight(_ completion: @escaping @MainActor (CGFloat?) -> Void) {
         guard let webView else {
             completion(nil)
             return
@@ -230,19 +168,21 @@ final class MarkdownRenderer: NSObject {
         webView.evaluateJavaScript("document.documentElement.scrollHeight",
                                    in: nil,
                                    in: .defaultClient) { result in
-            switch result {
-            case .success(let value):
-                completion((value as? NSNumber).map {
-                    CGFloat($0.doubleValue) / Self.printShrinkFactor
-                })
-            case .failure:
-                completion(nil)
+            MainActor.assumeIsolated {
+                switch result {
+                case .success(let value):
+                    completion((value as? NSNumber).map {
+                        CGFloat($0.doubleValue) / Self.printShrinkFactor
+                    })
+                case .failure:
+                    completion(nil)
+                }
             }
         }
     }
 
     private func printLoadedPage() {
-        guard current != nil, let webView, let hostWindow else { return }
+        guard pendingCompletion != nil, let webView, let hostWindow else { return }
 
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("glassine-md-\(UUID().uuidString).pdf")
@@ -307,64 +247,83 @@ final class MarkdownRenderer: NSObject {
     }
 
     private func printDidRun(_ operation: NSPrintOperation, success: Bool) {
-        guard current != nil, operation === activeOperation else { return }
+        guard pendingCompletion != nil, operation === activeOperation else { return }
         guard success, let url = outputURL else {
-            finish(.failure(MarkdownRenderError.printFailed))
+            discardOutput()
+            deliver(.failure(MarkdownRenderError.printFailed))
             return
         }
-
-        guard let data = try? Data(contentsOf: url),
-              let document = PDFDocument(data: data),
-              document.pageCount > 0
-        else {
-            // WebKit occasionally lands here on the very first print of a
-            // freshly created web view; one retry a beat later fixes it.
-            if !didRetryPrint {
-                didRetryPrint = true
-                try? FileManager.default.removeItem(at: url)
-                outputURL = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    self?.printLoadedPage()
-                }
-                return
-            }
-            finish(.failure(MarkdownRenderError.emptyDocument))
-            return
-        }
-
-        finish(.success(Result(data: data, document: document)))
+        let data = try? Data(contentsOf: url)
+        discardOutput()
+        // Empty data is the queue's cue that the print produced nothing
+        // readable, which is the same case as a PDF with no pages: it retries
+        // once through `reprint`.
+        deliver(.success(data ?? Data()))
     }
 }
 
 // MARK: - WKNavigationDelegate
 
-extension MarkdownRenderer: WKNavigationDelegate {
+extension WebKitHTMLPrinter: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard navigation === activeNavigation else { return }
         // Give WebKit one run-loop turn to settle its layout before printing.
-        DispatchQueue.main.async { [weak self] in self?.printWhenMeasured() }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.printWhenMeasured() }
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         guard navigation === activeNavigation else { return }
-        finish(.failure(error))
+        deliver(.failure(error))
     }
 
     func webView(_ webView: WKWebView,
                  didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
         guard navigation === activeNavigation else { return }
-        finish(.failure(error))
+        deliver(.failure(error))
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        teardownWebView()
-        guard let job = current, !didRestartWebProcess else {
-            finish(.failure(MarkdownRenderError.printFailed))
+        dropWebView()
+        guard let html = pendingHTML, pendingCompletion != nil, !didRestartWebProcess else {
+            deliver(.failure(MarkdownRenderError.printFailed))
             return
         }
         didRestartWebProcess = true
-        activeNavigation = makeWebView().loadHTMLString(job.html, baseURL: job.baseURL)
+        activeNavigation = makeWebView().loadHTMLString(html, baseURL: pendingBaseURL)
+    }
+}
+
+/// The app-wide Markdown typesetter: `RenderQueue` driving the WebKit printer.
+/// A thin shell so every call site reads exactly as it did before the queue
+/// moved into Core.
+@MainActor
+final class MarkdownRenderer: MarkdownTypesetter {
+
+    static let shared = MarkdownRenderer()
+
+    private let queue = RenderQueue(printer: WebKitHTMLPrinter())
+
+    private init() {}
+
+    /// Render `html` into a PDF. `key` identifies the document: queuing a second
+    /// job with the same key drops the first (its completion gets `.superseded`).
+    func render(html: String,
+                baseURL: URL?,
+                key: String,
+                layout: MarkdownLayout,
+                completion: @escaping (Swift.Result<RenderedMarkdown, Error>) -> Void) {
+        queue.render(html: html, baseURL: baseURL, key: key, layout: layout,
+                     completion: completion)
+    }
+
+    /// Tear the web view down once nothing has needed it for a while: the
+    /// WebContent process costs 60-120 MB and a Markdown-free session should
+    /// not pay for it.
+    func releaseIfIdle() {
+        queue.releaseIfIdle()
     }
 }

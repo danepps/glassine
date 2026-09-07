@@ -17,25 +17,27 @@ updated in place.
   View ▸ Appearance.
   View ▸ Appearance also picks how dark the paper is — Black, Charcoal or Gray —
   and the window chrome follows the level you choose.
-- **Adjustable window opacity, with a blurred backdrop.** View ▸ Window Opacity
+- **Adjustable window opacity, with a blurred backdrop.** Window ▸ Opacity
   fades the page from 100% down to 30% so you can read against what is behind
   it, and blurs whatever shows through the way Terminal does; ⌥⌘↑ / ⌥⌘↓ step it,
-  and View ▸ Blur Behind Window turns the blur off for a sharp backdrop.
+  and Window ▸ Blur Behind Window turns the blur off for a sharp backdrop.
 - **Opens Markdown too.** A `.md` file is typeset into real pages and shown
   through the same reader, so tabs, dark mode, find, paging, and position memory
   all work on it. It re-renders within about half a second whenever the file
   changes on disk, keeping your place. The title bar shows its word count.
   Export the rendered pages with ⇧⌘E — always paginated, however
-  you are reading it.
-- **Markdown styles.** View ▸ Markdown ▸ Style offers six print-quality
+  you are reading it. Everything Markdown-specific lives in its own **Markdown**
+  menu, between View and Go.
+- **Markdown styles.** Markdown ▸ Style offers six print-quality
   stylesheets — Manuscript (New York serif), Modern (SF, airy), GitHub,
   Antique (Baskerville, old-style numerals), Ink (small-caps heads, tight
-  leading) and Academic (Times, indented paragraphs) — plus the body size.
+  leading) and Academic (Times, indented paragraphs) — plus the body size, under
+  Markdown ▸ Text Size (⌥⌘= / ⌥⌘− step through it).
   Drop a `.css` file into `~/Library/Application Support/Glassine/Styles`
-  (View ▸ Markdown ▸ Style ▸ Open Styles Folder…) and it joins the menu; it can
+  (Markdown ▸ Style ▸ Open Styles Folder…) and it joins the menu; it can
   set the stylesheet's variables (`--body-font`, `--line-height`, `--rule`, …)
   or override anything.
-- **Pages or continuous.** View ▸ Markdown ▸ Pages / Continuous: real Letter
+- **Pages or continuous.** Markdown ▸ Pages / Continuous: real Letter
   pages, or one uninterrupted column with no page breaks at all. Reading
   continuously, the toolbar's page counter becomes a progress percentage, and
   ⌥⌘G jumps to one.
@@ -70,7 +72,7 @@ macOS 14 or later, Apple Silicon only (the build is arm64; a universal binary wo
 
 Drag `build/Glassine.app` to `/Applications` if you want it in Launchpad, then
 right-click a PDF ▸ Get Info ▸ Open With to make it the default. For Markdown
-there is a menu item: Glassine ▸ Use Glassine to Open Markdown Files.
+there is a menu item: Markdown ▸ Open Markdown Files with Glassine by Default.
 
 Dependencies are Sparkle and [swift-markdown][], which is pinned by commit
 because its own manifest depends on swift-cmark by branch and SwiftPM will not
@@ -78,31 +80,62 @@ accept a version range on top of that.
 
 [swift-markdown]: https://github.com/swiftlang/swift-markdown
 
+## Glassine for iPad and iPhone
+
+The same reader, native, on iOS 18 and later: PDFs and Markdown memos, the page
+content itself inverted in dark mode with the three Dark Paper tones, green find
+boxes with a hit count, a table of contents, reading-position memory across
+launches, a Recents launch screen, and Markdown typeset by WebKit into real PDF
+pages in the six built-in styles plus any `.css` you drop into Files ▸ On My
+iPad ▸ Glassine ▸ Styles. On iPad it is a split view with Recents, Thumbnails
+and Contents panes and hardware-keyboard paging; on iPhone the same panes are a
+sheet. It is **on TestFlight for now**, not the App Store. To build it from
+source you need Xcode 26 and `xcodegen` (`brew install xcodegen`), then
+`./build-ios.sh --sim "iPad Pro 11-inch (M5)" --run`; `./build-ios.sh --test`
+runs the XCUITest suite, and `./build-ios.sh --device` builds for a paired
+device. The portable half of the app lives in `Core/` (SwiftPM package
+`GlassineCore`) and is shared with the Mac app; the iOS target is an XcodeGen
+spec in `iOS/project.yml`, and `iOS/Glassine.xcodeproj` is generated, not
+checked in.
+
 ## Layout
 
 ```
-Package.swift                 Swift Package (single executable target)
-Support/Info.plist            bundle metadata, PDF document type
+Package.swift                 Swift Package for the Mac app (depends on Core/)
+Support/Info.plist            bundle metadata, PDF and Markdown document types
 Support/Glassine.icon, .icns, Assets.car   app icon sources and compiled variants
-build.sh                      assembles the .app bundle
-release.sh                    cuts a release and updates glassine-appcast.xml
+build.sh                      assembles build/Glassine.app
+release.sh                    cuts a Mac release and updates glassine-appcast.xml
 glassine-appcast.xml          Sparkle feed (appcast.xml is Folio's, frozen)
-Sources/Glassine/
+build-ios.sh                  xcodegen + xcodebuild for the simulator or a device
+release-ios.sh                archives, exports and uploads an iOS build to TestFlight
+Core/                         GlassineCore: the logic both apps share, with its tests
+  MarkdownHTML.swift          Markdown -> HTML + headings + the print stylesheet
+  Prefs.swift                 UserDefaults-backed settings, recents and reading positions
+  FileWatcher.swift           vnode watcher behind Markdown auto-refresh
+  ReaderPage.swift            PDFPage subclass that draws dark-mode find highlights
+  FindController.swift        the find state machine; FindHighlighter.swift its boxes
+  OutlineSync.swift           which chapter the reader is in; HeadingLocator.swift the iOS outline
+  ReadingPosition.swift, ReadingAnchor.swift, ReadingProgress.swift   where the reader is
+  MarkdownDocumentModel.swift, MarkdownReloader.swift, RenderQueue.swift   the Markdown pipeline
+  RecentsModel.swift          rows, filter and labels behind the Recents screens
+Sources/Glassine/             the Mac app (AppKit)
   main.swift                  NSApplication bootstrap
-  AppDelegate.swift           launch behavior, appearance menu actions, Folio migration
+  AppDelegate.swift           launch behavior, menu actions, Folio migration
   MainMenu.swift              menu bar, built in code
   GlassineDocument.swift      NSDocument wrapper around PDFDocument (PDF or Markdown)
-  MarkdownHTML.swift          Markdown -> HTML + headings + the print stylesheet
-  MarkdownRenderer.swift      offscreen WKWebView that typesets HTML into a PDF
-  FileWatcher.swift           vnode watcher behind Markdown auto-refresh
+  MarkdownRenderer.swift      offscreen WKWebView + NSPrintOperation that typesets HTML into a PDF
   RecentsViewController.swift   the recents picker: list, filter, drop target
   RecentsWindowController.swift the launch window around that picker
   StartTabWindowController.swift a new tab showing the picker until you pick
   ReaderWindowController.swift  window, toolbar, tabs, find, page field
   ReaderViewController.swift  the PDFView and dark-mode handling
   SidebarViewController.swift sidebar: page thumbnails and the outline pane
-  ReaderPage.swift            PDFPage subclass that draws dark-mode find highlights
-  Prefs.swift                 UserDefaults-backed settings and reading positions
+iOS/                          the iPad and iPhone app (SwiftUI + PDFKit)
+  project.yml                 XcodeGen spec; Glassine.xcodeproj is generated
+  Sources/                    app, reader, recents, panes, settings, the iOS Markdown renderer
+  UITests/                    XCUITest suite
+  Support/                    Info.plist, privacy manifest, launch-screen colour, the icon
 ```
 
 ## How the dark-mode inversion works

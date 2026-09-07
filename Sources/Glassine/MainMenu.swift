@@ -1,4 +1,5 @@
 import AppKit
+import GlassineCore
 import PDFKit
 import Sparkle
 
@@ -10,14 +11,14 @@ enum MainMenu {
     static func build(appDelegate: AppDelegate) -> NSMenu {
         let main = NSMenu()
 
-        main.addItem(submenu(appMenu(appDelegate: appDelegate,
-                                     updater: appDelegate.updaterController)))
+        main.addItem(submenu(appMenu(updater: appDelegate.updaterController)))
         main.addItem(submenu(fileMenu(appDelegate: appDelegate)))
         main.addItem(submenu(editMenu()))
         main.addItem(submenu(viewMenu(appDelegate: appDelegate)))
+        main.addItem(submenu(markdownMenu(appDelegate: appDelegate)))
         main.addItem(submenu(goMenu()))
 
-        let windows = windowMenu()
+        let windows = windowMenu(appDelegate: appDelegate)
         main.addItem(submenu(windows))
         NSApp.windowsMenu = windows
 
@@ -59,19 +60,13 @@ enum MainMenu {
 
     // MARK: Menus
 
-    private static func appMenu(appDelegate: AppDelegate,
-                                updater: SPUStandardUpdaterController) -> NSMenu {
+    private static func appMenu(updater: SPUStandardUpdaterController) -> NSMenu {
         let menu = NSMenu(title: "Glassine")
         add(menu, "About Glassine", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
         menu.addItem(.separator())
         // Explicit target: Sparkle's controller is not in the responder chain.
         add(menu, "Check for Updates…",
             #selector(SPUStandardUpdaterController.checkForUpdates(_:)), target: updater)
-        menu.addItem(.separator())
-        // Explicit target: the app delegate is in the responder chain, but only
-        // behind the document, and this item is about the app, not a document.
-        add(menu, "Use Glassine to Open Markdown Files",
-            #selector(AppDelegate.makeDefaultMarkdownApp(_:)), target: appDelegate)
         menu.addItem(.separator())
         add(menu, "Hide Glassine", #selector(NSApplication.hide(_:)), key: "h")
         add(menu, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)),
@@ -167,23 +162,25 @@ enum MainMenu {
         add(menu, "Invert Page Colors in Dark Mode",
             #selector(AppDelegate.toggleInvertInDarkMode(_:)), target: appDelegate)
 
-        let opacity = NSMenuItem(title: "Window Opacity", action: nil, keyEquivalent: "")
-        opacity.view = OpacityMenuItemView()
-        menu.addItem(opacity)
-        add(menu, "Blur Behind Window", #selector(AppDelegate.toggleWindowBlur(_:)),
-            target: appDelegate)
-        add(menu, "Increase Opacity", #selector(AppDelegate.increaseOpacity(_:)),
-            key: upArrowKey, modifiers: [.command, .option], target: appDelegate)
-        add(menu, "Decrease Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
-            key: downArrowKey, modifiers: [.command, .option], target: appDelegate)
+        menu.addItem(.separator())
+        add(menu, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)),
+            key: "f", modifiers: [.command, .control])
+        return menu
+    }
 
-        let markdown = NSMenuItem(title: "Markdown", action: nil, keyEquivalent: "")
-        let markdownMenu = NSMenu(title: "Markdown")
+    /// Everything that only means something for a Markdown document, in one
+    /// top-level menu rather than buried in View: the layout, the stylesheet,
+    /// the type size, the export, and the LaunchServices association. The
+    /// preference items are deliberately not restricted to a Markdown document
+    /// being front -- a setting made with a PDF on screen applies to the next
+    /// Markdown file opened, and disabling them would hide the feature.
+    private static func markdownMenu(appDelegate: AppDelegate) -> NSMenu {
+        let menu = NSMenu(title: "Markdown")
         for layout in [MarkdownLayout.pages, .continuous] {
-            add(markdownMenu, layout.title, #selector(AppDelegate.setMarkdownLayout(_:)),
+            add(menu, layout.title, #selector(AppDelegate.setMarkdownLayout(_:)),
                 target: appDelegate, tag: layout.rawValue)
         }
-        markdownMenu.addItem(.separator())
+        menu.addItem(.separator())
 
         let style = NSMenuItem(title: "Style", action: nil, keyEquivalent: "")
         let styleMenu = NSMenu(title: "Style")
@@ -193,25 +190,42 @@ enum MainMenu {
         styleMenu.delegate = appDelegate
         populateMarkdownStyleMenu(styleMenu, appDelegate: appDelegate)
         style.submenu = styleMenu
-        markdownMenu.addItem(style)
+        menu.addItem(style)
 
-        markdownMenu.addItem(.separator())
+        menu.addItem(.separator())
+        let textSize = NSMenuItem(title: "Text Size", action: nil, keyEquivalent: "")
+        let textSizeMenu = NSMenu(title: "Text Size")
         for size in Prefs.markdownFontSizes {
-            add(markdownMenu, "\(size) pt", #selector(AppDelegate.setMarkdownFontSize(_:)),
+            add(textSizeMenu, "\(size) pt", #selector(AppDelegate.setMarkdownFontSize(_:)),
                 target: appDelegate, tag: size)
         }
-        markdown.submenu = markdownMenu
-        menu.addItem(markdown)
+        textSize.submenu = textSizeMenu
+        menu.addItem(textSize)
+        // The same four sizes the submenu lists, stepped one at a time; ⌥⌘ so
+        // they cannot be mistaken for View's ⌘= / ⌘- page zoom.
+        add(menu, "Larger Text", #selector(AppDelegate.increaseMarkdownFontSize(_:)),
+            key: "=", modifiers: [.command, .option], target: appDelegate)
+        add(menu, "Smaller Text", #selector(AppDelegate.decreaseMarkdownFontSize(_:)),
+            key: "-", modifiers: [.command, .option], target: appDelegate)
+
         menu.addItem(.separator())
-        add(menu, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)),
-            key: "f", modifiers: [.command, .control])
+        // The File menu keeps its own copy of this item; both are the same
+        // nil-target action, so the document validates them together.
+        add(menu, "Export as PDF…", #selector(GlassineDocument.exportAsPDF(_:)),
+            key: "e", modifiers: [.command, .shift])
+
+        menu.addItem(.separator())
+        // Explicit target: the app delegate is in the responder chain, but only
+        // behind the document, and this item is about the app, not a document.
+        add(menu, "Open Markdown Files with Glassine by Default",
+            #selector(AppDelegate.makeDefaultMarkdownApp(_:)), target: appDelegate)
         return menu
     }
 
     /// Marks the one menu the app delegate rebuilds in `menuNeedsUpdate`.
     static let markdownStyleMenuIdentifier = NSUserInterfaceItemIdentifier("glassine.markdownStyle")
 
-    /// Fill View ▸ Markdown ▸ Style: the built-ins, then whatever `.css` files
+    /// Fill Markdown ▸ Style: the built-ins, then whatever `.css` files
     /// are in the Styles folder right now, then the way to that folder. The
     /// style's id rides on `representedObject`, since ids are strings and a
     /// menu item's tag is not.
@@ -248,8 +262,21 @@ enum MainMenu {
         return menu
     }
 
-    private static func windowMenu() -> NSMenu {
+    /// Must stay titled "Window", and stay `NSApp.windowsMenu`: AppKit appends
+    /// the open-window list to it. The translucency controls live at the top,
+    /// above the standard items, because they are properties of the window.
+    private static func windowMenu(appDelegate: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Window")
+        let opacity = NSMenuItem(title: "Window Opacity", action: nil, keyEquivalent: "")
+        opacity.view = OpacityMenuItemView()
+        menu.addItem(opacity)
+        add(menu, "Blur Behind Window", #selector(AppDelegate.toggleWindowBlur(_:)),
+            target: appDelegate)
+        add(menu, "Increase Opacity", #selector(AppDelegate.increaseOpacity(_:)),
+            key: upArrowKey, modifiers: [.command, .option], target: appDelegate)
+        add(menu, "Decrease Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
+            key: downArrowKey, modifiers: [.command, .option], target: appDelegate)
+        menu.addItem(.separator())
         add(menu, "Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m")
         add(menu, "Zoom", #selector(NSWindow.performZoom(_:)))
         menu.addItem(.separator())
@@ -258,7 +285,7 @@ enum MainMenu {
     }
 }
 
-/// The View ▸ Window Opacity row: caption, slider, live percentage. A menu item
+/// The Window ▸ Opacity row: caption, slider, live percentage. A menu item
 /// with a custom view draws none of the usual chrome, so the leading inset is
 /// hand-matched to the title inset of the plain items around it.
 final class OpacityMenuItemView: NSView {

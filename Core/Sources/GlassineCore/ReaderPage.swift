@@ -2,7 +2,8 @@ import ObjectiveC
 import PDFKit
 
 /// Stable, unique address used as the associated-object key.
-private let highlightKey = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+nonisolated(unsafe) private let highlightKey =
+    UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
 
 /// Immutable box so the render thread only ever sees a fully formed value.
 private final class HighlightBox: NSObject {
@@ -20,16 +21,21 @@ private final class HighlightBox: NSObject {
 /// here is read as a null buffer on the tile-rendering thread and crashes.
 /// State lives in an associated object, which the ObjC runtime keeps
 /// thread-safe, and the boxed array is immutable once published.
-final class ReaderPage: PDFPage {
+public final class ReaderPage: PDFPage {
 
-    struct Highlight {
-        let rect: CGRect
-        let isCurrent: Bool
+    public struct Highlight: Sendable {
+        public let rect: CGRect
+        public let isCurrent: Bool
+
+        public init(rect: CGRect, isCurrent: Bool) {
+            self.rect = rect
+            self.isCurrent = isCurrent
+        }
     }
 
     /// Set by ReaderPDFView. Empty in light mode, where PDFKit's own yellow
     /// `highlightedSelections` are used instead.
-    var findHighlights: [Highlight] {
+    public var findHighlights: [Highlight] {
         get { (objc_getAssociatedObject(self, highlightKey) as? HighlightBox)?.items ?? [] }
         set {
             objc_setAssociatedObject(self, highlightKey, HighlightBox(newValue),
@@ -38,14 +44,21 @@ final class ReaderPage: PDFPage {
     }
 
     /// Pre-filter ink for the matches. The view's inversion filter (invert +
-    /// 180 degree hue rotation) turns this into terminal green, ~#5CF25C, on
-    /// the dark page. Drawn translucently over white paper it comes out as a
-    /// dark-green box with the glyphs inside lifted to pale green.
-    private static let matchInk = CGColor(red: 0, green: 0.77, blue: 0, alpha: 1)
+    /// 180 degree hue rotation) turns this into terminal green on the dark page.
+    /// Drawn translucently over white paper it comes out as a dark-green box
+    /// with the glyphs inside lifted to pale green.
+    ///
+    /// The default is the Mac's value, calibrated against a **linear-light**
+    /// `CIColorInvert`. iOS inverts in sRGB (Spike A), so the same green needs a
+    /// different pre-filter value there and the iOS app overwrites this at
+    /// launch -- which is why it is a `var`. Nothing else writes it, and the Mac
+    /// never touches it.
+    nonisolated(unsafe) public static var matchInk =
+        CGColor(red: 0, green: 0.77, blue: 0, alpha: 1)
     private static let boxAlpha: CGFloat = 0.35
     private static let currentOutlineWidth: CGFloat = 1.5
 
-    override func draw(with box: PDFDisplayBox, to context: CGContext) {
+    public override func draw(with box: PDFDisplayBox, to context: CGContext) {
         super.draw(with: box, to: context)
 
         let boxes = findHighlights
