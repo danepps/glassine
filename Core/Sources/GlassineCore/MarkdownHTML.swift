@@ -165,24 +165,56 @@ public enum MarkdownHTML {
     /// The headings come back with it: the caller turns them into the rendered
     /// PDF's outline, using the anchors this leaves around each one. So do the
     /// word-count statistics, which are counted from the same parse.
+    ///
+    /// Footnotes are two of the passes: their definitions come out of the text
+    /// *before* it is parsed (see `MarkdownFootnotes`), and their references
+    /// are rewritten in the tree before the headings are anchored, so that a
+    /// footnote inside a heading is already a marker by the time the anchorer
+    /// formats the heading's children.
     public static func body(fromMarkdown markdown: String,
                      baseDirectory: URL?) -> (html: String,
                                               headings: [MarkdownHeading],
                                               stats: MarkdownStats) {
-        var document = Document(parsing: stripFrontMatter(markdown),
-                                options: [.disableSourcePosOpts])
-        if let baseDirectory {
-            var inliner = ImageInliner(baseDirectory: baseDirectory.standardizedFileURL)
-            if let rewritten = inliner.visit(document) as? Document {
-                document = rewritten
-            }
+        let base = baseDirectory?.standardizedFileURL
+        let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
+        var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
+        document = inliningImages(document, baseDirectory: base)
+
+        // A document with no definitions cannot have a reference, so it is not
+        // worth rebuilding its whole tree to find out.
+        var referencer = MarkdownFootnotes.Referencer(slugs: notes.slugs)
+        if !notes.isEmpty, let rewritten = referencer.visit(document) as? Document {
+            document = rewritten
         }
-        let stats = statistics(of: document)
+
+        // Only notes that were actually referenced are rendered, and in
+        // reference order -- an unreferenced definition is dropped, the way
+        // Pandoc and GitHub drop it.
+        var rendered: [(slug: String, html: String)] = []
+        var noteWords = 0
+        for label in referencer.order {
+            var note = Document(parsing: notes.bodies[label] ?? "",
+                                options: [.disableSourcePosOpts])
+            note = inliningImages(note, baseDirectory: base)
+            noteWords += statistics(of: note).words
+            rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
+        }
+
+        var stats = statistics(of: document)
+        stats.words += noteWords
+
         var anchorer = HeadingAnchorer()
         if let rewritten = anchorer.visit(document) as? Document {
             document = rewritten
         }
-        return (HTMLFormatter.format(document), anchorer.headings, stats)
+        let html = HTMLFormatter.format(document) + MarkdownFootnotes.notesSection(rendered)
+        return (html, anchorer.headings, stats)
+    }
+
+    private static func inliningImages(_ document: Document, baseDirectory: URL?) -> Document {
+        guard let baseDirectory else { return document }
+        var inliner = ImageInliner(baseDirectory: baseDirectory)
+        return (inliner.visit(document) as? Document) ?? document
     }
 
     /// Wrap a formatted body in the full page: charset, CSP, and the stylesheet
@@ -276,18 +308,69 @@ public enum MarkdownHTML {
     /// can never drift apart. WebKit emits a link annotation for every `<a>`
     /// but no PDF outline, so those annotations are how the renderer learns
     /// where each heading landed. The anchor is styled invisible.
+    ///
+    /// The heading also gets a GitHub-style `id`, which is what makes a
+    /// hand-written table of contents (`[Background](#background)`) work: WebKit
+    /// turns a same-document fragment link into a real internal `GoTo`
+    /// destination in the printed PDF, so the link is live in the reader
+    /// without any annotation surgery. A fragment that matches no heading is
+    /// simply dead, as it was before.
     private struct HeadingAnchorer: MarkupRewriter {
         var headings: [MarkdownHeading] = []
+        /// How many headings have already claimed each slug, so a repeated
+        /// title becomes `slug-1`, `slug-2`, … the way GitHub numbers them.
+        private var taken: [String: Int] = [:]
 
         mutating func visitHeading(_ heading: Heading) -> Markup? {
             let index = headings.count
+            let title = title(of: heading)
             headings.append(MarkdownHeading(level: heading.level,
-                                            title: heading.plainText,
+                                            title: title,
                                             index: index))
             let inner = heading.children.map { HTMLFormatter.format($0) }.joined()
             let level = heading.level
-            return HTMLBlock("<h\(level)><a class=\"fh\" href=\"glassine-outline://\(index)\">"
+            return HTMLBlock("<h\(level) id=\"\(slug(for: title))\">"
+                             + "<a class=\"fh\" href=\"glassine-outline://\(index)\">"
                              + inner + "</a></h\(level)>\n")
+        }
+
+        /// GitHub's anchor slug: lower-cased, everything but letters, numbers,
+        /// hyphens and underscores dropped, spaces turned into hyphens. Letters
+        /// outside ASCII are kept, which is both what GitHub does and what an
+        /// `id` allows.
+        private mutating func slug(for title: String) -> String {
+            var slug = ""
+            for character in title.lowercased() {
+                if character.isLetter || character.isNumber
+                    || character == "-" || character == "_" {
+                    slug.append(character)
+                } else if character == " " {
+                    slug.append("-")
+                }
+            }
+            if slug.isEmpty { slug = "section" }
+            let used = taken[slug, default: 0]
+            taken[slug] = used + 1
+            return used == 0 ? slug : "\(slug)-\(used)"
+        }
+
+        /// The bookmark's label. Not `heading.plainText`: that reads an
+        /// `InlineHTML` node out as its raw markup, and a footnote reference in
+        /// a heading is exactly such a node by the time this runs. The marker
+        /// belongs in the page, not in the outline, so it is skipped.
+        private func title(of heading: Heading) -> String {
+            var collector = TitleCollector()
+            collector.visit(heading)
+            return collector.text.trimmingCharacters(in: .whitespaces)
+        }
+
+        private struct TitleCollector: MarkupWalker {
+            var text = ""
+
+            mutating func visitText(_ node: Text) { text += node.string }
+            mutating func visitInlineCode(_ node: InlineCode) { text += node.code }
+            mutating func visitSoftBreak(_ node: SoftBreak) { text += " " }
+            mutating func visitLineBreak(_ node: LineBreak) { text += " " }
         }
     }
 
@@ -391,6 +474,13 @@ public enum MarkdownHTML {
         /* The outline anchor wrapped around every heading must not be visible;
            this rule has to come after the one above to win. */
         a.fh { color: inherit; text-decoration: none; }
+        /* Footnotes: a superscript marker in the prose, and the notes
+           themselves in an ordered list after a rule at the end. */
+        sup.fnref { font-size: 0.75em; line-height: 0; vertical-align: super; }
+        section.footnotes { margin-top: 24pt; font-size: 0.9em; }
+        section.footnotes ol { padding-left: 1.5em; }
+        section.footnotes li { margin-bottom: 6pt; }
+        a.fnback { margin-left: 0.3em; }
         ul, ol { margin: 0 0 var(--paragraph-gap); padding-left: 20pt; }
         li { margin: 0 0 2pt; }
         li > ul, li > ol { margin-top: 2pt; }

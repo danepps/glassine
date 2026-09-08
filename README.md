@@ -28,6 +28,12 @@ updated in place.
   Export the rendered pages with ⇧⌘E — always paginated, however
   you are reading it. Everything Markdown-specific lives in its own **Markdown**
   menu, between View and Go.
+- **Footnotes and heading links.** `[^label]` references and their
+  `[^label]: …` definitions are set as superscript markers and a notes section
+  at the end, numbered by first use; clicking a marker jumps to the note and
+  the note's ↩ jumps back. Headings get GitHub-style anchors, so a
+  hand-written table of contents (`[Background](#background)`) is live in the
+  rendered pages too.
 - **Markdown styles.** Markdown ▸ Style offers six print-quality
   stylesheets — Manuscript (New York serif), Modern (SF, airy), GitHub,
   Antique (Baskerville, old-style numerals), Ink (small-caps heads, tight

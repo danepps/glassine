@@ -755,6 +755,72 @@ Dan's stated requirements, all met as of this handoff:
   band's tone (37 vs 78 at 60 %, 60 vs 130 at 30 %) — a flat band in the right
   colour family rather than the sharp desktop it used to be, but not the page's
   tone.
+- **Markdown footnotes landed 2026-09-07.** `[^label]` references and
+  `[^label]: note` definitions — the Pandoc/GitHub/Obsidian extension — now
+  render as superscript markers and a notes section. cmark-gfm has the
+  extension but swift-markdown never sets `CMARK_OPT_FOOTNOTES` and has no node
+  types for it, so `Core/Sources/GlassineCore/MarkdownFootnotes.swift` does it
+  in two passes of Glassine's own. **Definitions come out of the raw text
+  before the parse** (`MarkdownFootnotes.extract`, called from
+  `MarkdownHTML.body` between `stripFrontMatter` and `Document(parsing:)`):
+  they have to, because `[^1]: https://example.com` is a *link reference
+  definition* to cmark, which would turn every `[^1]` in the file into a link
+  to that URL. The line pass tracks ``` / ~~~ fences, takes four-space and tab
+  continuations, lazy continuations and blank-line-then-indented second
+  paragraphs, and leaves a blank line where each block was. **References are
+  rewritten in the parsed tree** (`MarkdownFootnotes.Referencer`), on `Text`
+  nodes only, which is what keeps `[^x]` inside a code span, a fenced block or
+  a link destination literal without a single special case; because a
+  `MarkupRewriter` maps one node to one node, the splice happens a level up in
+  `defaultVisit`, where the parent rebuilds its children. The marker is
+  `InlineHTML`, so `HTMLFormatter` passes it through raw and the word count
+  does not see it. The notes are appended as
+  `<section class="footnotes">` after the body, each note parsed and formatted
+  as its own document (so emphasis, links and code work in a note) with the
+  back-link tucked inside its last `<p>`. Numbering is by **first reference**,
+  not definition order; repeated references share a number and get
+  `fnref-<slug>-2`, `-3` ids; **an unreferenced definition is dropped
+  silently**, as Pandoc and GitHub drop it; the word count adds the notes'
+  words. Five rules went into `baseStyle` (`sup.fnref`, the `section.footnotes`
+  block, `a.fnback`), so **the `MarkdownHTMLSnapshotTests` digests were
+  re-recorded** — pages `eff7ffeb…`, continuous `4104dabf…`.
+- **Same-document heading links landed with them (2026-09-07).** Every heading
+  now carries a GitHub-style `id` (lower-cased, punctuation dropped, spaces to
+  hyphens, repeats numbered `slug-1`, `slug-2`), computed in `HeadingAnchorer`
+  alongside the outline index so the two can never drift. A hand-written table
+  of contents — `[Background](#background)` — is therefore live in the rendered
+  PDF. Nothing rewrites the links themselves.
+- **Both of those ride on plain `#fragment` links, because WebKit's print path
+  turns them into real internal `GoTo` destinations.** The old note under
+  "Design decisions" said WebKit emits no annotations for same-page fragments;
+  that is wrong and was corrected here. Probed 2026-09-07 with an offscreen
+  `WKWebView` + `NSPrintOperation` at the app's own print settings: an
+  `<a href="#fn-a">` came back as a `Link` annotation whose action is a
+  `PDFActionGoTo` with an XYZ destination at the target element, **across pages
+  and in the one-tall-page continuous layout too** (a five-page paginated
+  render pointed from page 0 to page 4 and back). So there is no private-scheme
+  machinery for footnotes or heading links, no new annotation pass beside
+  `applyOutline`, and no change to either renderer. End-to-end on the sample:
+  13 `GoTo` annotations, 0 private-scheme annotations left after
+  `applyOutline`. The one wart is a fragment that matches nothing
+  (`[x](#no-such-heading)`): it stays a `file://…#no-such-heading` URL
+  annotation, which is exactly what every fragment link did before this change.
+- Runtime-verified 2026-09-07 for both: the real `MarkdownHTML` pipeline into
+  the Mac's print settings, pages rasterised and read back — superscript
+  markers in the prose, a rule and an ordered list of notes at the end, the
+  multi-paragraph note's back-link on its last line, code spans and a fenced
+  block untouched, note 4 flowing onto page 2 — plus the app itself opening the
+  sample in a pid-isolated instance without a crash. **Not verified: the
+  on-screen look in the reader window.** The screen was locked
+  (`CGSSessionScreenIsLocked=Yes`), which blanks `screencapture`; the PDF the
+  reader displays was inspected directly instead.
+- **iOS follow-up:** footnote and heading links work on iOS only in the
+  `createPDF` (continuous, under 14,400 pt) path, which keeps annotations.
+  Every `UIPrintPageRenderer` output has no link annotations at all — the same
+  reason headings there are located by measure-then-snap — so in the paginated
+  path the markers render but do not jump. Nothing is left dirty; there is just
+  nothing to click. Fixing it means synthesising the link annotations from a
+  JavaScript measurement the way `HeadingLocator` does.
 
 ## Build, run, test
 
@@ -1127,9 +1193,14 @@ tiles are the ones worth tuning.
   walks every page's annotations, keys them by the integer in the URL, keeps the
   topmost hit per heading (a heading that wraps yields one annotation per line),
   removes them all, and builds the `PDFOutline` tree with a level stack. An
-  annotation's URL names *one* heading exactly; fragment links (`#some-heading`)
-  would be ambiguous whenever two headings slugify the same, and WebKit does not
-  emit annotations for same-page fragments anyway. `a.fh { color: inherit }`
+  annotation's URL names *one* heading exactly, which a fragment link
+  (`#some-heading`) could not: two headings that slugify the same are
+  indistinguishable, and the outline has to tell them apart. (This note used to
+  add that WebKit emits no annotations for same-page fragments. **That is
+  wrong** — measured 2026-09-07, it emits a link annotation carrying a real
+  `PDFActionGoTo`, which is exactly what footnote markers and heading links now
+  ride on; see the 2026-09-07 entries in State. The outline keeps its own
+  scheme for the naming reason above.) `a.fh { color: inherit }`
   comes after the `a { color: #0B57D0 }` rule so the anchor is invisible.
 - **Export re-serialises Markdown.** `pdfDataForExport` hands back
   `pdf.dataRepresentation()` rather than the raw print bytes, because those

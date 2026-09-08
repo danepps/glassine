@@ -152,3 +152,308 @@ struct MarkdownHTMLTests {
                 == MarkdownHTML.builtInStyle(MarkdownStyle.defaultID))
     }
 }
+
+/// Markdown footnotes -- the Pandoc/GitHub/Obsidian extension cmark-gfm has and
+/// swift-markdown never turns on, so `MarkdownFootnotes` implements it: the
+/// definitions come out of the text before the parse, the references are
+/// rewritten in the tree, and the notes are appended as a section.
+@Suite("Markdown footnotes")
+struct MarkdownFootnoteTests {
+
+    private func convert(_ markdown: String) -> (html: String,
+                                                 headings: [MarkdownHeading],
+                                                 stats: MarkdownStats) {
+        MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil)
+    }
+
+    @Test("A reference and its definition become a marker and a note")
+    func basic() {
+        let html = convert("""
+        The report said so.[^gao]
+
+        [^gao]: GAO Report 24-1.
+        """).html
+
+        #expect(html.contains(
+            "<sup class=\"fnref\" id=\"fnref-gao\"><a href=\"#fn-gao\">1</a></sup>"))
+        #expect(html.contains("<section class=\"footnotes\">"))
+        #expect(html.contains("<li id=\"fn-gao\">"))
+        #expect(html.contains("GAO Report 24-1."))
+        #expect(html.contains("<a class=\"fnback\" href=\"#fnref-gao\">\u{21A9}</a></p>"))
+        // The definition line itself is gone from the prose.
+        #expect(!html.contains("[^gao]:"))
+        #expect(!html.contains("[^gao]"))
+    }
+
+    @Test("Two references to one label share a number and never share an id")
+    func repeatedReference() {
+        let html = convert("""
+        First.[^a] Second.[^a]
+
+        [^a]: Once.
+        """).html
+
+        #expect(html.components(separatedBy: "href=\"#fn-a\">1</a>").count - 1 == 2)
+        #expect(html.contains("id=\"fnref-a\""))
+        #expect(html.contains("id=\"fnref-a-2\""))
+        // One note, listed once.
+        #expect(html.components(separatedBy: "<li id=\"fn-a\">").count - 1 == 1)
+    }
+
+    @Test("Numbering follows first reference, not the order of the definitions")
+    func numberingByReference() {
+        let html = convert("""
+        Beta first.[^beta] Then alpha.[^alpha]
+
+        [^alpha]: The alpha note.
+        [^beta]: The beta note.
+        """).html
+
+        #expect(html.contains("<a href=\"#fn-beta\">1</a>"))
+        #expect(html.contains("<a href=\"#fn-alpha\">2</a>"))
+        // And the list is in number order.
+        let beta = html.range(of: "<li id=\"fn-beta\">")
+        let alpha = html.range(of: "<li id=\"fn-alpha\">")
+        #expect(beta != nil && alpha != nil)
+        if let beta, let alpha { #expect(beta.lowerBound < alpha.lowerBound) }
+    }
+
+    @Test("A definition runs on through lazy and indented continuation lines")
+    func continuations() {
+        let converted = convert("""
+        Text.[^long]
+
+        [^long]: The first line
+        lazily continued on the next.
+
+            And a second paragraph, indented.
+
+        A plain paragraph that is not part of the note.
+        """)
+
+        #expect(converted.html.contains("lazily continued on the next."))
+        #expect(converted.html.contains("<p>And a second paragraph, indented."))
+        // Two paragraphs inside the one note; the back-link is in the last.
+        #expect(converted.html.contains(
+            "indented.<a class=\"fnback\" href=\"#fnref-long\">\u{21A9}</a></p>"))
+        // The unindented paragraph after the blank line ended the note and is
+        // still body text, ahead of the notes section.
+        let paragraph = converted.html.range(of: "A plain paragraph that is not part of the note.")
+        let section = converted.html.range(of: "<section class=\"footnotes\">")
+        #expect(paragraph != nil && section != nil)
+        if let paragraph, let section { #expect(paragraph.lowerBound < section.lowerBound) }
+    }
+
+    @Test("Code spans and fenced blocks are left exactly as written")
+    func code() {
+        let html = convert("""
+        Real one.[^x] Literal `[^x]` in code.
+
+        ```
+        [^x]: not a definition
+        [^x] not a reference
+        ```
+
+        [^x]: The note.
+        """).html
+
+        // Exactly one marker, and the code kept its brackets.
+        #expect(html.components(separatedBy: "class=\"fnref\"").count - 1 == 1)
+        #expect(html.contains("<code>[^x]</code>"))
+        #expect(html.contains("[^x]: not a definition"))
+        #expect(html.contains("[^x] not a reference"))
+        // The definition inside the fence was not lifted out: the note is the
+        // real one below it.
+        #expect(html.contains("The note."))
+    }
+
+    @Test("A reference with no definition stays literal text")
+    func undefined() {
+        let html = convert("Nothing defines this.[^ghost]\n").html
+        #expect(html.contains("[^ghost]"))
+        #expect(!html.contains("class=\"fnref\""))
+        #expect(!html.contains("<section class=\"footnotes\">"))
+    }
+
+    @Test("A definition that is only a URL is a note, not a link reference")
+    func singleTokenDefinition() {
+        // cmark reads `[^1]: https://example.com` as a *link reference
+        // definition* and would turn `[^1]` into a link to it; the text pass
+        // has to take the line out before the parser ever sees it.
+        let html = convert("""
+        See the site.[^1]
+
+        [^1]: https://example.com
+        """).html
+
+        #expect(html.contains("<a href=\"#fn-1\">1</a>"))
+        #expect(!html.contains("<a href=\"https://example.com\">[^1]</a>"))
+        #expect(html.contains("<li id=\"fn-1\">"))
+        #expect(html.contains("https://example.com"))
+    }
+
+    @Test("A note's own Markdown is rendered")
+    func noteMarkdown() {
+        let html = convert("""
+        Cited.[^n]
+
+        [^n]: See *Sorrells*, [287 U.S. 435](https://example.com/sorrells), and `code`.
+        """).html
+
+        #expect(html.contains("<em>Sorrells</em>"))
+        #expect(html.contains("<a href=\"https://example.com/sorrells\">287 U.S. 435</a>"))
+        #expect(html.contains("<code>code</code>"))
+    }
+
+    @Test("A document with no footnotes gets no notes section")
+    func none() {
+        let html = convert("# Title\n\nJust prose, with a [link](https://example.com).\n").html
+        #expect(!html.contains("footnotes"))
+        #expect(!html.contains("fnref"))
+    }
+
+    @Test("An unreferenced definition is dropped")
+    func unreferenced() {
+        let html = convert("""
+        Body text.
+
+        [^unused]: Nobody points at this.
+        """).html
+
+        #expect(!html.contains("<section class=\"footnotes\">"))
+        #expect(!html.contains("Nobody points at this."))
+        #expect(!html.contains("[^unused]"))
+    }
+
+    @Test("The word count includes the notes and not the markers")
+    func words() {
+        // "Body text here" (3) + the note's "One two three four" (4).
+        let converted = convert("""
+        Body text here.[^w]
+
+        [^w]: One two three four.
+        """)
+        #expect(converted.stats.words == 7)
+    }
+
+    @Test("Front matter is still stripped when the document has footnotes")
+    func withFrontMatter() {
+        let converted = convert("""
+        ---
+        title: Memo
+        ---
+        # Heading
+
+        Text.[^f]
+
+        [^f]: A note.
+        """)
+        #expect(!converted.html.contains("title: Memo"))
+        #expect(converted.headings.map(\.title) == ["Heading"])
+        #expect(converted.html.contains("<li id=\"fn-f\">"))
+    }
+
+    @Test("A footnote in a heading stays out of the outline label")
+    func inHeading() {
+        let converted = convert("""
+        ## A Heading[^h]
+
+        [^h]: The note.
+        """)
+        #expect(converted.headings.map(\.title) == ["A Heading"])
+        #expect(converted.html.contains("class=\"fnref\""))
+    }
+
+    @Test("A label with awkward characters still makes one usable id")
+    func slugging() {
+        let html = convert("""
+        Text.[^a b?]
+
+        [^a b?]: Not a footnote -- the label has a space.
+        """).html
+        // A label may not contain whitespace, so this is literal text.
+        #expect(!html.contains("class=\"fnref\""))
+
+        let punctuated = convert("""
+        Text.[^note.1]
+
+        [^note.1]: Punctuated label.
+        """).html
+        #expect(punctuated.contains("id=\"fn-note-1\""))
+        #expect(punctuated.contains("href=\"#fn-note-1\""))
+    }
+}
+
+/// Same-document heading links. Every heading carries a GitHub-style `id`, and
+/// WebKit's print path turns a `#slug` link into a real internal `GoTo`
+/// destination, so a hand-written table of contents is live in the rendered
+/// PDF without any rewriting of the links themselves.
+@Suite("Markdown heading anchors")
+struct MarkdownHeadingAnchorTests {
+
+    private func html(_ markdown: String) -> String {
+        MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil).html
+    }
+
+    @Test("Slugs lower-case, drop punctuation, and turn spaces into hyphens")
+    func slugShape() {
+        let output = html("""
+        # The Court's *Ruling*: Sorrells v. United States (1932)
+
+        ## Snake_case and hyphen-ated words
+
+        ### 42
+        """)
+        #expect(output.contains("<h1 id=\"the-courts-ruling-sorrells-v-united-states-1932\">"))
+        #expect(output.contains("<h2 id=\"snake_case-and-hyphen-ated-words\">"))
+        #expect(output.contains("<h3 id=\"42\">"))
+    }
+
+    @Test("Letters outside ASCII survive; a heading with no letters still gets an id")
+    func slugUnicode() {
+        let output = html("# Über Größe\n\n## ¡¿?!\n")
+        #expect(output.contains("<h1 id=\"über-größe\">"))
+        #expect(output.contains("<h2 id=\"section\">"))
+    }
+
+    @Test("Repeated titles are numbered the way GitHub numbers them")
+    func slugRepeats() {
+        let output = html("# Notes\n\n# Notes\n\n# Notes\n")
+        #expect(output.contains("id=\"notes\">"))
+        #expect(output.contains("id=\"notes-1\">"))
+        #expect(output.contains("id=\"notes-2\">"))
+    }
+
+    @Test("A link to a heading matches that heading's id; a link to nothing is left alone")
+    func links() {
+        let output = html("""
+        [Go](#background) and [nowhere](#no-such-thing) and
+        [out](https://example.com/#background).
+
+        ## Background
+        """)
+        #expect(output.contains("<a href=\"#background\">Go</a>"))
+        #expect(output.contains("<h2 id=\"background\">"))
+        // The dead fragment and the external URL are emitted exactly as written.
+        #expect(output.contains("<a href=\"#no-such-thing\">nowhere</a>"))
+        #expect(output.contains("<a href=\"https://example.com/#background\">out</a>"))
+    }
+
+    @Test("A footnote reference in a heading leaves the id and the outline label clean")
+    func headingWithFootnote() {
+        let converted = MarkdownHTML.body(fromMarkdown: """
+        ## The Rule[^r]
+
+        [^r]: The note.
+        """, baseDirectory: nil)
+        #expect(converted.html.contains("<h2 id=\"the-rule\">"))
+        #expect(converted.headings.map(\.title) == ["The Rule"])
+    }
+
+    @Test("The outline anchor is still inside the heading, after the id")
+    func anchorSurvives() {
+        let output = html("# One\n\n## Two\n")
+        #expect(output.contains("<h1 id=\"one\"><a class=\"fh\" href=\"glassine-outline://0\">One</a></h1>"))
+        #expect(output.contains("<h2 id=\"two\"><a class=\"fh\" href=\"glassine-outline://1\">Two</a></h2>"))
+    }
+}

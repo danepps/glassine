@@ -10,10 +10,12 @@ import Testing
 /// guard that "nothing" still produces the byte-for-byte page it produced
 /// before that parameter existed.
 ///
-/// The expected digests were taken from the pre-Phase-4 source. If a deliberate
-/// change to the stylesheet moves them, re-record them *and* say so in HANDOFF —
-/// an accidental move is a silently different render for every Markdown
-/// document on both platforms.
+/// The expected digests were taken from the pre-Phase-4 source and re-recorded
+/// on 2026-09-07, when footnote support added five rules to the base layer
+/// (`sup.fnref`, the `section.footnotes` block and `a.fnback`). If a deliberate
+/// change to the stylesheet moves them again, re-record them *and* say so in
+/// HANDOFF — an accidental move is a silently different render for every
+/// Markdown document on both platforms.
 struct MarkdownHTMLSnapshotTests {
 
     private func digest(_ string: String) -> String {
@@ -37,8 +39,8 @@ struct MarkdownHTMLSnapshotTests {
 
     @Test("page() with no platformCSS is byte-identical to the pre-Phase-4 output")
     func pageIsUnchangedWithoutPlatformCSS() {
-        #expect(digest(snapshot(layout: .pages)) == "8feec783e0b2a465be0f9cdd65333ef87cbf36858d179ff2c49c30440fb7b9ec")
-        #expect(digest(snapshot(layout: .continuous)) == "79b5ff441dff40eeaa1f7e29ff15e91015bd2363b37d0ddae9a6a4a174435f9f")
+        #expect(digest(snapshot(layout: .pages)) == "eff7ffeb2ace5323880111c35e94bec20b167ee7529501e8735c281565549fd1")
+        #expect(digest(snapshot(layout: .continuous)) == "4104dabf4597e94f9fbbb59ee508704a584e829f5567515e8bc11bce8a7cbfc3")
     }
 
     @Test("platformCSS is emitted as a third layer, after the style layer")
