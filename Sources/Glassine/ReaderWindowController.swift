@@ -770,7 +770,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc func searchChanged(_ sender: NSSearchField) {
-        findController.startFind(sender.stringValue)
+        // Not `startFind`: the field re-sends its action with the same text
+        // when editing ends, and restarting the search would jump the reader
+        // back to the first match.
+        findController.search(sender.stringValue)
     }
 
     @objc func findNext(_ sender: Any?) {

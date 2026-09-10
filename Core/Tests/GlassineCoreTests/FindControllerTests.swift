@@ -157,6 +157,37 @@ struct FindControllerTests {
         #expect(delegate.counts.contains { $0.hasSuffix(" found…") })
     }
 
+    @Test("The field's action with an unchanged query does not restart the search")
+    func unchangedQueryIsANoOp() async {
+        let document = makeDocument()
+        let forwarder = FindForwarder()
+        document.delegate = forwarder
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        forwarder.sink = controller
+
+        #expect(controller.search("alpha"))
+        await settle(controller)
+        controller.showMatch(5)
+        #expect(delegate.shown == [0, 5])
+
+        // The reader clicks into the document: the field sends "alpha" again.
+        #expect(controller.search("alpha") == false)
+        #expect(controller.search("  alpha ") == false)
+        #expect(controller.matchIndex == 5)
+        #expect(delegate.shown == [0, 5])           // no jump back to the first match
+        #expect(controller.matches.count == 24)     // and the matches are untouched
+
+        // A different query still starts a search; so does clearing.
+        #expect(controller.search("omega"))
+        #expect(controller.lastQuery == "omega")
+        await settle(controller)
+        #expect(controller.search(""))
+        #expect(controller.lastQuery == "")
+        #expect(controller.search("") == false)
+    }
+
     @Test("A query with no matches says so; an empty query says nothing")
     func noMatches() async {
         let document = makeDocument()

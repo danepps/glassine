@@ -115,6 +115,22 @@ public final class FindController: FindSink {
 
     // MARK: Starting and stopping
 
+    /// The search field's action. `NSSearchField` sends it for every edit and
+    /// again when editing ends -- a click into the document, say -- with the
+    /// same text as before. Restarting the search for an unchanged query would
+    /// scroll the reader back to the first match; so an unchanged query is a
+    /// no-op, and only a different one starts a find. Returns whether it did.
+    @discardableResult
+    public func search(_ query: String) -> Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // While a cancellation is pending the effective query is the pending
+        // one, not the search being cancelled.
+        let current = isAwaitingCancelledFindEnd ? (pendingQuery ?? lastQuery) : lastQuery
+        guard trimmed != current else { return false }
+        startFind(trimmed)
+        return true
+    }
+
     public func startFind(_ query: String, suppressFirstScroll: Bool = false) {
         suppressFirstMatchScroll = suppressFirstScroll
         matches.removeAll()

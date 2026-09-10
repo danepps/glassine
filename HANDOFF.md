@@ -960,6 +960,20 @@ Dan's stated requirements, all met as of this handoff:
   public `.behindWindow` NSVisualEffectView backdrop (design change: system
   material tint instead of our own, page alpha stays), or default blur off.
   Not tried: reproducing with sleep/wake, display change, or long uptime.
+- **Search: a click into the document jumped back to the first match (Dan,
+  2026-09-09 evening; fixed).** `NSSearchField` with `sendsWholeSearchString =
+  false` sends its action on every edit *and again when editing ends* -- a
+  click into the page ends it -- with the unchanged text, and `searchChanged`
+  called `startFind` unconditionally, which shows match 0 on the first hit.
+  `FindController.search(_:)` is now the field's entry point: trims, compares
+  with the effective current query (`pendingQuery` while a cancellation is
+  pending, else `lastQuery`) and does nothing when equal; anything else goes
+  to `startFind`. Return in the field, ⌘G, the cancel button and the
+  empty-field reset are untouched (they never went through `searchChanged`).
+  Test: "The field's action with an unchanged query does not restart the
+  search". iOS's search bar path was not changed (it does not re-send on end
+  of editing the same way; not verified on device). Installed to
+  /Applications/Glassine.app along with the tab-strip fix; nothing committed.
 - **Tab strip fix landed 2026-09-09 (second attempt; the first was reverted).**
   Root cause, bisected on a real multi-tab repro: the translucency plate
   (`TitlebarBackdrop`) sat in the window's theme frame as a *sibling* of
