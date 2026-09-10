@@ -114,6 +114,35 @@ final class ReaderPDFView: PDFView {
         UIKeyCommand(input: input, modifierFlags: flags, action: action)
     }
 
+    // MARK: Copying
+
+    /// Copy the selection as flowing text rather than as printed lines.
+    ///
+    /// PDFKit hands over exactly what the page shows: a hard return at every
+    /// line end, and a word broken across a line still split and hyphenated.
+    /// `CopyCleanup` puts the paragraphs back together. The Mac keeps PDFKit's
+    /// own copy on ⌥⌘C; there is no second copy command here yet.
+    override func copy(_ sender: Any?) {
+        guard let selection = currentSelection,
+              let raw = selection.string, !raw.isEmpty else {
+            super.copy(sender)
+            return
+        }
+        UIPasteboard.general.string = CopyCleanup.text(for: selection, isWord: Self.isWord)
+    }
+
+    /// "Is this a word?", answered by the system dictionary: a whole-word check
+    /// that finds nothing to correct. One letter is never asked about -- the
+    /// checker accepts most single letters, which would make "a-" / "bove" look
+    /// like a compound and keep a hyphen that was a syllable break.
+    private static func isWord(_ word: String) -> Bool {
+        guard word.count >= 2 else { return false }
+        let whole = NSRange(location: 0, length: word.utf16.count)
+        let misspelled = UITextChecker().rangeOfMisspelledWord(
+            in: word, range: whole, startingAt: 0, wrap: false, language: "en_US")
+        return misspelled.location == NSNotFound
+    }
+
     // MARK: Scrolling instead of paging
 
     /// One page, taller than the view: a continuous Markdown render, or a
