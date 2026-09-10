@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import GlassineCore
+import ObjectiveC
 import PDFKit
 
 /// PDFView with two additions: it reports effective-appearance changes
@@ -127,6 +128,72 @@ final class ReaderPDFView: PDFView {
         default:
             super.keyDown(with: event)
         }
+    }
+
+    // MARK: Copying
+
+    /// Copy the selection as flowing text rather than as printed lines.
+    ///
+    /// PDFKit hands over exactly what the page shows: a hard return at every
+    /// line end, and a word broken across a line still split and hyphenated.
+    /// Pasted anywhere that is not a PDF, that is a wall of ragged lines to
+    /// re-flow by hand. `CopyCleanup` puts the paragraphs back together;
+    /// "Copy Without Cleanup" (⌥⌘C) still reaches PDFKit's own copy for the
+    /// paste that wants the lines as printed.
+    override func copy(_ sender: Any?) {
+        guard let selection = currentSelection,
+              let raw = selection.string, !raw.isEmpty else {
+            super.copy(sender)
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(CopyCleanup.text(for: selection, isWord: Self.isWord),
+                             forType: .string)
+    }
+
+    /// PDFKit's untouched copy.
+    @objc func copyRaw(_ sender: Any?) {
+        super.copy(sender)
+    }
+
+    /// "Is this a word?", answered by the system dictionary through the spell
+    /// checker: a whole-word check that finds nothing to correct. One letter is
+    /// never asked about -- the checker accepts most single letters, which would
+    /// make "a-" / "bove" look like a compound and keep a hyphen that was a
+    /// syllable break.
+    private static func isWord(_ word: String) -> Bool {
+        guard word.count >= 2 else { return false }
+        let found = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0)
+        return found.location == NSNotFound
+    }
+}
+
+/// Menu validation, which PDFView does in Objective-C.
+///
+/// `validateMenuItem:` is implemented by PDFView but declared nowhere in its
+/// Swift interface, so this cannot be an `override` and `super` cannot be
+/// spelled: at runtime this implementation simply replaces PDFKit's for this
+/// class. Everything except our own action is therefore handed back to PDFView's
+/// implementation through the runtime. Dropping it instead would take the
+/// answers for Copy, Select All and the page and zoom items with it.
+extension ReaderPDFView: NSMenuItemValidation {
+
+    private typealias Validate = @convention(c) (AnyObject, Selector, NSMenuItem) -> ObjCBool
+
+    private static let pdfViewValidate: Validate? = {
+        let selector = #selector(NSMenuItemValidation.validateMenuItem(_:))
+        guard let method = class_getInstanceMethod(PDFView.self, selector) else { return nil }
+        return unsafeBitCast(method_getImplementation(method), to: Validate.self)
+    }()
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(copyRaw(_:)) {
+            return currentSelection?.string?.isEmpty == false
+        }
+        guard let inherited = Self.pdfViewValidate else { return true }
+        return inherited(self, #selector(NSMenuItemValidation.validateMenuItem(_:)),
+                         menuItem).boolValue
     }
 }
 

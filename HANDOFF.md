@@ -822,6 +822,246 @@ Dan's stated requirements, all met as of this handoff:
   nothing to click. Fixing it means synthesising the link annotations from a
   JavaScript measurement the way `HeadingLocator` does.
 
+- **1.5.1 release changes (Codex, 2026-09-09).** Includes the existing
+  PDF copy cleanup / Copy Without Cleanup, conditional search controls and
+  match-count priority, and Recents page-coloured backing described below.
+  The final chrome implementation supersedes the earlier private-titlebar
+  plate attempts: `WindowChromeContentController` owns a full-size content
+  host with a public `.behindWindow` `NSVisualEffectView` and a separate
+  title-band backing. The document stays below `contentLayoutGuide`, keeping
+  uninverted PDF pixels out of the toolbar's sampling region. Removed CGS
+  background blur, associated-object plates, and private titlebar traversal.
+  Opacity still fades the document; blur uses the system material, so the
+  tint can differ from 1.5.0. No iOS release is included.
+  Validation: root `swift test` passes the new native AppKit regression test
+  across three tabs, both appearances, four opacities, blur on/off, resizing,
+  and tab detachment; Core passes all 133 tests in 14 suites. Release build
+  and ad-hoc signature verification passed. A separately identified app
+  instance visibly opened a synthetic Markdown document, created a Recents
+  tab, switched tabs, displayed 25 search results, removed count/navigation
+  controls on clear, and displayed the reader correctly in light/dark mode.
+  **Limit:** the intermittent black/magenta hover failure was not reproduced
+  in this run, and long-duration hover stability remains unconfirmed. The
+  release notes describe the rendering change as addressing the issue, not
+  as a demonstrated cure. The original user session was left running.
+
+- **Text-copy cleanup landed 2026-09-09.** ⌘C on a PDF selection now re-flows
+  the text: lines within a paragraph joined by a space, line-end hyphens
+  closed up where they are syllable breaks, paragraphs separated by one return.
+  Edit ▸ Copy Without Cleanup (⌥⌘C) is PDFKit's raw copy. The logic is
+  `CopyCleanup` in Core (`text(for: PDFSelection)`, `text(lines:)`,
+  `text(_ raw:)`; 31 tests in `CopyCleanupTests`), geometry-driven from
+  `selectionsByLine()`: same-baseline fragments are merged first (PDFKit cuts
+  a line at every font change, so a superscript footnote marker arrives as its
+  own "line"), lines are clustered into columns per page (a split needs a
+  3 × line-height jump in left edge *and* clearance past the running
+  cluster's right edge), margins are the 25th/75th percentiles so a running
+  head or watermark cannot poison them, and a paragraph break falls where a
+  line steps in by more than 0.8 line heights relative to the previous line,
+  where a short line ending in terminal punctuation leaves room for the next
+  line's first word, where the baseline step exceeds 1.6 line heights, around
+  a centred line whose indent changes, before a list marker (hand-parsed;
+  `v.` excluded so a wrapped case name is not roman numeral five), or across
+  an empty line. Hyphens: uppercase or digit on either side keeps it; a soft
+  hyphen is always dropped; otherwise the platform spell checker decides
+  (`NSSpellChecker` / `UITextChecker` via an `isWord` hook) — joined form is a
+  word → drop; both halves are words → keep ("well-known"); neither → drop
+  ("certiorari"). Verified on real documents through Core (no GUI): a Harvard
+  Law Review Foreword page came out one line per body paragraph with heading
+  and footnotes separate; a two-column *AJPS* article joined across the column
+  break with its block quote intact; a 1980 JSTOR scan closed up
+  "protec-tion", "un-derstanding", "law-yers". Known misses: a bold heading
+  at the top of a column with no air above it glues to the previous paragraph;
+  a select-all still carries running heads and folios as paragraphs and can
+  append a sideways "Downloaded from" watermark; footnote numbers stay glued
+  ("appointees.26") and a URL wrapped without a hyphen gains a space. Mac
+  detail: `PDFView` implements `validateMenuItem:` only in Objective-C, so
+  `ReaderPDFView` forwards everything but `copyRaw:` to PDFView's own IMP;
+  PDFView answers YES for `copy:` with no selection, so Copy was always
+  enabled and Copy Without Cleanup is the stricter of the two. iOS gets the
+  same `copy(_:)` override (simulator build clean; not run on a device).
+  **Not verified: the actual pasteboard write in the running app** — the
+  harness cannot press a nil-target menu item without a key window.
+- **Two follow-ups to the tab-strip fix, 2026-09-09.** (1) *Hovered tab
+  flashed black.* Parking the plate inside the title-bar container put it
+  directly behind the tab bar, where macOS 26's glass tab-hover highlight
+  samples it; a view with `alphaValue < 1` cannot be sampled through (the
+  highlight falls back to a solid fill — black here, magenta in the
+  2026-09-08 note), so `TitlebarBackdrop.paint` now bakes the opacity into the
+  layer's background colour (`color.withAlphaComponent(alpha)`) and keeps the
+  view at `alphaValue = 1`. The band looks identical (colour at `alpha` over
+  the blurred backdrop either way). This likely also closes the older
+  magenta-pill item. Not machine-verifiable (hover needs a real pointer / key
+  window); Dan to confirm on screen. (2) *Empty match-count capsule always
+  showed.* The `.searchCount` and `.searchNav` items are dropped from
+  `toolbarDefaultItemIdentifiers` (kept in `allowed`) and inserted after the
+  search field only while a search is returning a count, via
+  `setSearchResultsVisible(_:)` driven from `findControllerCountDidChange`
+  (non-empty `countText`) and removed on `findControllerDidClear`. Verified
+  read-only on a pid-isolated instance: idle toolbar = Sidebar + page
+  indicator + search field only (no count); typing "court" inserts
+  "Matches 1 of 1802" and the Previous/Next control; both carry
+  `.user`/`.standard` priority from Part B so the count still survives a
+  narrowing window during an active search. The clear-path removal (inverse of
+  the verified insert) could not be scripted (the driver could not reach the
+  field's cancel button); Dan to confirm the capsule vanishes when the search
+  is cleared.
+- **Tab strip went dark on hover -- root cause and fix, 2026-09-09 evening.**
+  Follow-up (1) above had the mechanism backwards, and the change that
+  followed it (a `findTabBar` exclusion in `TitlebarBackdrop.relayout` that
+  raised the plate's bottom edge to the *top* of the tab strip, so the plate
+  never sat behind the tab bar) is what Dan's "tabs flash black on mouseover"
+  screenshot shows: strip mid-grey with *light* text, hovered tab darker. The
+  tab bar's material and its hover highlight are within-window backdrops --
+  they sample the window's own pixels behind them. With the plate behind the
+  strip they sample white-at-0.88 and look normal; with the strip uncovered
+  they sample the window's clear background, i.e. transparent black, so the
+  strip reads as a dark scrim and the hover pass goes near-black. Measured on
+  a pid-isolated two-tab repro at 0.88/light/blur (Alpha-tab region, 0-255):
+  plate behind strip 234 idle / 228 hovered; strip uncovered 169 idle / 96
+  hovered; no plate at all 169 / 96 (same thing). A 45-frame burst through the
+  hover-in with the plate behind the strip shows 229 -> 218 and no transient.
+  Fix: the exclusion is gone (the plate fills the whole container again) and
+  `paint` bakes the opacity into the layer colour with `alphaValue = 1` (both
+  forms sampled fine; the baked one is kept as the simpler layer). Verified
+  light 0.88 hover, dark 0.88 hover, light 0.6 idle. Not re-verified: the
+  original "flashed black" report against the plate-in-container build, which
+  could not be reproduced here in either alpha form -- if it recurs, note the
+  preceding action, since the 2026-09-08 magenta pill was stateful. Repro kit
+  (pointer glide + activation, burst capture, isolated bundle with env-var
+  pref overrides) in `AI Memos/hover-harness-2026-09-09/`. Tests must be run
+  with the env overrides: `defaults write` into the isolated bundle's domain
+  was silently ignored (the app came up at 100 %), which is why the first
+  round of trials here showed nothing.
+- **Hover follow-up, same evening, still open: the stateful black/magenta
+  glass failure.** After relaunching on the fixed build Dan still reported
+  "black flashing" on hover and then a magenta tab (the 2026-09-08 pill,
+  back). Established since: (1) the *steady* hovered-tab look at 0.88 -- a
+  flat grey capsule, no sheen (`AI Memos/hover-harness-2026-09-09/
+  hover-100-vs-88.png`) -- is **identical at 100 % opacity**, so that slab is
+  macOS 26's normal hover highlight, not ours. (2) The black/magenta is a
+  separate, stateful failure of the hover glass in Dan's long-running process:
+  three recordings of his real window (per-window capture, then screen-region
+  capture at 30 fps, then a frame-accurate ScreenCaptureKit stream,
+  `sck.swift`, gated to blocks the Glassine window actually owns) never caught
+  it, partly because Dan hovered outside the capture windows, and a 12-round
+  churn-then-hover loop on a fresh pid-isolated instance (`churn2.sh`: blur
+  off/on, opacity steps, tab switches, resizes, new tabs, dark/light, then a
+  hover capture checked for dark or magenta blocks) never provoked it either.
+  (3) The plate survives tab switches (a 1 s per-window state log:
+  `host=NSTitlebarContainerView sameContainer=true` before and after AX tab
+  presses), so "container rebuilt, plate gone" is not the mechanism in a
+  fresh instance. Best remaining suspect is the private CGS background blur:
+  a within-window backdrop (the hover glass) in a window that also carries
+  `CGSSetWindowBackgroundBlurRadius` is the classic recipe for solid magenta
+  /black backdrops, it matches "never at 100 %", and the 2026-09-08 pill
+  cleared on a blur toggle. **Next:** Dan runs a while with Window ▸ Blur
+  Behind Window off; if the failure never recurs, replace the CGS blur with a
+  public `.behindWindow` NSVisualEffectView backdrop (design change: system
+  material tint instead of our own, page alpha stays), or default blur off.
+  Not tried: reproducing with sleep/wake, display change, or long uptime.
+- **Tab strip fix landed 2026-09-09 (second attempt; the first was reverted).**
+  Root cause, bisected on a real multi-tab repro: the translucency plate
+  (`TitlebarBackdrop`) sat in the window's theme frame as a *sibling* of
+  `NSTitlebarContainerView`. On a tab-selection hand-off AppKit tears that
+  container down and rebuilds it, and a foreign theme-frame sibling breaks the
+  rebuild — the container returns without its `NSTabBar`, the 88 pt band stays
+  reserved but empty, and `tabGroup.isTabBarVisible` still reads true, so
+  nothing repairs it. Shipped 1.5.0 hit this **20 of 20** opens in a 4-tab
+  saved-state restore at 0.88/blur/light; that is Dan's original "tabs vanish
+  when I open a PDF / use search", worse than intermittent once several tabs
+  are open. **The first fix attempt made it permanent** by re-running
+  `WindowChrome.apply` (hence the plate insert) across the whole group on many
+  new events, so the insert kept coinciding with hand-offs; it was reverted
+  the same day (regressed code saved at `AI Memos/chrome-debug-harness-
+  2026-09-09/tab-strip-fix-REGRESSED.patch`). **The fix that landed** is small
+  and different: park the plate as the *backmost child inside* the title-bar
+  container (fallback to the theme frame if the container class stops
+  resolving), so it rides along when AppKit rebuilds the container and never
+  touches the subview list AppKit reshuffles. Two hunks in
+  `ReaderWindowController.swift` (`TitlebarBackdrop.relayout` fills its
+  superview when parked in the container; `applyTitlebarBackdrop` hosts it in
+  the container), no group-reapply, no delegate handlers, no repair scaffold.
+  Verified on the same repro that broke 20/20: **0 of 32** opens broke, across
+  restore, a 1→2→3→0 tab-selection hand-off, and resize; container and tab bar
+  present throughout; at opacity 1.0 the plate is absent and tabs are fine. The
+  band paint is unchanged by construction (same `paint(.white, 0.88)` call,
+  plate fills the full 88 pt band backmost behind toolbar/title/tabbar).
+  Reaches into a private AppKit view (adds a child to `NSTitlebarContainerView`)
+  — same risk class as the existing close-button walk it reuses; falls back if
+  the class stops resolving. **Not verified: a live band-luma pixel capture**
+  (the pid-isolated test window was occluded; capturing it would disturb Dan's
+  foreground) and **the on-screen look in Dan's own session** — he should eye
+  the band at 0.88 on relaunch. Hit-count half (Part B) below is unaffected and
+  also shipped. The reverted first-attempt write-up follows, kept for context.
+
+- **Tab strip and hit count, 2026-09-09.** Dan: the tab strip vanishes "in
+  some instances when I open a new PDF, and particularly when I use the search
+  function" (documents stay open, only the strip goes), and the "N of M" hit
+  count drops out as the window narrows. Diagnosed first, on the unfixed 1.5.0
+  code, with a theme-frame dump (`AI Memos/chrome-debug-harness-2026-09-09/`,
+  local only: the `GLASSINE_DEBUG_CHROME` patch, the pid-targeted AX/CGEvent
+  driver, the width-sweep and tab-churn scripts) run pid-isolated with the app
+  never activated, ~465 samples at 0.88 and 1.0. **The `TitlebarBackdrop`
+  plate is not the cause**: the theme frame's order was `[content, plate,
+  NSTitlebarContainerView]` in every sample, and the tab bar lives *inside*
+  that container (`NSTabBar < NSView < NSTitlebarAccessoryClipView < NSView <
+  NSTitlebarView < NSTitlebarContainerView`), so the plate cannot get above
+  it. What the dump did catch, at 1.0 as well as 0.88: on every change of the
+  group's selected window AppKit removes the `NSTabBar` accessory from the
+  outgoing window and re-adds it to the incoming one, and between those steps
+  `tabGroup.windows.count > 1`, `isTabBarVisible == true`, the band is still
+  reserved at full height and **no tab-bar view exists in the selected
+  window's theme frame** — Dan's symptom exactly, if the re-add is ever
+  dropped. In the harness it always recovered within one 0.25 s sample; the
+  stuck state itself was not reproduced (no key window — see the caveat).
+  Fix, three layers in `WindowChrome`: (1) `apply` is change-guarded —
+  `titlebarAppearsTransparent`, `titlebarSeparatorStyle`, `isOpaque`,
+  `backgroundColor`, the content alpha and the CGS blur radius (cached per
+  window) are written only when they differ, because each of those setters
+  re-lays out the very container the hand-off runs through, and `apply` now
+  runs on far more events; (2) `reapply(group:)` runs it for every window in
+  the tab group from `showWindow`, `StartTabWindowController.present`,
+  `windowDidBecomeMain`, `windowDidResize` (outside live resize),
+  `windowDidEndLiveResize`, the full-screen transitions, and one turn after
+  `beginSearchInteraction`/`endSearchInteraction`; the plate keeps its
+  measured place below the container with a per-pass index check instead of
+  the one-time install, and `TitlebarBackdrop` no longer stacks a superview
+  observer per re-add; (3) `repairTabBar`, 0.4 s after becomeMain / showWindow
+  / a search interaction (longer than the measured hand-off): toggles the bar
+  back if `isTabBarVisible` is false with >1 tabs, and otherwise walks the
+  title-bar container for an `NSTabBar`-named view (self-validating: the
+  repair is inert until the walk has found that class once in this process,
+  so a renamed private class cannot make it misfire), forcing a layout pass
+  and, failing that, a hide/show toggle; one attempt per window per 2 s, each
+  logged as `Glassine: tab bar …` via `NSLog`. **The log line is the
+  instrument**: nothing has yet proved the repair fires on the real stuck
+  state, so if the strip still goes missing, `log show --predicate
+  'eventMessage CONTAINS "Glassine: tab bar"'` says whether the repair ran and
+  whether it helped. Hit count: the `.searchCount` item is now
+  `visibilityPriority = .user` and the prev/next chevrons `.standard`
+  (equal-priority items are evicted from the trailing end, and a view-based
+  item in the overflow menu shows only its label, "Matches"). Verified on the
+  fixed build, pid-isolated, dark, 0.88 + blur and 1.0: strip present after
+  three successive opens, a live find with ⌘G-equivalent steps and Escape,
+  480 pt idle and with the field expanded, ⌘T-equivalent start tab and its
+  replacement; the count `1 of 1955` visible at 960/800/700/600/520/480 pt
+  where the old build lost it below 800 (only the page indicator and the
+  chevrons overflow now; the sidebar toggle overflows below 700); the band at
+  0.88 measured luma-identical to the pre-fix capture (9.8 % vs 9.8 %); 40 AX
+  tab switches at 960 and 480 pt with zero repair log lines. **Not verified:
+  the `windowDidBecomeMain` path** — the app was never key (Dan at the
+  keyboard), so only the `showWindow` and search-interaction triggers ran;
+  the light appearance (Dan's `appearance` is 0 = System and
+  `AppleInterfaceStyle` is unset, so he is actually in light mode); the
+  magenta hover pill (no real pointer). Two things the fix does not touch,
+  both AppKit's own: **with many tabs in a narrow window `NSTabButton`s get
+  squeezed to zero width and alpha 0** — at 480 pt with 10 tabs six rendered
+  as blank slots, and with 5 tabs one did — which reads as "tabs disappeared"
+  and may be part of what Dan sees; and the translucent Recents start tab
+  (below). The test instance overwrote `NSWindow Frame ReaderWindow` in
+  `com.epps.Glassine`; it was restored by hand.
+
 ## Build, run, test
 
 ```sh
@@ -1984,8 +2224,8 @@ in the site's `next.config.ts`; the canonical URL stays on danepps.com.
 
 ## Known quirks / candidates for next work
 
-- No annotation/highlighting tools; no text-copy cleanup (line-break
-  stripping); no per-document invert override (global toggle only).
+- No annotation/highlighting tools (text-copy cleanup landed 2026-09-09);
+  no per-document invert override (global toggle only).
 - **A find with thousands of matches is expensive** (2026-09-06): "the" over a
   56-page memo, 4,176 hits, held the app at 100 % CPU and up to 4.8 GB RSS for
   about a minute and dropped the reader from 25 % to the top, with a correct
@@ -2043,3 +2283,34 @@ in the site's `next.config.ts`; the canonical URL stays on danepps.com.
   which never calls `WindowChrome.apply` at all) for the same hole. Verify at
   0.6 and 0.3 over something with sharp text behind, pid-isolated, both
   appearances, and re-check the tab-bar strip while there. Not started.
+- **Magenta pill on a hovered background tab, macOS 26.6.2 (Dan, 2026-09-08
+  night; not fixed, cause not pinned).** Screenshot `AI Memos/
+  magenta-tab-hover-2026-09-08.png` (local only): a dark reader at 85 % opacity
+  with blur on, two tabs; hovering the *inactive* tab (a PDF with a long,
+  truncated title, `… — Class 5 — Mootness & Ripeness (clean).pdf`) painted a
+  solid #FF00FF rounded rectangle, tab-height, from roughly the tab's midpoint
+  to its right edge, with the hover close button and the left half of the title
+  still drawn normally. Never on the selected tab. Solid magenta is what
+  CoreAnimation draws for a glass/backdrop layer that cannot sample, so the
+  suspect is the Liquid Glass hover highlight AppKit puts on background tabs
+  in macOS 26. Established: a `CGWindowListCopyWindowInfo` poll over the title
+  band found no other window (no tooltip, no overlay) — it is drawn inside the
+  window; it vanished at 100 % opacity, and vanished at 85 % with Blur Behind
+  Window off, **but stayed gone once blur was turned back on**, so the two
+  toggles most likely cleared a stale state through `WindowChrome.apply`
+  (isOpaque, backgroundColor, content alpha, the `TitlebarBackdrop` re-paint,
+  the CGS blur radius) rather than proving that the blur causes it. Nothing
+  in Glassine draws magenta. Unknown and needed to reproduce: what put the tab
+  bar into that state — the PDF tab opened into an already-translucent window,
+  an opacity change with two tabs open, a tab drag, sleep/wake, or the window
+  restored at launch. If it recurs, note the preceding action; a cheap
+  mitigation to try first is re-running `WindowChrome.apply` on
+  `NSWindow.didBecomeMain`/tab selection change for every window in the tab
+  group, since a re-apply clears it. Not verified: whether it also appears at
+  85 % with blur *off* from a cold launch (the blur-off test ran after the
+  opacity round trip). **Follow-up 2026-09-09:** the group-wide re-apply on
+  `didBecomeMain`/selection change suggested above is now in (`WindowChrome.
+  reapply(group:)`, see the 2026-09-09 State entry), so if the pill was a
+  stale-state artefact it should now clear on the next tab switch. Still not
+  reproduced: the harness cannot hover a background tab without moving the
+  real pointer.

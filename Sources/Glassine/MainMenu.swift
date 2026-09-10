@@ -113,6 +113,11 @@ enum MainMenu {
         menu.addItem(.separator())
         add(menu, "Cut", #selector(NSText.cut(_:)), key: "x")
         add(menu, "Copy", #selector(NSText.copy(_:)), key: "c")
+        // The reader's Copy re-flows the selection; this is PDFKit's own, line
+        // breaks and line-end hyphens and all. Nil target like its neighbours,
+        // so only a view that implements it (the PDFView) enables it.
+        add(menu, "Copy Without Cleanup", #selector(ReaderPDFView.copyRaw(_:)),
+            key: "c", modifiers: [.command, .option])
         add(menu, "Paste", #selector(NSText.paste(_:)), key: "v")
         add(menu, "Delete", #selector(NSText.delete(_:)))
         add(menu, "Select All", #selector(NSText.selectAll(_:)), key: "a")

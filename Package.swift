@@ -28,6 +28,11 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]
+        ),
+        .testTarget(
+            name: "GlassineTests",
+            dependencies: ["Glassine", .product(name: "GlassineCore", package: "Core")],
+            path: "Tests/GlassineTests"
         )
     ]
 )

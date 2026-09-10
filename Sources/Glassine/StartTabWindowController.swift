@@ -37,8 +37,7 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
             window.center()
         }
         window.makeKeyAndOrderFront(nil)
-        // The backdrop blur is keyed to the window number, which a window that
-        // has never been ordered in does not have.
+        // Apply the appearance after joining the tab group.
         controller.applyWindowAppearance()
         controller.recentsVC.focusList()
     }
@@ -46,7 +45,7 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
     private init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 1040),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -64,7 +63,7 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
 
         recentsVC.onOpen = { [weak self] url in self?.open(url) }
         recentsVC.onOpenOther = { [weak self] in self?.openOther() }
-        window.contentViewController = recentsVC
+        WindowChromeContentController.install(in: window, body: recentsVC)
 
         // Every window gets its own toolbar identifier: AppKit keeps toolbars
         // that share one in lockstep, which has bitten this app before. The
@@ -92,7 +91,7 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
 
     @objc private func applyWindowAppearance() {
         guard let window else { return }
-        WindowChrome.apply(to: window, content: contentViewController?.view)
+        WindowChrome.apply(to: window)
     }
 
     // MARK: Toolbar

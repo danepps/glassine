@@ -125,11 +125,54 @@ final class RecentsViewController: NSViewController, NSTableViewDataSource,
         searchField.nextKeyView = table
         table.nextKeyView = searchField
         view = root
+
+        // A start tab lives in a translucent window whose content view is faded
+        // to the window opacity. The list draws no background of its own there
+        // (drawsListBackground == false), so without a backing the root's pixels
+        // are fully clear: the backdrop blur -- weighted by the window's own
+        // alpha -- skips them, whatever is behind shows through razor sharp, and
+        // the row labels antialias onto nothing and halo. Paint the root the
+        // reader's own page colour, opaque, so the whole content view has a
+        // uniform alpha to fade and blur, exactly like the reader's page. The
+        // launch window is opaque and keeps the standard control background.
+        if !drawsListBackground {
+            root.wantsLayer = true
+            root.onAppearanceChange = { [weak self] in self?.applyBackingColour() }
+            applyBackingColour()
+        }
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(prefsChanged),
+            name: .glassinePrefsChanged, object: nil)
         reload()
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func prefsChanged() { applyBackingColour() }
+
+    /// The reader's page colour: black or the Dark Paper lift in dark mode, the
+    /// page's white in light mode -- the same tone `WindowChrome` paints the
+    /// title-bar band, so a start tab reads as one surface with the reader.
+    private func applyBackingColour() {
+        guard drawsListBackground == false, isViewLoaded, let layer = view.layer else { return }
+        let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let colour: NSColor
+        if dark {
+            let level = Prefs.darkPaper
+            colour = (level != .black && Prefs.invertInDarkMode)
+                ? NSColor(white: level.lift, alpha: 1) : .black
+        } else {
+            colour = .white
+        }
+        // A CGColor is resolved once and does not follow the appearance, so pin
+        // it under ours.
+        view.effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer.backgroundColor = colour.cgColor
+        }
     }
 
     // MARK: Focus
@@ -269,6 +312,10 @@ final class RecentsTableView: NSTableView {
 final class RecentsDropView: NSView {
 
     var onDrop: (([URL]) -> Bool)?
+    /// The controller repaints its backing here: a CGColor does not follow the
+    /// light/dark switch, and only an NSView is told the effective appearance
+    /// changed (NSViewController is not).
+    var onAppearanceChange: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -277,6 +324,11 @@ final class RecentsDropView: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
 
     private func droppedURLs(_ sender: NSDraggingInfo) -> [URL] {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
