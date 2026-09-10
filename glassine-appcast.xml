@@ -10,6 +10,16 @@
         <description>Most recent updates to Glassine.</description>
         <language>en</language>
         <item>
+            <title>1.5.1</title>
+            <pubDate>Wed, 09 Sep 2026 21:30:11 -0500</pubDate>
+            <link>https://github.com/danepps/glassine</link>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>1.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/danepps/glassine/releases/download/v1.5.1/Glassine-1.5.1.zip" length="5131979" type="application/octet-stream" sparkle:edSignature="j9LFhCUoY8zrSvzoU1Hnd/i722a1VnsqHKp8TpnCnbiMACOxXvbsRerdxLCIMpMwIHpJiH8gxmReHCTaW/QMBg=="/>
+        </item>
+        <item>
             <title>1.5.0</title>
             <pubDate>Mon, 07 Sep 2026 21:52:05 -0500</pubDate>
             <link>https://github.com/danepps/glassine</link>
@@ -28,16 +38,6 @@
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/danepps/glassine/releases/download/v1.4.1/Glassine-1.4.1.zip" length="5090565" type="application/octet-stream" sparkle:edSignature="E3CWi2zWUxcNP7roMIpF3QXFQMfFSWufo4LUWhsTDj37Htiv/R7R4+ktAAle+CF9YftJFYCI8bPUDJg+pJsdDg=="/>
-        </item>
-        <item>
-            <title>1.4.0</title>
-            <pubDate>Sun, 06 Sep 2026 22:19:27 -0500</pubDate>
-            <link>https://github.com/danepps/glassine</link>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/danepps/glassine/releases/download/v1.4.0/Glassine-1.4.0.zip" length="5088246" type="application/octet-stream" sparkle:edSignature="g4pMMIuP3KkCb3ipODcOtqezWvZ/cjfcOq+R6vHRqdnwVEv4GHF8+2wSFfiWCXoiQRnyYhzU2JHf3wyZexTTBg=="/>
         </item>
     </channel>
 </rss>
