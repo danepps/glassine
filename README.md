@@ -61,6 +61,12 @@ updated in place.
 - **Sidebar with a table of contents.** ⌃⌘S shows it; ⌥⌘2 and ⌥⌘3 switch
   between page thumbnails and the document's chapters. Markdown gets an outline
   too, synthesised from its headings, and the current entry follows you.
+- **Search-results sidebar.** ⌘F opens a list of matches with page references
+  and surrounding text; click a result or use ⌘G / ⇧⌘G to navigate. View ▸
+  Search Results (⌥⌘4) returns to the list. Searches over 500 matches keep all
+  results in the list and highlight only the selected match on the page.
+  The active match has an amber outline and a brief navigation pulse (unless
+  Reduce Motion is enabled). Clearing the search dismisses the results pane.
 - Find with a hit counter and green highlights (⌘F,
   ⌘G / ⇧⌘G), go to page (⌥⌘G), zoom (⌘= / ⌘- / ⌘0 fit / ⌘1 actual),
   back/forward (⌘[ / ⌘]), print, export as PDF (⇧⌘E).

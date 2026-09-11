@@ -36,11 +36,28 @@ public final class FindHighlighter {
     }
 
     public func setFindMatches(_ selections: [PDFSelection], current: Int) {
-        let previous = allMatchPages
+        // PDFKit appends selections during a find. Keep the geometry already
+        // measured and invalidate only pages touched by the new batch. A new
+        // query, replacement PDF, or capped window of results resets the cache.
+        let isAppend = selections.count >= findMatches.count &&
+            zip(findMatches, selections).allSatisfy { $0 === $1 }
+        var affected: [PDFPage] = current == currentMatchIndex ? [] : (pagesByMatch[currentMatchIndex] ?? [])
+        let start: Int
+        if isAppend {
+            start = findMatches.count
+        } else {
+            affected += allMatchPages
+            lineRects.removeAll(keepingCapacity: true)
+            pagesByMatch.removeAll(keepingCapacity: true)
+            allMatchPages.removeAll(keepingCapacity: true)
+            start = 0
+        }
+        let oldCurrent = currentMatchIndex
         findMatches = selections
         currentMatchIndex = current
-        rebuildLineRects()
-        refresh(previous + allMatchPages)
+        affected += appendLineRects(from: start)
+        if current != oldCurrent || !isAppend { affected += pagesByMatch[current] ?? [] }
+        refresh(affected)
     }
 
     public func setCurrentMatchIndex(_ index: Int) {
@@ -52,13 +69,11 @@ public final class FindHighlighter {
 
     /// Flatten every match into per-line rectangles keyed by page, so drawing a
     /// page is a dictionary lookup rather than a scan of the whole match list.
-    private func rebuildLineRects() {
-        lineRects = [:]
-        pagesByMatch = [:]
-        allMatchPages = []
-        var seen = Set<ObjectIdentifier>()
-
-        for (index, selection) in findMatches.enumerated() {
+    private func appendLineRects(from start: Int) -> [PDFPage] {
+        var affected: [PDFPage] = []
+        var seen = Set(allMatchPages.map(ObjectIdentifier.init))
+        for index in start..<findMatches.count {
+            let selection = findMatches[index]
             var pages: [PDFPage] = []
             for line in selection.selectionsByLine() {
                 for page in line.pages {
@@ -69,10 +84,12 @@ public final class FindHighlighter {
                 }
             }
             pagesByMatch[index] = pages
+            affected += pages
             for page in pages where seen.insert(ObjectIdentifier(page)).inserted {
                 allMatchPages.append(page)
             }
         }
+        return affected
     }
 
     /// Push the current rects into the page objects (PDFKit draws through

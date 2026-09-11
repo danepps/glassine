@@ -202,6 +202,7 @@ extension ReaderPDFView: NSMenuItemValidation {
 final class ReaderViewController: NSViewController {
 
     let pdfView = ReaderPDFView()
+    lazy var findMatchIndicator = FindMatchIndicator(pdfView: pdfView)
     private let glassineDocument: GlassineDocument
 
     /// True when pages are being shown light-on-dark.
@@ -257,7 +258,18 @@ final class ReaderViewController: NSViewController {
     deinit { NotificationCenter.default.removeObserver(self) }
 
     override func loadView() {
-        view = pdfView
+        let container = NSView()
+        for child in [pdfView, findMatchIndicator] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                child.topAnchor.constraint(equalTo: container.topAnchor),
+                child.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            ])
+        }
+        view = container
     }
 
     override func viewDidLoad() {

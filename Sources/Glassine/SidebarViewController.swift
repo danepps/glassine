@@ -9,6 +9,9 @@ import PDFKit
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
                                    NSOutlineViewDelegate {
 
+    let searchResults = SearchResultsViewController()
+    private(set) var showsSearchResults = false
+
     private let thumbnailView = PDFThumbnailView()
     private let outlineView = NSOutlineView()
     private let outlineScrollView = NSScrollView()
@@ -29,6 +32,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     var mode: SidebarMode {
         get { storedMode }
         set {
+            showsSearchResults = false
             storedMode = newValue
             if isViewLoaded { applyMode() }
         }
@@ -52,13 +56,15 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         buildModeControl()
         buildThumbnails()
         buildOutline()
+        addChild(searchResults)
+        pin(searchResults.view)
         applyMode()
     }
 
     // MARK: Construction
 
     private func buildModeControl() {
-        modeControl.segmentCount = 2
+        modeControl.segmentCount = 3
         modeControl.segmentStyle = .texturedRounded
         modeControl.trackingMode = .selectOne
         modeControl.setImage(NSImage(systemSymbolName: "square.grid.2x2",
@@ -72,6 +78,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         modeControl.setToolTip("Table of Contents (\u{2325}\u{2318}3)",
                                forSegment: SidebarMode.outline.rawValue)
         modeControl.setEnabled(false, forSegment: SidebarMode.outline.rawValue)
+        modeControl.setImage(NSImage(systemSymbolName: "magnifyingglass",
+                                     accessibilityDescription: "Search Results"), forSegment: 2)
+        modeControl.setToolTip("Search Results (⌥⌘4)", forSegment: 2)
         modeControl.target = self
         modeControl.action = #selector(modeChanged(_:))
         modeControl.translatesAutoresizingMaskIntoConstraints = false
@@ -131,15 +140,23 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     // MARK: Mode
 
     private func applyMode() {
-        let showOutline = storedMode == .outline && hasOutline
+        searchResults.view.isHidden = !showsSearchResults
+        let showOutline = !showsSearchResults && storedMode == .outline && hasOutline
         outlineScrollView.isHidden = !showOutline
-        thumbnailView.isHidden = showOutline
-        modeControl.selectedSegment = showOutline
+        thumbnailView.isHidden = showOutline || showsSearchResults
+        modeControl.selectedSegment = showsSearchResults ? 2 : showOutline
             ? SidebarMode.outline.rawValue : SidebarMode.thumbnails.rawValue
         if showOutline { syncSelection() }
     }
 
+    func showSearchResults() {
+        _ = view
+        showsSearchResults = true
+        applyMode()
+    }
+
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
+        if sender.selectedSegment == 2 { showSearchResults(); return }
         guard let selected = SidebarMode(rawValue: sender.selectedSegment) else { return }
         Prefs.sidebarMode = selected
         mode = selected

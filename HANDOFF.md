@@ -34,6 +34,47 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **macOS search sidebar (1.6.0; Codex, 2026-09-10).**
+  `SearchResultsViewController` adds virtualized match rows
+  with PDF page references, surrounding text, and the actual occurrence in bold.
+  ⌘F opens the pane; View ▸ Search Results / ⌥⌘4 and a third sidebar segment
+  return to it. Clicking a row, re-clicking the selected row, Return, and
+  ⌘G / ⇧⌘G navigate through the existing FindController. Search is a local
+  sidebar mode, not a new shared `SidebarMode` value (2 remains iOS Recents).
+  Snippets are computed for displayed rows and cached with a 256-entry bound.
+  Above 500 matches, all results remain in the list but only the selected match
+  is highlighted in the PDF, in either appearance. `FindHighlighter` now appends
+  geometry and invalidates affected pages instead of rebuilding every batch.
+  Test app: `build/Glassine Search Test.app`, id
+  `com.epps.Glassine.SearchTest`, separate preferences, automatic updates off,
+  ad-hoc signed and signature-verified. The installed app was not replaced.
+  Validation: release build, 136 Core tests, 4 macOS tests, and diff whitespace
+  check passed. Live PDF UI: 60-page synthetic fixture / 4,800 hits, row click,
+  next/previous, wrap to 4,800 of 4,800 on page 60, query replacement, no matches,
+  and clear verified. Earlier live sample after search: about 314 MiB RSS at
+  idle (not a peak-memory benchmark). Snippet wrapping was visually checked and
+  corrected. Live Markdown reload and a full light-mode UI pass remain unverified;
+  the computer-use file chooser was unreliable. Test fixtures are in `build/`.
+  Follow-up: toolbar counters now read “Page N of M” and “Match N of M”;
+  in-progress searches read “N matches…”. Capsule sizing includes the labels.
+  Release rebuild/signature verification and a live four-digit counter check passed.
+  Follow-up: clearing search with ×, Escape, or deleting the query collapses
+  the search-results sidebar and restores its normal pane mode. Clearing for a
+  new query or Markdown reload does not collapse it. Release build/signature
+  verification and live × / reopen / Escape checks passed.
+  Follow-up: the active match now has an amber rounded outline and light tint,
+  plus a single 0.8-second contracting/fading ring on navigation. A transparent
+  overlay beside PDFView keeps the marker amber through dark inversion, follows
+  scroll/zoom/layout changes, and does not intercept input. Only the active
+  match is measured; the pulse uses Core Animation and respects Reduce Motion.
+  Search clearing removes the marker and cancels its animation. Release build
+  and signature verification passed. Five macOS tests cover same-page movement,
+  zoom/scroll alignment, pulse replacement, reduced motion, clearing, and stale
+  document geometry. Live light/dark checks passed for same-line navigation
+  among 4,800 results and same-page navigation among 40 highlighted results.
+  The short pulse was checked by its animation state, not captured mid-animation.
+
+
 - `main` has the scaffold, the full UI, and (2026-09-04) window sizing,
   Developer ID signing/notarization, and Sparkle. Clean release build, zero
   warnings. Runtime-tested: open/tabs, dark inversion, black chrome, green

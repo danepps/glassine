@@ -141,6 +141,8 @@ enum MainMenu {
             key: "2", modifiers: [.command, .option])
         add(menu, "Table of Contents", #selector(ReaderWindowController.showOutline(_:)),
             key: "3", modifiers: [.command, .option])
+        add(menu, "Search Results", #selector(ReaderWindowController.showSearchResults(_:)),
+            key: "4", modifiers: [.command, .option])
         menu.addItem(.separator())
         add(menu, "Zoom In", #selector(PDFView.zoomIn(_:)), key: "=")
         add(menu, "Zoom Out", #selector(PDFView.zoomOut(_:)), key: "-")

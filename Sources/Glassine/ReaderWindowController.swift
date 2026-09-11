@@ -143,6 +143,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
 
         buildContent()
+        sidebarVC.searchResults.onSelect = { [weak self] index in
+            self?.findController.showMatch(index)
+        }
         // Installing the content view controller resizes the window to the
         // split view's fitting size (320pt wide, no height), so the frame is
         // chosen only after it: the autosaved one if there is one, else the
@@ -207,14 +210,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// uses PDFKit's own translucent highlight.
     private func applyHighlights() {
         let inverted = readerVC.isInverted
-        let matches = findController.matches
+        let allMatches = findController.matches
+        let limited = allMatches.count > SearchResultsViewController.liveHighlightLimit
+        let matches = limited ? [allMatches[findController.matchIndex]] : allMatches
+        let current = limited ? 0 : findController.matchIndex
         pdfView.isInverted = inverted
         if inverted {
             // The reverse-video boxes are the highlight; suppress PDFKit's own
             // translucent selection wash so it does not double up on them.
             for selection in matches { selection.color = .clear }
             pdfView.highlightedSelections = nil
-            pdfView.setFindMatches(matches, current: findController.matchIndex)
+            pdfView.setFindMatches(matches, current: current)
         } else {
             pdfView.setFindMatches([], current: 0)
             for selection in matches {
@@ -278,7 +284,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     private func buildContent() {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarVC)
-        sidebarItem.minimumThickness = 150
+        sidebarItem.minimumThickness = 240
         sidebarItem.maximumThickness = 360
         sidebarItem.canCollapse = true
         sidebarItem.isCollapsed = true
@@ -319,7 +325,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private func configurePageControls() {
         let font = indicatorFont
 
-        // Idle state: one label holding the whole "13 of 30" string, so it is
+        // Idle state: one label holding the whole "Page 13 of 30" string, so it is
         // centred in the capsule by construction whatever the digit count.
         pageLabel.alignment = .center
         pageLabel.font = font
@@ -395,7 +401,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private var showsProgress: Bool { glassineDocument.isContinuousMarkdown }
 
     private func indicatorWidth(for pageCount: Int) -> CGFloat {
-        let widest = "\(max(pageCount, 1)) of \(max(pageCount, 1))"
+        let widest = "Page \(max(pageCount, 1)) of \(max(pageCount, 1))"
             .size(withAttributes: [.font: indicatorFont]).width
         return ceil(widest) + 20
     }
@@ -436,7 +442,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             pageLabel.stringValue = ""
             return
         }
-        indicate(value: "\(number)", trailing: " of \(pageCount)")
+        indicate(prefix: "Page ", value: "\(number)", trailing: " of \(pageCount)")
         if pageField.isHidden { pageField.stringValue = "\(number)" }
     }
 
@@ -448,11 +454,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     /// The readout is one attributed string so the capsule centres it whatever
     /// its width: the number in label colour, the rest a shade back.
-    private func indicate(value: String, trailing: String) {
+    private func indicate(prefix: String = "", value: String, trailing: String) {
         let font = indicatorFont
         let text = NSMutableAttributedString(
+            string: prefix,
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
+        text.append(NSAttributedString(
             string: value,
-            attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+            attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
         text.append(NSAttributedString(
             string: trailing,
             attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
@@ -623,8 +632,24 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     // empty the field without sending it. Any route to an empty field resets.
     func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSSearchField, field === searchField,
-              field.stringValue.isEmpty, !findController.lastQuery.isEmpty else { return }
-        findController.startFind("")
+              field.stringValue.isEmpty else { return }
+        clearSearch()
+    }
+
+    func searchFieldDidEndSearching(_ sender: NSSearchField) {
+        guard sender === searchField, sender.stringValue.isEmpty else { return }
+        clearSearch()
+    }
+
+    /// Clearing the query also dismisses its results pane. Do this at the
+    /// input boundary: FindController clears its matches for a new query and
+    /// Markdown reload too, and those must leave the sidebar open.
+    private func clearSearch() {
+        if !findController.lastQuery.isEmpty { findController.startFind("") }
+        if sidebarVC.showsSearchResults {
+            sidebarItem?.isCollapsed = true
+            sidebarVC.mode = Prefs.sidebarMode
+        }
     }
 
     // MARK: Toolbar delegate
@@ -714,7 +739,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // Fixed width, sized for the widest readout: a capsule that grows and
         // shrinks shifts the search field sideways, and the cancel button
         // moves out from under a pointer that was aiming at it.
-        let widest = ["No matches", "9999 of 9999", "9999 found…"]
+        let widest = ["No matches", "Match 9999 of 9999", "9999 matches…"]
             .map { $0.size(withAttributes: [.font: font]).width }
             .max() ?? 56
 
@@ -770,10 +795,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc func searchChanged(_ sender: NSSearchField) {
+        guard !sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            clearSearch()
+            return
+        }
         // Not `startFind`: the field re-sends its action with the same text
         // when editing ends, and restarting the search would jump the reader
         // back to the first match.
-        findController.search(sender.stringValue)
+        if findController.search(sender.stringValue), !findController.lastQuery.isEmpty {
+            showSearchResults(nil)
+        }
     }
 
     @objc func findNext(_ sender: Any?) {
@@ -795,13 +826,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: FindControllerDelegate
 
     func findControllerDidClear(_ controller: FindController) {
+        readerVC.findMatchIndicator.clear()
         setSearchResultsVisible(false)
+        sidebarVC.searchResults.update([], current: 0)
         pdfView.highlightedSelections = nil
         pdfView.setFindMatches([], current: 0)
-        // In light mode the current match is PDFKit's own selection, and nothing
-        // else ever drops it: without this the last match stays washed on the
-        // page after the query stops matching, and survives cancelling the
-        // search entirely.
+        // Clear any native selection as well as the custom find marker.
         pdfView.setCurrentSelection(nil, animate: false)
     }
 
@@ -809,23 +839,28 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
                         didUpdate matches: [PDFSelection],
                         current: Int,
                         inProgress: Bool) {
+        sidebarVC.searchResults.update(matches, current: current)
         applyHighlights()
     }
 
     func findController(_ controller: FindController,
                         show selection: PDFSelection,
                         at index: Int) {
+        sidebarVC.searchResults.select(index)
+        let limited = controller.matches.count > SearchResultsViewController.liveHighlightLimit
+        if limited { applyHighlights() }
         if readerVC.isInverted {
             // PDFKit would paint its own selection wash over our reverse-video
             // box, and inverted it comes out olive. Scroll to the match, then
             // drop the selection and let the drawn box mark it.
             pdfView.go(to: selection)
             pdfView.setCurrentSelection(nil, animate: false)
-            pdfView.setCurrentMatchIndex(index)
+            pdfView.setCurrentMatchIndex(limited ? 0 : index)
         } else {
-            pdfView.setCurrentSelection(selection, animate: true)
+            pdfView.setCurrentSelection(nil, animate: false)
             pdfView.go(to: selection)
         }
+        readerVC.findMatchIndicator.show(selection)
     }
 
     func findController(_ controller: FindController, canStep: Bool) {
@@ -834,7 +869,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     func findControllerCountDidChange(_ controller: FindController) {
-        searchCountLabel.stringValue = controller.countText
+        sidebarVC.searchResults.updateStatus(query: controller.lastQuery,
+                                             count: controller.matches.count,
+                                             inProgress: controller.findInProgress)
+        if controller.countText.isEmpty || controller.matches.isEmpty {
+            searchCountLabel.stringValue = controller.countText
+        } else if controller.findInProgress {
+            let count = controller.matches.count
+            searchCountLabel.stringValue = "\(count) " + (count == 1 ? "match…" : "matches…")
+        } else {
+            searchCountLabel.stringValue = "Match " + controller.countText
+        }
         // The count and the nav control belong on the row exactly when there is
         // a count to show -- a running search, matching or not -- and nowhere
         // else.
@@ -842,6 +887,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc func focusSearch(_ sender: Any?) {
+        showSearchResults(nil)
         searchItem?.beginSearchInteraction()
     }
 
@@ -849,6 +895,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         guard let text = pdfView.currentSelection?.string, !text.isEmpty else { return }
         searchField?.stringValue = text
         findController.startFind(text)
+        showSearchResults(nil)
     }
 
     @objc func focusPageField(_ sender: Any?) {
@@ -872,7 +919,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 control.stringValue = ""
-                findController.startFind("")
+                clearSearch()
                 searchItem?.endSearchInteraction()
                 window?.makeFirstResponder(pdfView)
                 return true
@@ -931,6 +978,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     // MARK: Sidebar mode
 
+    @objc func showSearchResults(_ sender: Any?) {
+        sidebarVC.showSearchResults()
+        sidebarItem?.isCollapsed = false
+    }
+
     @objc func showThumbnails(_ sender: Any?) { setSidebarMode(.thumbnails) }
 
     @objc func showOutline(_ sender: Any?) { setSidebarMode(.outline) }
@@ -946,10 +998,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(showThumbnails(_:)):
-            menuItem.state = sidebarVC.mode == .thumbnails ? .on : .off
+            menuItem.state = !sidebarVC.showsSearchResults && sidebarVC.mode == .thumbnails ? .on : .off
         case #selector(showOutline(_:)):
-            menuItem.state = sidebarVC.mode == .outline ? .on : .off
+            menuItem.state = !sidebarVC.showsSearchResults && sidebarVC.mode == .outline ? .on : .off
             return sidebarVC.hasOutline
+        case #selector(showSearchResults(_:)):
+            menuItem.state = sidebarVC.showsSearchResults ? .on : .off
         case #selector(focusPageField(_:)):
             // In a continuous document this edits the progress percentage
             // instead, so the only thing that disables it is having no document.
