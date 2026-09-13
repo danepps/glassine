@@ -9,6 +9,89 @@ import PDFKit
 /// keys always move a whole page instead of scrolling by a line.
 final class ReaderPDFView: PDFView {
     var onEffectiveAppearanceChange: (() -> Void)?
+    weak var highlightDocument: GlassineDocument?
+    var onHighlightAdded: ((PDFAnnotation) -> Void)?
+
+    @objc func highlightSelection(_ sender: Any?) {
+        guard let selection = currentSelection,
+              let color = HighlightColor(rawValue: (sender as? NSMenuItem)?.tag ?? 0),
+              let first = highlightDocument?.addHighlight(selection: selection, color: color).first else { return }
+        setCurrentSelection(nil, animate: false)
+        onHighlightAdded?(first.annotation)
+    }
+
+    @objc func removeClickedHighlight(_ sender: NSMenuItem) {
+        guard let annotation = sender.representedObject as? PDFAnnotation else { return }
+        highlightDocument?.removeHighlight(annotation)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        var clickedHighlight: PDFAnnotation?
+        if let page = page(for: point, nearest: false) {
+            let pagePoint = convert(point, to: page)
+            clickedHighlight = page.annotations.reversed().first(where: {
+                $0.type == "Highlight" &&
+                    SavedHighlight.rects(for: $0).contains(where: { $0.contains(pagePoint) })
+            })
+        }
+        // PDFKit's native markup picker is not safe to copy, and its edits
+        // bypass our document undo tracking. Keep PDFKit's lookup, copy, link
+        // and navigation items even when the selected text is highlighted.
+        let menu = super.menu(for: event) ?? NSMenu()
+        // Identify (never invoke) PDFKit's built-in mutation actions. They do
+        // not notify Glassine or participate in its undo/autosave workflow.
+        let nativeEdits: Set<String> = ["_removeMarkup:", "_addNote:"]
+        for item in menu.items where item.view != nil ||
+            item.action.map({ nativeEdits.contains(NSStringFromSelector($0)) }) == true ||
+            item.identifier?.rawValue.hasPrefix("glassine.context.") == true {
+            menu.removeItem(item)
+        }
+        if currentSelection?.string?.isEmpty == false {
+            let copy = menu.addItem(withTitle: "Copy Without Cleanup", action: #selector(copyRaw(_:)), keyEquivalent: "")
+            copy.target = self
+            copy.identifier = NSUserInterfaceItemIdentifier("glassine.context.copyRaw")
+        }
+        menu.insertItem(makeHighlightMenuItem(annotation: clickedHighlight), at: 0)
+        if let annotation = clickedHighlight {
+            let item = NSMenuItem(title: "Delete Highlight", action: #selector(removeClickedHighlight(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = annotation
+            item.identifier = NSUserInterfaceItemIdentifier("glassine.context.deleteHighlight")
+            menu.insertItem(item, at: 1)
+        }
+        if clickedHighlight == nil {
+            let separator = NSMenuItem.separator()
+            separator.identifier = NSUserInterfaceItemIdentifier("glassine.context.separator")
+            menu.insertItem(separator, at: 1)
+        }
+        return menu
+    }
+
+    func makeHighlightMenuItem(annotation: PDFAnnotation?) -> NSMenuItem {
+        // Capture the selection while the menu opens; menu tracking can change
+        // focus and PDFKit's live selection before the button action arrives.
+        let selection = currentSelection?.copy() as? PDFSelection
+        let owner = highlightDocument
+        let enabled = annotation.map { owner?.canEdit($0) == true }
+            ?? (owner?.canEditHighlights == true && selection?.string?.isEmpty == false)
+        let title = annotation == nil ? "Highlight" : "Highlight Color"
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.identifier = NSUserInterfaceItemIdentifier("glassine.context.highlightColors")
+        item.view = HighlightColorMenuView(title: title, enabled: enabled,
+            selectedColor: annotation?.color) { [weak self, weak owner] color in
+                guard let self, let owner, self.highlightDocument === owner,
+                      self.document === owner.pdf else { return }
+                if let annotation {
+                    owner.recolorHighlight(annotation, color: color.color)
+                } else if let selection,
+                          let first = owner.addHighlight(selection: selection, color: color).first {
+                    self.setCurrentSelection(nil, animate: false)
+                    self.onHighlightAdded?(first.annotation)
+                }
+            }
+        return item
+    }
 
     /// The dark-mode highlight bookkeeping, which is platform-independent and
     /// lives in Core; this view is just its host.
@@ -188,6 +271,13 @@ extension ReaderPDFView: NSMenuItemValidation {
     }()
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(highlightSelection(_:)) {
+            return highlightDocument?.canEditHighlights == true && currentSelection?.string?.isEmpty == false
+        }
+        if menuItem.action == #selector(removeClickedHighlight(_:)) {
+            guard let annotation = menuItem.representedObject as? PDFAnnotation else { return false }
+            return highlightDocument?.canEdit(annotation) == true
+        }
         if menuItem.action == #selector(copyRaw(_:)) {
             return currentSelection?.string?.isEmpty == false
         }
@@ -285,6 +375,7 @@ final class ReaderViewController: NSViewController {
         // placeholder tiles are inverted too and pages never flash white.
         pdfView.wantsLayer = true
         pdfView.document = glassineDocument.pdf
+        pdfView.highlightDocument = glassineDocument
         pdfView.onEffectiveAppearanceChange = { [weak self] in self?.applyAppearance() }
 
         NotificationCenter.default.addObserver(

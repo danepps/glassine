@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Install before anything asks for NSDocumentController.shared.
+        _ = GlassineDocumentController()
         // Before anything reads a preference, and so before a window exists.
         FolioMigration.runIfNeeded()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)

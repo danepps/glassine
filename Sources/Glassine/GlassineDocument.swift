@@ -9,9 +9,10 @@ extension Notification.Name {
     /// file changed on disk, or a typography change. `userInfo["initial"]` is
     /// true for the first render of a window.
     static let glassineDocumentDidReplacePDF = Notification.Name("GlassineDocumentDidReplacePDF")
+    static let glassineHighlightsDidChange = Notification.Name("GlassineHighlightsDidChange")
 }
 
-/// Read-only NSDocument wrapping a PDFDocument. NSDocument gives us Finder
+/// NSDocument wrapping an annotatable PDF or read-only Markdown. NSDocument gives us Finder
 /// integration, Open Recent, the title-bar proxy icon, and one-window-per-file
 /// semantics for free.
 ///
@@ -72,10 +73,20 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     /// of the same file supersedes one still waiting.
     private let renderKey = UUID().uuidString
 
+    private var pendingHighlightSave: DispatchWorkItem?
+    private var highlightSaveInProgress = false
+    private var highlightSaveCompletions: [(Error?) -> Void] = []
+    private var pdfSourceByteCount = 0
+    private(set) var hasSignatureFields = false
+    var highlightPageCache: [ObjectIdentifier: [SavedHighlight]] = [:]
+
     override class var autosavesInPlace: Bool { false }
+    override class var preservesVersions: Bool { false }
+    override class var autosavesDrafts: Bool { false }
     override class func canConcurrentlyReadDocuments(ofType typeName: String) -> Bool { true }
 
     deinit {
+        pendingHighlightSave?.cancel()
         watcher?.stop()
         NotificationCenter.default.removeObserver(self)
     }
@@ -103,7 +114,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         kind = Self.kind(forType: typeName, url: url)
         switch kind {
         case .pdf:
-            guard let document = PDFDocument(url: url) else {
+            // Own the backing bytes: safe-save replaces the file, and a sync
+            // client or network volume must not invalidate PDFKit's lazy reads.
+            let bytes = try Data(contentsOf: url)
+            guard let document = PDFDocument(data: bytes) else {
                 throw NSError(
                     domain: NSCocoaErrorDomain,
                     code: NSFileReadCorruptFileError,
@@ -114,12 +128,92 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
                 )
             }
             document.delegate = self
+            pdfSourceByteCount = bytes.count
             pdf = document
+            highlightPageCache.removeAll()
+            hasSignatureFields = Self.containsSignatureFields(in: document)
         case .markdown:
             // Only text work here; `pdf` stays nil until the renderer finishes.
             content = try MarkdownDocumentModel.content(of: try Data(contentsOf: url), url: url)
         }
         Prefs.noteRecentDocument(url, pageCount: pdf?.pageCount)
+    }
+
+    override func revert(toContentsOf url: URL, ofType typeName: String) throws {
+        try super.revert(toContentsOf: url, ofType: typeName)
+        pendingHighlightSave?.cancel()
+        pendingHighlightSave = nil
+        // NSDocument has already cleared the change count and undo stack.
+        if kind == .pdf {
+            NotificationCenter.default.post(name: .glassineDocumentDidReplacePDF,
+                                            object: self, userInfo: ["initial": false])
+        }
+    }
+
+    // MARK: Saving highlights
+
+    func scheduleHighlightSave() {
+        pendingHighlightSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushHighlights { [weak self] error in
+                if let error { self?.presentError(error) }
+            }
+        }
+        pendingHighlightSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    /// Used by the debounce, Command-S and close review. NSDocument still owns
+    /// change tracking, undo and coordinated safe writes, but never Versions.
+    func flushHighlights(completion: @escaping (Error?) -> Void) {
+        pendingHighlightSave?.cancel()
+        pendingHighlightSave = nil
+        highlightSaveCompletions.append(completion)
+        guard !highlightSaveInProgress else { return }
+        guard kind == .pdf, isDocumentEdited else {
+            finishHighlightSave(error: nil)
+            return
+        }
+        guard let url = fileURL else {
+            finishHighlightSave(error: NSError(domain: NSCocoaErrorDomain,
+                code: NSFileWriteInvalidFileNameError,
+                userInfo: [NSLocalizedDescriptionKey: "This PDF has no location to save to."]))
+            return
+        }
+        highlightSaveInProgress = true
+        save(to: url, ofType: UTType.pdf.identifier, for: .saveOperation) { [self] error in
+            highlightSaveInProgress = false
+            if error == nil && isDocumentEdited {
+                // If a queued user action changed the document during a save,
+                // a close request must wait until those changes are saved too.
+                flushHighlights { _ in }
+            } else {
+                finishHighlightSave(error: error)
+            }
+        }
+    }
+
+    private func finishHighlightSave(error: Error?) {
+        let completions = highlightSaveCompletions
+        highlightSaveCompletions.removeAll()
+        for completion in completions { completion(error) }
+    }
+
+    override func save(_ sender: Any?) {
+        guard kind == .pdf, fileURL != nil else { super.save(sender); return }
+        flushHighlights { [weak self] error in
+            if let error { self?.presentError(error) }
+        }
+    }
+
+    override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
+                           contextInfo: UnsafeMutableRawPointer?) {
+        // This runs BEFORE NSDocument decides to show a Save sheet. Saving in
+        // windowWillClose is too late, and would undo an explicit Don't Save.
+        flushHighlights { _ in
+            super.canClose(withDelegate: delegate, shouldClose: shouldCloseSelector,
+                           contextInfo: contextInfo)
+        }
     }
 
     override func makeWindowControllers() {
@@ -252,6 +346,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     }
 
     override func close() {
+        // close() is also NSDocument's explicit discard path after Don't Save.
+        pendingHighlightSave?.cancel()
+        pendingHighlightSave = nil
         watcher?.stop()
         watcher = nil
         MainActor.assumeIsolated { invalidateReloads() }
@@ -281,6 +378,51 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     // MARK: Export
 
+    override func data(ofType typeName: String) throws -> Data {
+        guard canEditHighlights, typeName == UTType.pdf.identifier, let pdf else {
+            throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
+                          userInfo: [NSLocalizedDescriptionKey: hasSignatureFields
+                            ? "PDFs with signature fields are read-only to protect their signatures."
+                            : "This document cannot be saved as an editable PDF."])
+        }
+        let endProgress = showPDFSaveProgress()
+        defer { endProgress() }
+        // PDFKit rewrites the whole PDF and can regenerate third-party markup
+        // appearances. It does not preserve incremental history or linearization.
+        guard let data = pdf.dataRepresentation() else { throw Self.nothingToExport }
+        return data
+    }
+
+    private func showPDFSaveProgress() -> () -> Void {
+        guard pdfSourceByteCount >= 32 * 1024 * 1024 else { return {} }
+        let accessories = windowControllers.compactMap { controller -> (NSWindow, NSTitlebarAccessoryViewController)? in
+            guard let window = controller.window else { return nil }
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.usesThreadedAnimation = true
+            spinner.startAnimation(nil)
+            let label = NSTextField(labelWithString: "Saving PDF…")
+            label.font = .systemFont(ofSize: 12)
+            let stack = NSStackView(views: [spinner, label])
+            stack.spacing = 8
+            stack.frame = NSRect(x: 0, y: 0, width: 140, height: 24)
+            let accessory = NSTitlebarAccessoryViewController()
+            accessory.layoutAttribute = .right
+            accessory.view = stack
+            window.addTitlebarAccessoryViewController(accessory)
+            window.displayIfNeeded()
+            return (window, accessory)
+        }
+        return {
+            for (window, accessory) in accessories {
+                if let index = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
+                    window.removeTitlebarAccessoryViewController(at: index)
+                }
+            }
+        }
+    }
+
     @objc func exportAsPDF(_ sender: Any?) {
         guard let window = windowControllers.first?.window else { return }
         let panel = NSSavePanel()
@@ -297,7 +439,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             self.pdfDataForExport { result in
                 switch result {
                 case .success(let data):
-                    do { try data.write(to: destination) } catch { self.presentError(error) }
+                    do { try data.write(to: destination, options: .atomic) } catch { self.presentError(error) }
                 case .failure(let error):
                     self.presentError(error)
                 }
@@ -343,12 +485,12 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
-    private func pdfDataForExport(_ completion: @escaping (Swift.Result<Data, Error>) -> Void) {
+    func pdfDataForExport(_ completion: @escaping (Swift.Result<Data, Error>) -> Void) {
         // Deliberately not the raw render bytes for Markdown: those still carry
         // the glassine-outline:// link annotations and none of the bookmarks.
         // Copying the original bytes keeps a PDF export byte-identical;
         // dataRepresentation() re-serialises and is only the fallback.
-        if kind == .pdf, let url = fileURL, let data = try? Data(contentsOf: url) {
+        if kind == .pdf, !isDocumentEdited, let url = fileURL, let data = try? Data(contentsOf: url) {
             completion(.success(data))
             return
         }
@@ -373,6 +515,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(exportAsPDF(_:)) { return pdf != nil }
+        if item.action == #selector(save(_:)) || item.action == #selector(saveAs(_:)) {
+            return canEditHighlights
+        }
         return super.validateUserInterfaceItem(item)
     }
 

@@ -10,7 +10,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
                                    NSOutlineViewDelegate {
 
     let searchResults = SearchResultsViewController()
+    let highlights = HighlightsViewController()
     private(set) var showsSearchResults = false
+    private(set) var showsHighlights = false
 
     private let thumbnailView = PDFThumbnailView()
     private let outlineView = NSOutlineView()
@@ -33,6 +35,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         get { storedMode }
         set {
             showsSearchResults = false
+            showsHighlights = false
             storedMode = newValue
             if isViewLoaded { applyMode() }
         }
@@ -58,13 +61,15 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         buildOutline()
         addChild(searchResults)
         pin(searchResults.view)
+        addChild(highlights)
+        pin(highlights.view)
         applyMode()
     }
 
     // MARK: Construction
 
     private func buildModeControl() {
-        modeControl.segmentCount = 3
+        modeControl.segmentCount = 4
         modeControl.segmentStyle = .texturedRounded
         modeControl.trackingMode = .selectOne
         modeControl.setImage(NSImage(systemSymbolName: "square.grid.2x2",
@@ -81,6 +86,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         modeControl.setImage(NSImage(systemSymbolName: "magnifyingglass",
                                      accessibilityDescription: "Search Results"), forSegment: 2)
         modeControl.setToolTip("Search Results (⌥⌘4)", forSegment: 2)
+        modeControl.setImage(NSImage(systemSymbolName: "highlighter",
+                                     accessibilityDescription: "Highlights"), forSegment: 3)
+        modeControl.setToolTip("Highlights (⌥⌘5)", forSegment: 3)
         modeControl.target = self
         modeControl.action = #selector(modeChanged(_:))
         modeControl.translatesAutoresizingMaskIntoConstraints = false
@@ -141,10 +149,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     private func applyMode() {
         searchResults.view.isHidden = !showsSearchResults
-        let showOutline = !showsSearchResults && storedMode == .outline && hasOutline
+        highlights.view.isHidden = !showsHighlights
+        let showOutline = !showsSearchResults && !showsHighlights && storedMode == .outline && hasOutline
         outlineScrollView.isHidden = !showOutline
-        thumbnailView.isHidden = showOutline || showsSearchResults
-        modeControl.selectedSegment = showsSearchResults ? 2 : showOutline
+        thumbnailView.isHidden = showOutline || showsSearchResults || showsHighlights
+        modeControl.selectedSegment = showsHighlights ? 3 : showsSearchResults ? 2 : showOutline
             ? SidebarMode.outline.rawValue : SidebarMode.thumbnails.rawValue
         if showOutline { syncSelection() }
     }
@@ -152,11 +161,21 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     func showSearchResults() {
         _ = view
         showsSearchResults = true
+        showsHighlights = false
+        applyMode()
+    }
+
+    func showHighlights() {
+        _ = view
+        showsSearchResults = false
+        showsHighlights = true
+        highlights.refresh()
         applyMode()
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
         if sender.selectedSegment == 2 { showSearchResults(); return }
+        if sender.selectedSegment == 3 { showHighlights(); return }
         guard let selected = SidebarMode(rawValue: sender.selectedSegment) else { return }
         Prefs.sidebarMode = selected
         mode = selected
@@ -173,6 +192,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         outlineView.expandItem(nil, expandChildren: true)
         modeControl.setEnabled(hasOutline, forSegment: SidebarMode.outline.rawValue)
         storedMode = hasOutline ? Prefs.sidebarMode : .thumbnails
+        highlights.refresh()
         applyMode()
     }
 

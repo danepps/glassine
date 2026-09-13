@@ -110,6 +110,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         let reader = ReaderViewController(document: document)
         readerVC = reader
         sidebarVC = SidebarViewController(pdfView: reader.pdfView)
+        sidebarVC.highlights.document = document
         position = ReadingPosition(
             pdfView: reader.pdfView,
             saved: document.fileURL.flatMap { Prefs.lastPosition(for: $0) },
@@ -146,6 +147,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         sidebarVC.searchResults.onSelect = { [weak self] index in
             self?.findController.showMatch(index)
         }
+        sidebarVC.highlights.onSelect = { [weak self] highlight in
+            guard let self, highlight.page.document === self.pdfView.document else { return }
+            self.pdfView.setCurrentSelection(nil, animate: false)
+            self.pdfView.go(to: highlight.annotation.bounds.insetBy(dx: -16, dy: -24), on: highlight.page)
+        }
+        reader.pdfView.onHighlightAdded = { [weak self] annotation in
+            self?.sidebarVC.highlights.refresh(select: annotation)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(highlightsChanged(_:)),
+            name: .glassineHighlightsDidChange, object: document)
         // Installing the content view controller resizes the window to the
         // split view's fitting size (320pt wide, no height), so the frame is
         // chosen only after it: the autosaved one if there is one, else the
@@ -978,6 +989,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     // MARK: Sidebar mode
 
+    @objc private func highlightsChanged(_ notification: Notification) {
+        sidebarVC.highlights.refresh()
+        let pages = notification.userInfo?["pages"] as? [PDFPage] ?? pdfView.visiblePages
+        for page in pages { pdfView.annotationsChanged(on: page) }
+        pdfView.needsDisplay = true
+    }
+
+    @objc func showHighlights(_ sender: Any?) {
+        sidebarVC.showHighlights()
+        sidebarItem?.isCollapsed = false
+    }
+
     @objc func showSearchResults(_ sender: Any?) {
         sidebarVC.showSearchResults()
         sidebarItem?.isCollapsed = false
@@ -998,12 +1021,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(showThumbnails(_:)):
-            menuItem.state = !sidebarVC.showsSearchResults && sidebarVC.mode == .thumbnails ? .on : .off
+            menuItem.state = !sidebarVC.showsSearchResults && !sidebarVC.showsHighlights && sidebarVC.mode == .thumbnails ? .on : .off
         case #selector(showOutline(_:)):
-            menuItem.state = !sidebarVC.showsSearchResults && sidebarVC.mode == .outline ? .on : .off
+            menuItem.state = !sidebarVC.showsSearchResults && !sidebarVC.showsHighlights && sidebarVC.mode == .outline ? .on : .off
             return sidebarVC.hasOutline
         case #selector(showSearchResults(_:)):
             menuItem.state = sidebarVC.showsSearchResults ? .on : .off
+        case #selector(showHighlights(_:)):
+            menuItem.state = sidebarVC.showsHighlights ? .on : .off
+            return glassineDocument.kind == .pdf
         case #selector(focusPageField(_:)):
             // In a continuous document this edits the progress percentage
             // instead, so the only thing that disables it is having no document.

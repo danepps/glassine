@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-05. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-12. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,59 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Saved PDF highlights (unreleased; Codex, 2026-09-11; review fixes 2026-09-12).**
+  Select text and press ⇧⌘H for yellow; Edit ▸ Highlight in and the selection
+  context menu offer yellow, green, blue and pink. Standard PDF Highlight
+  annotations use relative quadrilateral points, grouped per page. New bare
+  highlights leave `/Contents` empty. Colors use Zotero's RGB palette at full
+  opacity, consistently across display, thumbnails, print and reopen; there is
+  no lazy display softening. PDFKit may regenerate third-party appearance
+  streams when saving; preservation is not promised.
+  View ▸ Highlights (⌥⌘5) opens the sidebar with cached passage text, text-order
+  sorting (including columns), automatic row heights, color buttons and Delete.
+  Adding a highlight preserves the pane and collapsed state. Deletion selects
+  the next row, or the previous one at the end. Recolor and delete support undo.
+  The context menu retains Copy, Look Up and other normal PDFKit actions, while
+  removing PDFKit's view-based markup picker and native `_removeMarkup:` /
+  `_addNote:` actions that bypass Glassine's undo and save scheduling. Glassine
+  only identifies these selectors to filter menu items; it does not call them.
+  Annotation refresh invalidates changed pages without relaying out the PDF.
+
+  **Save behavior approved by Dan on 2026-09-12:** a 1.5-second debounce writes
+  through NSDocument's coordinated safe-save path. Command-S flushes immediately;
+  `canClose` flushes before AppKit considers a save sheet. The custom document
+  controller routes quit review through these per-document flushes before an
+  aggregate unsaved-documents alert can appear. Successful saves close silently;
+  failures retain edited state, show an error, and allow standard close review.
+  Keep NSDocument undo/change tracking, but disable Versions, in-place AppKit
+  autosave and draft creation. Do not flush in `windowWillClose` or `close()`:
+  those run after the user's decision and must respect an explicit Don't Save.
+  Save As creates a copy of the current PDF; Export includes pending changes.
+  Revert calls super, then refreshes the reader; initial reads remain concurrent.
+
+  PDFs load from owned `Data` so safe saves and external in-place writes cannot
+  invalidate PDFKit's lazy backing reads. This adds memory proportional to file
+  size. Saving remains a synchronous full PDFKit rewrite and can discard
+  incremental history and linearization; files at least 32 MiB show a titlebar
+  saving indicator during serialization. Signature fields (including inherited
+  field types), encrypted PDFs and PDFs prohibiting comments are read-only.
+  Locked annotations cannot be deleted or recolored. The author preference
+  remains an open design question; this follow-up does not set `/T`.
+
+  Validation: 22 macOS tests and 136 Core tests pass; release build, ad-hoc
+  signature verification and diff whitespace check pass. Added coverage includes
+  debounce timing, undo/redo persistence, close/quit flush, failed-write retry,
+  revert/discard cancellation, backing-data replacement, signature fields,
+  sidebar layout, two-column order and passage-region rendering across saves.
+  Live test build: creation with sidebar closed, context-menu Copy/Look Up,
+  recoloring, compact rows, deletion advancing selection, light/dark display,
+  immediate undo/close without a save sheet, and reopen with the undo saved.
+  Test app: `build/Glassine Highlights Review.app`, bundle id
+  `com.epps.Glassine.HighlightsReview`, ad-hoc signed, automatic updates disabled.
+  The disposable fixture is `build/Highlights Review Fixture.pdf`. Direct iCloud,
+  Dropbox and SMB/NFS volume checks and large-scan latency measurements remain
+  unrun. Installed app, release metadata and update feed have not changed.
 
 - **macOS search sidebar (1.6.0; Codex, 2026-09-10).**
   `SearchResultsViewController` adds virtualized match rows
@@ -2279,8 +2332,8 @@ in the site's `next.config.ts`; the canonical URL stays on danepps.com.
 
 ## Known quirks / candidates for next work
 
-- No annotation/highlighting tools (text-copy cleanup landed 2026-09-09);
-  no per-document invert override (global toggle only).
+- PDF highlighting landed locally on 2026-09-11 (see State); free-text notes,
+  Markdown highlighting and per-document invert overrides remain candidates.
 - **A find with thousands of matches is expensive** (2026-09-06): "the" over a
   56-page memo, 4,176 hits, held the app at 100 % CPU and up to 4.8 GB RSS for
   about a minute and dropped the reader from 25 % to the top, with a correct

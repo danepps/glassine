@@ -95,6 +95,8 @@ enum MainMenu {
         menu.addItem(.separator())
         add(menu, "New Tab", #selector(NSWindow.newWindowForTab(_:)), key: "t")
         add(menu, "Close", #selector(NSWindow.performClose(_:)), key: "w")
+        add(menu, "Save", #selector(NSDocument.save(_:)), key: "s")
+        add(menu, "Save As…", #selector(NSDocument.saveAs(_:)), key: "s", modifiers: [.command, .shift])
         menu.addItem(.separator())
         add(menu, "Print…", #selector(NSDocument.printDocument(_:)), key: "p")
         menu.addItem(.separator())
@@ -122,6 +124,14 @@ enum MainMenu {
         add(menu, "Delete", #selector(NSText.delete(_:)))
         add(menu, "Select All", #selector(NSText.selectAll(_:)), key: "a")
         menu.addItem(.separator())
+        add(menu, "Highlight", #selector(ReaderPDFView.highlightSelection(_:)),
+            key: "h", modifiers: [.command, .shift])
+        let highlightColors = NSMenu(title: "Highlight in")
+        for color in HighlightColor.allCases {
+            add(highlightColors, color.title, #selector(ReaderPDFView.highlightSelection(_:)), tag: color.rawValue)
+        }
+        menu.addItem(submenu(highlightColors))
+        menu.addItem(.separator())
         add(menu, "Find…", #selector(ReaderWindowController.focusSearch(_:)), key: "f")
         add(menu, "Find Next", #selector(ReaderWindowController.findNext(_:)), key: "g")
         add(menu, "Find Previous", #selector(ReaderWindowController.findPrevious(_:)), key: "g",
@@ -143,6 +153,8 @@ enum MainMenu {
             key: "3", modifiers: [.command, .option])
         add(menu, "Search Results", #selector(ReaderWindowController.showSearchResults(_:)),
             key: "4", modifiers: [.command, .option])
+        add(menu, "Highlights", #selector(ReaderWindowController.showHighlights(_:)),
+            key: "5", modifiers: [.command, .option])
         menu.addItem(.separator())
         add(menu, "Zoom In", #selector(PDFView.zoomIn(_:)), key: "=")
         add(menu, "Zoom Out", #selector(PDFView.zoomOut(_:)), key: "-")
@@ -367,4 +379,3 @@ final class OpacityMenuItemView: NSView {
         showPercent(slider.doubleValue)
     }
 }
-

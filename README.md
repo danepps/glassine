@@ -57,6 +57,17 @@ updated in place.
 - **Zippy.** Renders through PDFKit, the same engine as Preview. Launches cold in
   well under a second.
 - **Remembers where you were** in each file.
+- **Saved PDF highlights.** Select text and press ⇧⌘H for yellow, or choose
+  Edit ▸ Highlight in or a context-menu color button. Right-click a highlight
+  to recolor or delete it; Copy and Look Up remain available. View ▸ Highlights
+  (⌥⌘5) lists passages and their pages, with color controls and undoable deletion.
+  Adding highlights keeps your sidebar layout; deleting a row selects the next one.
+  Changes save automatically after 1.5 seconds without another edit. ⌘S saves
+  immediately, and closing or quitting saves pending changes before proceeding.
+  A failed save keeps the edits and allows the normal Save / Don't Save / Cancel
+  choice on close. Save As… (⇧⌘S) creates a copy of the current PDF; Export as PDF
+  includes pending edits. Highlighting is available for unencrypted PDFs that
+  allow commenting and have no signature fields; Markdown remains read-only.
 - Arrow keys always page: ↑/← previous, ↓/→ next, ⌘↑/⌘↓ first/last.
 - **Sidebar with a table of contents.** ⌃⌘S shows it; ⌥⌘2 and ⌥⌘3 switch
   between page thumbnails and the document's chapters. Markdown gets an outline
