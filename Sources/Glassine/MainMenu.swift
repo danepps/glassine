@@ -103,6 +103,7 @@ enum MainMenu {
         // ⇧⌘E because ⌘E is Use Selection for Find.
         add(menu, "Export as PDF…", #selector(GlassineDocument.exportAsPDF(_:)),
             key: "e", modifiers: [.command, .shift])
+        add(menu, "Export Highlights as Markdown…", #selector(GlassineDocument.exportHighlightsAsMarkdown(_:)))
         return menu
     }
 

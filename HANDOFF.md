@@ -34,6 +34,46 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Highlight notes and Markdown export (unreleased; Codex, 2026-09-12).**
+  Add/edit a comment on an existing PDF highlight from its context menu or the
+  Highlights sidebar's Note… button. `HighlightNoteEditor` is a native sheet
+  with a plain-text draft and its own undo manager: Done (also ⌘Return) commits
+  one document undo operation, Cancel leaves the PDF untouched. Clearing a
+  note removes `/Contents`. The editor rechecks annotation ownership and
+  permissions at commit; notes on read-only highlights can be viewed. Changes
+  use the existing 1.5-second automatic save and close/quit flush paths.
+  Cached highlighted text is separate from live comment text, so comments
+  cannot become fabricated quotations on pages with no extractable text.
+  Sidebar rows show compact note previews, with the full note available in
+  the editor and tooltip. Multiple selection survives refresh; Copy / ⌘C
+  copies the selected rows in reading order, and Delete removes the selection
+  as one undoable operation. Colors and note editing require one selected row.
+  The PDF context menu also offers Copy Highlight as Markdown.
+
+  File ▸ Export Highlights as Markdown… and the sidebar Export… button open a
+  save panel for all highlights, independently of the current row selection.
+  `HighlightMarkdown` in Core formats immutable snapshots: document title,
+  source link, highlight/note counts, page groups, quoted passages, comments,
+  color names and source-PDF links with physical `#page=N` fragments. Printed
+  page labels remain distinct from physical indices. Plain-text Markdown/HTML
+  syntax is escaped, Unicode paths are URL-encoded, and a highlight without
+  extractable text is labeled explicitly. There is no separate note sidecar;
+  standalone sticky notes, free text and iOS annotation editing remain future work.
+
+  Validation: 26 macOS tests and 139 Core tests pass, including note save/reopen,
+  undo/redo/removal/permissions, draft Done/Cancel/read-only/stale identity,
+  multi-selection copy/delete/refresh, PDF menu ownership, full Markdown
+  formatting, literal syntax, paths, page labels and missing text. Release-mode
+  build and ad-hoc signature verification pass. Live checks verified the note
+  sheet, saved note in the sidebar, keyboard copying two selected highlights,
+  cancellation of a temporary draft and export through the save panel. The
+  exported file was checked for all seven fixture highlights, complete note
+  paragraphs and PDF links. Direct Preview/Acrobat/Zotero note editing and
+  cross-reader page-link navigation have not been tested.
+  Test app: `build/Glassine Notes Test.app`, bundle id
+  `com.epps.Glassine.NotesTest`, automatic updates disabled. Disposable inputs
+  and exports remain in `build/`. Installed app, version and update feed are unchanged.
+
 - **Saved PDF highlights (1.7.0; Codex, 2026-09-11; review fixes 2026-09-12).**
   Select text and press ⇧⌘H for yellow; Edit ▸ Highlight in and the selection
   context menu offer yellow, green, blue and pink. Standard PDF Highlight

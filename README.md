@@ -62,6 +62,12 @@ updated in place.
   to recolor or delete it; Copy and Look Up remain available. View ▸ Highlights
   (⌥⌘5) lists passages and their pages, with color controls and undoable deletion.
   Adding highlights keeps your sidebar layout; deleting a row selects the next one.
+  Add a note from the sidebar's Note… button or a highlight's context menu;
+  Done saves the comment with the PDF, and Cancel discards the draft. Notes
+  support Undo/Redo and appear beneath their passages in the sidebar. Select
+  multiple rows with Shift or Command, then Copy (or ⌘C) to copy their quotations,
+  notes and page links as Markdown. Export… or File ▸ Export Highlights as
+  Markdown… exports every highlight, grouped by page.
   Changes save automatically after 1.5 seconds without another edit. ⌘S saves
   immediately, and closing or quitting saves pending changes before proceeding.
   A failed save keeps the edits and allows the normal Save / Don't Save / Cancel

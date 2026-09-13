@@ -1,4 +1,5 @@
 import AppKit
+import GlassineCore
 import PDFKit
 
 enum HighlightColor: Int, CaseIterable {
@@ -36,13 +37,21 @@ struct SavedHighlight {
         self.annotation = annotation
         let selections = Self.rects(for: annotation).compactMap { page.selection(for: $0) }
         let extracted = selections.compactMap(\.string).joined(separator: " ")
-        let passage = extracted.isEmpty ? (annotation.contents ?? "Highlight") : extracted
-        text = passage.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        text = extracted.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         readingOrder = selections.compactMap { selection -> Int? in
             guard selection.numberOfTextRanges(on: page) > 0 else { return nil }
             let range = selection.range(at: 0, on: page)
             return range.location == NSNotFound ? nil : range.location
         }.min() ?? Int.max
+    }
+
+    var note: String { annotation.contents ?? "" }
+    var displayText: String { text.isEmpty ? "Highlight (no extractable text)" : text }
+
+    var excerpt: HighlightExcerpt {
+        HighlightExcerpt(text: text, note: note,
+            pageIndex: page.document?.index(for: page) ?? 0, pageLabel: page.label ?? "",
+            color: HighlightColor.allCases.first { $0.matches(annotation.color) }?.title ?? "Custom color")
     }
 
     var pageReference: String {
@@ -133,6 +142,44 @@ extension GlassineDocument {
         guard canEdit(annotation), let page = annotation.page else { return }
         setHighlights([SavedHighlight(page: page, annotation: annotation)], present: false,
                       action: "Delete Highlight")
+    }
+
+    func removeHighlights(_ annotations: [PDFAnnotation]) {
+        guard !annotations.isEmpty, annotations.allSatisfy(canEdit) else { return }
+        let items = annotations.compactMap { annotation in
+            annotation.page.map { SavedHighlight(page: $0, annotation: annotation) }
+        }
+        setHighlights(items, present: false, action: items.count == 1 ? "Delete Highlight" : "Delete Highlights")
+    }
+
+    @discardableResult
+    func setHighlightNote(_ annotation: PDFAnnotation, text: String) -> Bool {
+        guard canEdit(annotation) else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let contents: String? = trimmed.isEmpty ? nil : trimmed
+        guard annotation.contents != contents else { return true }
+        changeHighlightNote(annotation, contents: contents, date: Date())
+        return true
+    }
+
+    private func changeHighlightNote(_ annotation: PDFAnnotation, contents: String?, date: Date?) {
+        guard annotation.page?.document === pdf else { return }
+        let previous = annotation.contents, previousDate = annotation.modificationDate
+        undoManager?.registerUndo(withTarget: self) { document in
+            document.changeHighlightNote(annotation, contents: previous, date: previousDate)
+        }
+        undoManager?.setActionName("Edit Highlight Note")
+        annotation.contents = contents
+        annotation.modificationDate = date
+        scheduleHighlightSave()
+        NotificationCenter.default.post(name: .glassineHighlightsDidChange, object: self,
+                                        userInfo: ["pages": annotation.page.map { [$0] } ?? []])
+    }
+
+    func highlightsMarkdown(_ highlights: [SavedHighlight]? = nil) -> String {
+        let items = (highlights ?? savedHighlights).filter { $0.page.document === pdf && $0.annotation.page === $0.page }
+        return HighlightMarkdown.render(items.map(\.excerpt),
+            title: fileURL?.deletingPathExtension().lastPathComponent ?? "Document", sourceURL: fileURL)
     }
 
     private func setHighlights(_ items: [SavedHighlight], present: Bool, action: String) {

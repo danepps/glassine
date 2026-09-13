@@ -510,6 +510,118 @@ struct HighlightsTests {
         #expect(try Data(contentsOf: url) == bytes)
     }
 
+    @Test("Highlight notes save as comments and undo without changing the quoted passage")
+    func notePersistence() async throws {
+        let (doc, folder) = try fixture()
+        defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+        let selection = try #require(doc.pdf?.findString("First passage", withOptions: []).first)
+        edit(doc) { doc.addHighlight(selection: selection, color: .yellow) }
+        let highlight = try #require(doc.savedHighlights.first)
+        edit(doc) { #expect(doc.setHighlightNote(highlight.annotation, text: "Compare the later holding.\n\nA second paragraph.")) }
+        #expect(highlight.text == "First passage")
+        #expect(highlight.note == "Compare the later holding.\n\nA second paragraph.")
+        let error: Error? = await withCheckedContinuation { continuation in
+            doc.flushHighlights { continuation.resume(returning: $0) }
+        }
+        #expect(error == nil && !doc.isDocumentEdited)
+        let reopened = try GlassineDocument(contentsOf: #require(doc.fileURL), ofType: UTType.pdf.identifier)
+        defer { reopened.close() }
+        #expect(reopened.savedHighlights.first?.note == highlight.note)
+        #expect(reopened.savedHighlights.first?.text == "First passage")
+        doc.undoManager?.undo()
+        #expect(highlight.annotation.contents == nil)
+        #expect(doc.isDocumentEdited)
+        doc.undoManager?.redo()
+        #expect(highlight.note.contains("second paragraph"))
+        edit(doc) { #expect(doc.setHighlightNote(highlight.annotation, text: "   \n")) }
+        #expect(highlight.annotation.contents == nil)
+        doc.undoManager?.undo()
+        #expect(highlight.note.contains("second paragraph"))
+        highlight.annotation.setValue(NSNumber(value: 128), forAnnotationKey: .flags)
+        #expect(!doc.setHighlightNote(highlight.annotation, text: "Forbidden"))
+        #expect(highlight.note.contains("second paragraph"))
+    }
+
+    @Test("Note editor commits only Done, supports read-only viewing and rejects detached highlights")
+    func noteEditor() throws {
+        let (doc, folder) = try fixture()
+        defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+        edit(doc) { doc.addHighlight(selection: doc.pdf!.selectionForEntireDocument!, color: .green) }
+        let highlight = try #require(doc.savedHighlights.first)
+        let editor = HighlightNoteEditor(highlight: highlight, editable: true) { doc.setHighlightNote(highlight.annotation, text: $0) }
+        _ = editor.view
+        editor.textView.string = "Draft note"
+        editor.cancel(nil)
+        #expect(highlight.note.isEmpty)
+        edit(doc) { editor.saveNote(nil) }
+        #expect(highlight.note == "Draft note")
+        let viewer = HighlightNoteEditor(highlight: highlight, editable: false) { _ in Issue.record("Read-only editor attempted a write"); return false }
+        _ = viewer.view
+        #expect(!viewer.textView.isEditable)
+        #expect(viewer.textView.string == "Draft note")
+        viewer.saveNote(nil)
+        edit(doc) { doc.removeHighlight(highlight.annotation) }
+        editor.textView.string = "Stale draft"
+        edit(doc) { editor.saveNote(nil) }
+        #expect(highlight.note == "Draft note")
+    }
+
+    @Test("Selected highlights copy in reading order with notes; export includes every highlight")
+    func selectedMarkdown() throws {
+        let (doc, folder) = try fixture()
+        defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+        edit(doc) { doc.addHighlight(selection: doc.pdf!.selectionForEntireDocument!, color: .blue) }
+        let sidebar = HighlightsViewController()
+        sidebar.document = doc
+        _ = sidebar.view
+        let items = doc.savedHighlights
+        edit(doc) { doc.setHighlightNote(items[0].annotation, text: "Useful for the introduction.") }
+        sidebar.table.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
+        sidebar.refresh()
+        #expect(sidebar.table.selectedRowIndexes == IndexSet([0, 1]))
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        sidebar.copySelectedHighlights(to: pasteboard)
+        let copied = try #require(pasteboard.string(forType: .string))
+        #expect(copied.contains("2 highlights, 1 note."))
+        #expect(copied.contains("**Note:** Useful for the introduction."))
+        #expect(copied.contains("#page=1") && copied.contains("#page=2"))
+        sidebar.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        sidebar.copySelectedHighlights(to: pasteboard)
+        let one = try #require(pasteboard.string(forType: .string))
+        #expect(one.contains("1 highlight, 0 notes."))
+        #expect(!one.contains("First passage"))
+        #expect(doc.highlightsMarkdown().contains("First passage"))
+        sidebar.table.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
+        edit(doc) { sidebar.deleteHighlight(nil) }
+        #expect(doc.savedHighlights.isEmpty)
+        doc.undoManager?.undo()
+        #expect(doc.savedHighlights.count == 2)
+    }
+
+    @Test("The PDF note action captures its highlight and rejects a replacement document")
+    func noteMenuIdentity() throws {
+        let (doc, folder) = try fixture()
+        defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+        edit(doc) { doc.addHighlight(selection: doc.pdf!.selectionForEntireDocument!, color: .yellow) }
+        let annotation = try #require(doc.savedHighlights.first?.annotation)
+        let view = ReaderPDFView()
+        view.document = doc.pdf
+        view.highlightDocument = doc
+        var selected: PDFAnnotation?
+        view.onEditHighlightNote = { selected = $0 }
+        let item = NSMenuItem(title: "Add Note…", action: #selector(ReaderPDFView.editClickedHighlightNote(_:)), keyEquivalent: "")
+        item.representedObject = annotation
+        #expect(view.validateMenuItem(item))
+        view.editClickedHighlightNote(item)
+        #expect(selected === annotation)
+        selected = nil
+        view.document = PDFDocument()
+        #expect(!view.validateMenuItem(item))
+        view.editClickedHighlightNote(item)
+        #expect(selected == nil)
+    }
+
     @Test("Context-menu swatches capture the selection, recolor in place and reject stale documents")
     func contextColors() throws {
         let (doc, folder) = try fixture()

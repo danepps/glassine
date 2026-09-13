@@ -1,24 +1,33 @@
 import AppKit
 import PDFKit
 
-final class HighlightsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class HighlightsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation {
     let table = HighlightsTable()
     private let status = NSTextField(wrappingLabelWithString: "")
     private var colorButtons: [HighlightColorButton] = []
     private let remove = NSButton(title: "Delete", target: nil, action: nil)
+    private let noteButton = NSButton(title: "Note…", target: nil, action: nil)
+    private let copyButton = NSButton(title: "Copy", target: nil, action: nil)
+    private let exportButton = NSButton(title: "Export…", target: nil, action: nil)
     private var syncing = false
     private(set) var highlights: [SavedHighlight] = []
     weak var document: GlassineDocument?
     var onSelect: ((SavedHighlight) -> Void)?
 
+    var selectedHighlights: [SavedHighlight] {
+        table.selectedRowIndexes.compactMap { highlights.indices.contains($0) ? highlights[$0] : nil }
+    }
+
     var selectedHighlight: SavedHighlight? {
-        highlights.indices.contains(table.selectedRow) ? highlights[table.selectedRow] : nil
+        let selected = selectedHighlights
+        return selected.count == 1 ? selected.first : nil
     }
 
     override func loadView() {
         view = NSView()
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("highlight")))
         table.headerView = nil
+        table.allowsMultipleSelection = true
         table.style = .sourceList
         table.rowHeight = 78
         table.usesAutomaticRowHeights = true
@@ -28,6 +37,15 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
         table.target = self
         table.action = #selector(activateSelection)
         table.onDelete = { [weak self] in self?.deleteHighlight(nil) }
+        table.onCopy = { [weak self] in self?.copyHighlightsAsMarkdown(nil) }
+        let menu = NSMenu()
+        for (title, action) in [("Add or Edit Note…", #selector(editSelectedNote(_:))),
+                                ("Copy as Markdown", #selector(copyHighlightsAsMarkdown(_:))),
+                                ("Export All Highlights…", #selector(exportHighlights(_:)))] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        table.menu = menu
         table.setAccessibilityLabel("Saved highlights")
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -51,7 +69,19 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
         remove.setAccessibilityLabel("Delete selected highlight")
         let actions = NSStackView(views: [colors, remove])
         actions.spacing = 8
-        for child in [status, scroll, actions] {
+        for (button, action, label) in [
+            (noteButton, #selector(editSelectedNote(_:)), "Add or edit the selected highlight note"),
+            (copyButton, #selector(copyHighlightsAsMarkdown(_:)), "Copy selected highlights as Markdown"),
+            (exportButton, #selector(exportHighlights(_:)), "Export all highlights as Markdown")
+        ] {
+            button.bezelStyle = .rounded
+            button.target = self
+            button.action = action
+            button.setAccessibilityLabel(label)
+        }
+        let tools = NSStackView(views: [noteButton, copyButton, exportButton])
+        tools.spacing = 6
+        for child in [status, scroll, actions, tools] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
         }
@@ -65,21 +95,24 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
             scroll.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
             actions.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             actions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
-            actions.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -10)
+            tools.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 6),
+            tools.leadingAnchor.constraint(equalTo: actions.leadingAnchor),
+            tools.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
+            tools.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -10)
         ])
         refresh()
     }
 
     func refresh(select annotation: PDFAnnotation? = nil) {
         guard isViewLoaded else { return }
-        let selection = annotation ?? selectedHighlight?.annotation
+        let selected = annotation.map { [$0] } ?? selectedHighlights.map(\.annotation)
+        let identities = Set(selected.map(ObjectIdentifier.init))
         highlights = document?.savedHighlights ?? []
         syncing = true
         table.reloadData()
-        if let selection, let row = highlights.firstIndex(where: { $0.annotation === selection }) {
-            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            if annotation != nil { table.scrollRowToVisible(row) }
-        } else { table.deselectAll(nil) }
+        let rows = IndexSet(highlights.indices.filter { identities.contains(ObjectIdentifier(highlights[$0].annotation)) })
+        table.selectRowIndexes(rows, byExtendingSelection: false)
+        if annotation != nil, let row = rows.first { table.scrollRowToVisible(row) }
         syncing = false
         status.stringValue = highlights.isEmpty ? "Select text to highlight it (⇧⌘H)"
             : "\(highlights.count) " + (highlights.count == 1 ? "highlight" : "highlights")
@@ -97,18 +130,62 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
             button.state = selectedHighlight.map { button.highlightColor.matches($0.annotation.color) } == true ? .on : .off
             button.setAccessibilityValue(button.state == .on ? "Selected" : "")
         }
-        remove.isEnabled = editable
+        remove.isEnabled = !selectedHighlights.isEmpty && selectedHighlights.allSatisfy { document?.canEdit($0.annotation) == true }
+        noteButton.isEnabled = selectedHighlight.map { editable || !$0.note.isEmpty } ?? false
+        noteButton.toolTip = editable ? "Add or edit a note" : "View the note"
+        copyButton.isEnabled = !selectedHighlights.isEmpty
+        exportButton.isEnabled = !highlights.isEmpty
     }
 
     @objc func deleteHighlight(_ sender: Any?) {
-        guard let selectedHighlight else { return }
-        guard document?.canEdit(selectedHighlight.annotation) == true else { return }
+        let selected = selectedHighlights
+        guard !selected.isEmpty, selected.allSatisfy({ document?.canEdit($0.annotation) == true }) else { return }
         let row = table.selectedRow
-        document?.removeHighlight(selectedHighlight.annotation)
+        document?.removeHighlights(selected.map(\.annotation))
         refresh()
         if !highlights.isEmpty {
-            table.selectRowIndexes(IndexSet(integer: min(row, highlights.count - 1)),
-                                   byExtendingSelection: false)
+            table.selectRowIndexes(IndexSet(integer: min(row, highlights.count - 1)), byExtendingSelection: false)
+        }
+    }
+
+    @objc func editSelectedNote(_ sender: Any?) {
+        guard let highlight = selectedHighlight else { return }
+        editNote(for: highlight.annotation)
+    }
+
+    func editNote(for annotation: PDFAnnotation) {
+        guard let document, let page = annotation.page, page.document === document.pdf,
+              annotation.type == "Highlight" else { return }
+        let editable = document.canEdit(annotation)
+        guard editable || annotation.contents?.isEmpty == false else { return }
+        let editor = HighlightNoteEditor(highlight: SavedHighlight(page: page, annotation: annotation),
+            editable: editable) { [weak document] text in
+                document?.setHighlightNote(annotation, text: text) == true
+            }
+        presentAsSheet(editor)
+    }
+
+    @objc func copyHighlightsAsMarkdown(_ sender: Any?) {
+        copySelectedHighlights(to: .general)
+    }
+
+    func copySelectedHighlights(to pasteboard: NSPasteboard) {
+        guard let document, !selectedHighlights.isEmpty else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(document.highlightsMarkdown(selectedHighlights), forType: .string)
+    }
+
+    @objc private func exportHighlights(_ sender: Any?) {
+        document?.exportHighlightsAsMarkdown(sender)
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(editSelectedNote(_:)):
+            return selectedHighlight.map { document?.canEdit($0.annotation) == true || !$0.note.isEmpty } ?? false
+        case #selector(copyHighlightsAsMarkdown(_:)): return !selectedHighlights.isEmpty
+        case #selector(exportHighlights(_:)): return !highlights.isEmpty
+        default: return true
         }
     }
 
@@ -135,10 +212,13 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
             ?? HighlightCell(identifier: id)
         let item = highlights[row]
         cell.page.stringValue = item.pageReference
-        cell.passage.stringValue = item.text
+        cell.passage.stringValue = item.displayText
+        cell.note.stringValue = item.note.isEmpty ? "" : "Note: " + item.note.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        cell.note.toolTip = item.note.isEmpty ? nil : item.note
+        cell.note.isHidden = item.note.isEmpty
         cell.swatch.layer?.backgroundColor = item.annotation.color.withAlphaComponent(1).cgColor
         cell.updateColors()
-        cell.setAccessibilityLabel("\(item.pageReference). \(cell.passage.stringValue)")
+        cell.setAccessibilityLabel("\(item.pageReference). \(cell.passage.stringValue). \(cell.note.stringValue)")
         return cell
     }
 }
@@ -244,6 +324,16 @@ final class HighlightColorMenuView: NSView {
 
 final class HighlightsTable: NSTableView {
     var onDelete: (() -> Void)?
+    var onCopy: (() -> Void)?
+    @objc func copy(_ sender: Any?) { onCopy?() }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0 && !selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return super.menu(for: event)
+    }
     private(set) var isHandlingMouse = false
     override func mouseDown(with event: NSEvent) {
         isHandlingMouse = true
@@ -262,11 +352,13 @@ final class HighlightsTable: NSTableView {
 private final class HighlightCell: NSTableCellView {
     let page = NSTextField(labelWithString: "")
     let passage = NSTextField(wrappingLabelWithString: "")
+    let note = NSTextField(wrappingLabelWithString: "")
     let swatch = NSView()
     override var backgroundStyle: NSView.BackgroundStyle { didSet { updateColors() } }
     func updateColors() {
         page.textColor = backgroundStyle == .emphasized ? .selectedControlTextColor : .secondaryLabelColor
         passage.textColor = backgroundStyle == .emphasized ? .selectedControlTextColor : .labelColor
+        note.textColor = backgroundStyle == .emphasized ? .selectedControlTextColor : .secondaryLabelColor
     }
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -278,7 +370,14 @@ private final class HighlightCell: NSTableCellView {
         passage.cell?.isScrollable = false
         swatch.wantsLayer = true
         swatch.layer?.cornerRadius = 3
-        for child in [page, passage, swatch] {
+        note.font = .systemFont(ofSize: 11)
+        note.maximumNumberOfLines = 2
+        note.lineBreakMode = .byWordWrapping
+        let text = NSStackView(views: [passage, note])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 4
+        for child in [page, text, swatch] {
             child.translatesAutoresizingMaskIntoConstraints = false
             addSubview(child)
         }
@@ -290,10 +389,12 @@ private final class HighlightCell: NSTableCellView {
             page.leadingAnchor.constraint(equalTo: swatch.trailingAnchor, constant: 6),
             page.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             page.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            passage.topAnchor.constraint(equalTo: page.bottomAnchor, constant: 3),
-            passage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
-            passage.trailingAnchor.constraint(equalTo: page.trailingAnchor),
-            passage.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+            text.topAnchor.constraint(equalTo: page.bottomAnchor, constant: 3),
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            text.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+            text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            passage.widthAnchor.constraint(equalTo: text.widthAnchor),
+            note.widthAnchor.constraint(equalTo: text.widthAnchor)
         ])
     }
     @available(*, unavailable)

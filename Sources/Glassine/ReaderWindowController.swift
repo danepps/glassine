@@ -152,6 +152,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             self.pdfView.setCurrentSelection(nil, animate: false)
             self.pdfView.go(to: highlight.annotation.bounds.insetBy(dx: -16, dy: -24), on: highlight.page)
         }
+        reader.pdfView.onEditHighlightNote = { [weak self] annotation in
+            self?.sidebarVC.highlights.editNote(for: annotation)
+        }
         reader.pdfView.onHighlightAdded = { [weak self] annotation in
             self?.sidebarVC.highlights.refresh(select: annotation)
         }

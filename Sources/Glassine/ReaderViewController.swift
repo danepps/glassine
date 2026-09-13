@@ -11,6 +11,7 @@ final class ReaderPDFView: PDFView {
     var onEffectiveAppearanceChange: (() -> Void)?
     weak var highlightDocument: GlassineDocument?
     var onHighlightAdded: ((PDFAnnotation) -> Void)?
+    var onEditHighlightNote: ((PDFAnnotation) -> Void)?
 
     @objc func highlightSelection(_ sender: Any?) {
         guard let selection = currentSelection,
@@ -23,6 +24,20 @@ final class ReaderPDFView: PDFView {
     @objc func removeClickedHighlight(_ sender: NSMenuItem) {
         guard let annotation = sender.representedObject as? PDFAnnotation else { return }
         highlightDocument?.removeHighlight(annotation)
+    }
+
+    @objc func editClickedHighlightNote(_ sender: NSMenuItem) {
+        guard let annotation = sender.representedObject as? PDFAnnotation,
+              annotation.page?.document === document, document === highlightDocument?.pdf else { return }
+        onEditHighlightNote?(annotation)
+    }
+
+    @objc func copyClickedHighlightAsMarkdown(_ sender: NSMenuItem) {
+        guard let annotation = sender.representedObject as? PDFAnnotation,
+              let page = annotation.page, page.document === document,
+              let owner = highlightDocument, document === owner.pdf else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(owner.highlightsMarkdown([SavedHighlight(page: page, annotation: annotation)]), forType: .string)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -59,6 +74,18 @@ final class ReaderPDFView: PDFView {
             item.representedObject = annotation
             item.identifier = NSUserInterfaceItemIdentifier("glassine.context.deleteHighlight")
             menu.insertItem(item, at: 1)
+            let noteTitle = annotation.contents?.isEmpty == false ? "Edit Note…" : "Add Note…"
+            let note = NSMenuItem(title: highlightDocument?.canEdit(annotation) == true ? noteTitle : "View Note…",
+                action: #selector(editClickedHighlightNote(_:)), keyEquivalent: "")
+            note.target = self
+            note.representedObject = annotation
+            note.identifier = NSUserInterfaceItemIdentifier("glassine.context.note")
+            menu.insertItem(note, at: 2)
+            let copy = NSMenuItem(title: "Copy Highlight as Markdown", action: #selector(copyClickedHighlightAsMarkdown(_:)), keyEquivalent: "")
+            copy.target = self
+            copy.representedObject = annotation
+            copy.identifier = NSUserInterfaceItemIdentifier("glassine.context.copyHighlight")
+            menu.insertItem(copy, at: 3)
         }
         if clickedHighlight == nil {
             let separator = NSMenuItem.separator()
@@ -271,6 +298,15 @@ extension ReaderPDFView: NSMenuItemValidation {
     }()
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(editClickedHighlightNote(_:)) ||
+            menuItem.action == #selector(copyClickedHighlightAsMarkdown(_:)) {
+            guard let annotation = menuItem.representedObject as? PDFAnnotation,
+                  annotation.page?.document === document, document === highlightDocument?.pdf else { return false }
+            if menuItem.action == #selector(copyClickedHighlightAsMarkdown(_:)) { return true }
+            return onEditHighlightNote != nil &&
+                (highlightDocument?.canEdit(annotation) == true || annotation.contents?.isEmpty == false)
+        }
+
         if menuItem.action == #selector(highlightSelection(_:)) {
             return highlightDocument?.canEditHighlights == true && currentSelection?.string?.isEmpty == false
         }

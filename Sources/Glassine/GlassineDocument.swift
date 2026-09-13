@@ -423,6 +423,24 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
+    @objc func exportHighlightsAsMarkdown(_ sender: Any?) {
+        guard kind == .pdf, !savedHighlights.isEmpty,
+              let window = windowControllers.first?.window else { return }
+        // Snapshot before the panel opens, so an external revert or later edit
+        // cannot mix page identities in an export already underway.
+        let markdown = highlightsMarkdown()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [Self.markdownType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = (fileURL?.deletingPathExtension().lastPathComponent ?? "Document") + " — Highlights.md"
+        panel.directoryURL = fileURL?.deletingLastPathComponent()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            do { try markdown.write(to: url, atomically: true, encoding: .utf8) }
+            catch { self?.presentError(error) }
+        }
+    }
+
     @objc func exportAsPDF(_ sender: Any?) {
         guard let window = windowControllers.first?.window else { return }
         let panel = NSSavePanel()
@@ -515,6 +533,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(exportAsPDF(_:)) { return pdf != nil }
+        if item.action == #selector(exportHighlightsAsMarkdown(_:)) { return !savedHighlights.isEmpty }
         if item.action == #selector(save(_:)) || item.action == #selector(saveAs(_:)) {
             return canEditHighlights
         }
