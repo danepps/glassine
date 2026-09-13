@@ -34,7 +34,7 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Saved PDF highlights (unreleased; Codex, 2026-09-11; review fixes 2026-09-12).**
+- **Saved PDF highlights (1.7.0; Codex, 2026-09-11; review fixes 2026-09-12).**
   Select text and press ⇧⌘H for yellow; Edit ▸ Highlight in and the selection
   context menu offer yellow, green, blue and pink. Standard PDF Highlight
   annotations use relative quadrilateral points, grouped per page. New bare
@@ -85,7 +85,18 @@ Dan's stated requirements, all met as of this handoff:
   `com.epps.Glassine.HighlightsReview`, ad-hoc signed, automatic updates disabled.
   The disposable fixture is `build/Highlights Review Fixture.pdf`. Direct iCloud,
   Dropbox and SMB/NFS volume checks and large-scan latency measurements remain
-  unrun. Installed app, release metadata and update feed have not changed.
+  unrun. The installed app was not replaced during testing or release.
+
+  **Released 2026-09-12:** version 1.7.0 / build 14, feature commit `d7883be`,
+  release commit/tag `5760b82` / `v1.7.0`. Apple notarization submission
+  `4e5eca0e-ad9a-4732-bfb4-fbfe4cc8627d` was Accepted; ticket stapling and
+  Gatekeeper validation passed. Public versioned and latest downloads match
+  the local release archive, and independent verification passed for Sparkle's
+  Ed25519 signature, bundle version/id/feed, Developer ID code signature,
+  stapled ticket and public latest-release metadata. The signed
+  `glassine-appcast.xml` now offers build 14; Folio's `appcast.xml` is unchanged.
+  Archive SHA-256: `e8751a941cc5fb6e8c44bbade1917f757deae00f0ac2ff3c3aae2c9d880248f3`.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.7.0
 
 - **macOS search sidebar (1.6.0; Codex, 2026-09-10).**
   `SearchResultsViewController` adds virtualized match rows
