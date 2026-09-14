@@ -193,16 +193,22 @@ right-click a highlight, Add Note…. If it fails, present from
 - The four unreleased feature blocks in the handoff each end with "no release
   was performed." Once this ships, collapse them into one 1.8.0 entry; the
   per-feature validation logs under `build/` are not in git anyway.
-- Remote branches: pruned in the same session as this review. Eight
-  fully-merged feature branches (`blur`, `glassine`, `icon-onionskin`,
-  `icon-production`, `markdown`, `progress`, `recents`, `start-tab`) and two
-  unmerged 2026-09-05 icon-concept experiments from cloud sessions
-  (`claude/app-name-alternatives-51sx0s` at `0449851`,
-  `claude/icon-concepts-new-name-42nyuq` at `4cdee69`) were deleted from
-  GitHub, leaving `main`. Both unmerged branches were superseded by the
-  `icon-production` work that shipped. A git bundle of all ten is at
-  `build/pruned-branches-2026-09-14.bundle` on the Mac that ran the prune
-  (`build/` is gitignored); `git bundle unbundle` restores any of them.
+- Remote branches: eleven on GitHub as of this review, and only `main`
+  matters. Eight are fully merged into `main` (`blur`, `glassine`,
+  `icon-onionskin`, `icon-production`, `markdown`, `progress`, `recents`,
+  `start-tab`). Two are unmerged 2026-09-05 icon-concept experiments from
+  cloud sessions, superseded by the `icon-production` work that shipped:
+  `claude/app-name-alternatives-51sx0s` (`0449851`, adds
+  `scripts/make-glassine-icon-concepts.swift`) and
+  `claude/icon-concepts-new-name-42nyuq` (`4cdee69`, extends
+  `make-icon-concepts.swift`). A git bundle of all ten is at
+  `build/pruned-branches-2026-09-14.bundle` on the Mac that ran this review
+  (`build/` is gitignored); `git bundle unbundle` restores any of them. The
+  deletion itself needs a human: run
+
+  ```
+  git push origin --delete blur glassine icon-onionskin icon-production markdown progress recents start-tab claude/app-name-alternatives-51sx0s claude/icon-concepts-new-name-42nyuq
+  ```
 
 ## 10. Verification
 
