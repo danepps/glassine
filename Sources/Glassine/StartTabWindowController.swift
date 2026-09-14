@@ -21,6 +21,21 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// drop closes the tab once rather than once per file.
     private var didReplace = false
 
+    /// The menu command works even while the launch picker is key or there is
+    /// no window. A visible reader or start tab supplies the group; launch
+    /// pickers, hidden rendering windows and closed windows never do.
+    static func presentFromCurrentContext() {
+        let candidates = [NSApp.keyWindow, NSApp.mainWindow].compactMap { $0 }
+            + NSApp.orderedWindows
+        present(besides: candidates.first(where: canHostTab))
+    }
+
+    private static func canHostTab(_ window: NSWindow) -> Bool {
+        window.tabbingIdentifier == ReaderWindowController.tabbingIdentifier
+            && window.tabbingMode != .disallowed
+            && window.isVisible && !window.isMiniaturized
+    }
+
     /// Opens a start tab beside `host` -- the tab the reader pressed ⌘T (or the
     /// "+" button) in -- and puts the focus in the list.
     static func present(besides host: NSWindow?) {
@@ -28,7 +43,7 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard let window = controller.window else { return }
         open.append(controller)
 
-        if let host {
+        if let host, canHostTab(host) {
             // A tab is sized by its group anyway; matching the host first keeps
             // the window from flashing at its own size on the way in.
             window.setFrame(host.frame, display: false)
@@ -37,6 +52,9 @@ final class StartTabWindowController: NSWindowController, NSWindowDelegate, NSTo
             window.center()
         }
         window.makeKeyAndOrderFront(nil)
+        // Match reader windows even when the app is in the background and no
+        // didBecomeKey notification reaches the app delegate.
+        RecentsWindowController.shared.hide()
         // Apply the appearance after joining the tab group.
         controller.applyWindowAppearance()
         controller.recentsVC.focusList()

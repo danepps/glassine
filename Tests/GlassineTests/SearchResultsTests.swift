@@ -2,6 +2,7 @@ import AppKit
 import CoreText
 import PDFKit
 import Testing
+import UniformTypeIdentifiers
 @testable import Glassine
 
 @Suite("Search results sidebar") @MainActor
@@ -80,6 +81,58 @@ struct SearchResultsTests {
         #expect(sidebar.showsSearchResults)
         sidebar.mode = .thumbnails
         #expect(!sidebar.showsSearchResults)
+    }
+
+    @Test("The sidebar search field takes focus and shares live queries, stepping and clearing with the toolbar")
+    func editableSidebarSearch() async throws {
+        _ = NSApplication.shared
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("glassine-sidebar-search-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("Search.pdf")
+        try #require(try document().dataRepresentation()).write(to: url)
+        let doc = try GlassineDocument(contentsOf: url, ofType: UTType.pdf.identifier)
+        defer { doc.close() }
+        doc.makeWindowControllers()
+        let controller = try #require(doc.windowControllers.first as? ReaderWindowController)
+        let window = try #require(controller.window)
+        let split = try #require(window.contentViewController?.children.first as? NSSplitViewController)
+        let sidebar = try #require(split.splitViewItems.first?.viewController as? SidebarViewController)
+        let search = sidebar.searchResults.queryField
+        let toolbar = try #require(window.toolbar?.items.compactMap { $0 as? NSSearchToolbarItem }.first?.searchField)
+        let modes = try #require(sidebar.view.subviews.compactMap { $0 as? NSSegmentedControl }.first)
+        modes.selectedSegment = 2
+        modes.sendAction(modes.action, to: modes.target)
+        let editor = try #require(search.currentEditor())
+        #expect(window.firstResponder === editor && sidebar.showsSearchResults)
+
+        search.stringValue = "alpha"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(toolbar.stringValue == "alpha")
+        search.sendAction(search.action, to: search.target)
+        for _ in 0..<100 where sidebar.searchResults.matches.count != 3 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(sidebar.searchResults.matches.count == 3)
+        controller.findNext(nil)
+        #expect(sidebar.searchResults.table.selectedRow == 1)
+        toolbar.sendAction(toolbar.action, to: toolbar.target)
+        #expect(sidebar.searchResults.table.selectedRow == 1)
+
+        toolbar.stringValue = "beta"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: toolbar))
+        #expect(search.stringValue == "beta")
+        toolbar.sendAction(toolbar.action, to: toolbar.target)
+        for _ in 0..<100 where sidebar.searchResults.matches.count != 1 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(sidebar.searchResults.matches.count == 1)
+        #expect(sidebar.searchResults.matches.first?.string == "beta")
+
+        search.stringValue = ""
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+        #expect(toolbar.stringValue.isEmpty && sidebar.searchResults.matches.isEmpty)
+        #expect(split.splitViewItems.first?.isCollapsed == true)
     }
 
     @Test("Current-match feedback moves between same-page hits and follows PDF geometry")

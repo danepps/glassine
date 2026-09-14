@@ -389,7 +389,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         defer { endProgress() }
         // PDFKit rewrites the whole PDF and can regenerate third-party markup
         // appearances. It does not preserve incremental history or linearization.
-        guard let data = pdf.dataRepresentation() else { throw Self.nothingToExport }
+        guard let data = ReaderPage.withOriginalBounds({ pdf.dataRepresentation() }) else {
+            throw Self.nothingToExport
+        }
         return data
     }
 
@@ -515,7 +517,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         paginatedDocumentForOutput { result in
             switch result {
             case .success(let document):
-                guard let data = document.dataRepresentation() else {
+                guard let data = ReaderPage.withOriginalBounds({ document.dataRepresentation() }) else {
                     completion(.failure(Self.nothingToExport))
                     return
                 }
@@ -524,6 +526,16 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
                 completion(.failure(error))
             }
         }
+    }
+
+    /// A detached print source keeps transient display bounds and find ink out
+    /// of PDFKit's print workers. Copying also retains the current unlocked
+    /// permission state; reopening serialized encrypted bytes would relock it.
+    func readerModeDocumentForPrinting() -> PDFDocument? {
+        guard let pdf, !pdf.isLocked, pdf.allowsPrinting,
+              let snapshot = ReaderPage.withOriginalBounds({ pdf.copy() as? PDFDocument }),
+              !snapshot.isLocked, snapshot.allowsPrinting else { return nil }
+        return snapshot
     }
 
     private static let nothingToExport = NSError(

@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-12. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-13. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,89 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Reader Mode, low-light brightness, and Recents-only New Tab (unreleased;
+  Codex, 2026-09-13).** View ▸ Reader Mode (⌥⌘R) trims PDF margins for reading,
+  uses short page gaps, and fits one consistent scale across pages. Automatic
+  detection rasterizes immutable Core Graphics page snapshots off the main
+  thread, including scans, figures and visible annotations; uncertain pages
+  retain their original crop. Reader Mode Margins… offers automatic padding or
+  custom trims for each displayed edge, accounting for rotation. Settings are
+  remembered per file. Manual zoom stops width fitting until ⌘0; toggling off
+  restores the prior layout and zoom while holding the current reading position.
+
+  `ReaderPage.readerContentBounds` overrides only the displayed ArtBox. PDFKit
+  also consults that override during serialization and copying, so save/export
+  use `withOriginalBounds`; the same guard excludes temporary find ink. Printing
+  uses a guarded, independent PDFDocument copy, preserving an encrypted PDF's
+  current unlocked permission state. Reopening serialized encrypted bytes would
+  relock them. Tests cover original boxes/rotation, permanent annotations, actual
+  save/reopen, and protected print copies. Queued position restores carry a
+  generation and document identity; synchronous custom trimming joins the
+  replacement's existing restore rather than queueing a second one.
+  Changing virtual bounds while staying in ArtBox left PDFKit's cached highlight
+  transforms stale. Live testing reproduced a highlight shifting two lines down
+  after custom margin edits. Each crop update now leaves and reenters ArtBox and
+  calls `annotationsChanged(on:)`; the exact four-slider sequence and a return
+  to Automatic both kept the highlight aligned in the rebuilt app.
+
+  View ▸ Appearance ▸ Dark Mode Brightness is an independent 35–100% slider with
+  Reset. It dims inverted text, images and highlights while retaining the chosen
+  Black/Charcoal/Gray paper level; normal brightness preserves prior rendering.
+
+  File ▸ New Tab now targets AppDelegate explicitly. From standalone Recents or
+  no open windows, ⌘T opens a usable Recents start tab; existing reader groups and
+  native tab-bar actions use the same routing. Hidden, closed, minimized and
+  standalone Recents windows cannot become tab hosts. The previous blank
+  Untitled-window failure was reproduced live before the fix.
+
+  Validation: all 55 macOS tests and 139 Core tests pass, including cancellation,
+  replacements, rotation, selection, position, zoom, output preservation, printing
+  permissions, brightness rendering and New Tab routing. Release build and
+  ad-hoc signature verification pass; packaged executable matches that build
+  after accounting for the code signature. Live checks verified Recents-only ⌘T,
+  automatic cropping, custom margin controls, remembered settings, 55% brightness
+  on text/highlights with an unchanged black background, and highlight alignment
+  after repeated crop changes. The initial sample's hand-positioned highlight was
+  corrected to use real text geometry. Native rendering capture in a standalone
+  test probe omitted PDFKit tiles, so the crop/highlight rendering regression was
+  verified through the app UI. macOS's file-chooser automation stalled; the
+  workspace fixture was opened through Finder instead.
+
+  Test app: `build/Glassine Reader Features Test.app`, bundle id
+  `com.epps.Glassine.ReaderFeaturesTest`, automatic updates disabled. Final logs:
+  `build/reader-features-tests.log`, `build/reader-features-core-tests.log`, and
+  `build/reader-features-build.log`. Fixtures are in
+  `build/reader-features-fixtures/`. No installed-app replacement or release was
+  performed.
+
+- **Continuous Markdown sidebar and editable sidebar search (unreleased; Codex,
+  2026-09-13).** Continuous Markdown defaults to Table of Contents and omits the
+  thumbnail segment; its `PDFThumbnailView` is detached. View ▸ Thumbnails is
+  disabled while the installed render is continuous. Heading-less documents
+  show “No headings” and a Search Document button. This local fallback does not
+  overwrite the preferred sidebar pane for paginated documents, and an active
+  search/highlights pane survives replacement renders. A one-view-point
+  tolerance in continuous outline selection accounts for PDFKit rounding the
+  scroll origin: a live Section 7 jump previously highlighted Section 6 despite
+  reaching the correct text; fractional-destination tests reproduced this at
+  multiple zoom levels and now pass, including scrolling back above the heading.
+
+  Search Results now contains an actual `NSSearchField` in place of its
+  misleading typing instruction. Clicking the sidebar magnifier or Search
+  Document focuses the sidebar field; ⌘F retains toolbar focus. Both fields
+  share live query text, FindController results, next/previous commands and
+  clearing behavior. Clearing still dismisses the results sidebar.
+
+  Validation: 29 macOS tests and 139 Core tests pass; release build, ad-hoc
+  signature verification and whitespace checks pass. Live dark-mode checks
+  verified the contents list, heading navigation with the clicked heading staying
+  selected after the rounding fix, restored thumbnail control in
+  Pages, heading-less empty state, direct sidebar typing (72 fixture results),
+  toolbar query synchronization, Enter advancing a match and Escape clearing.
+  Test app: `build/Glassine Continuous Sidebar Test.app`, bundle id
+  `com.epps.Glassine.ContinuousSidebarTest`, automatic updates disabled. Fixtures
+  and logs are in `build/`. No release or installed-app replacement was performed.
 
 - **Highlight notes and Markdown export (unreleased; Codex, 2026-09-12).**
   Add/edit a comment on an existing PDF highlight from its context menu or the

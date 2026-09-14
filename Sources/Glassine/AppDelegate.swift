@@ -23,8 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// scheduled background check; `SUEnableAutomaticChecks` in Info.plist is
     /// the default, and the user's own choice overrides it thereafter. The
     /// controller is also the target of the "Check for Updates…" menu item.
-    let updaterController = SPUStandardUpdaterController(
-        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    let updaterController: SPUStandardUpdaterController
+
+    init(startingUpdater: Bool = true) {
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: startingUpdater, updaterDelegate: nil, userDriverDelegate: nil)
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Install before anything asks for NSDocumentController.shared.
@@ -83,6 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func showRecents(_ sender: Any?) {
         RecentsWindowController.shared.show()
+    }
+
+    /// File ▸ New Tab has an explicit app-level target because there may be no
+    /// reader controller in the responder chain: the launch picker and the
+    /// no-window state must open the same start tab as a reader's "+" button.
+    @objc func newTab(_ sender: Any?) {
+        StartTabWindowController.presentFromCurrentContext()
     }
 
     private func observeDocumentWindows() {

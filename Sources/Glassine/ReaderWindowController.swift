@@ -58,6 +58,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let splitVC = NSSplitViewController()
     private var sidebarItem: NSSplitViewItem?
     private var didSettleSidebar = false
+    private lazy var readerMode = ReaderModeController(document: glassineDocument, pdfView: pdfView)
+    private var readerModeSettingsController: ReaderModeSettingsController?
+    private var isInstallingDocument = false
 
     private let pageLabel = NSTextField(labelWithString: "")
     private let pageField = NSTextField()
@@ -109,7 +112,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         glassineDocument = document
         let reader = ReaderViewController(document: document)
         readerVC = reader
-        sidebarVC = SidebarViewController(pdfView: reader.pdfView)
+        sidebarVC = SidebarViewController(pdfView: reader.pdfView,
+                                          isContinuousMarkdown: document.isContinuousMarkdown)
         sidebarVC.highlights.document = document
         position = ReadingPosition(
             pdfView: reader.pdfView,
@@ -144,6 +148,27 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
 
         buildContent()
+        readerMode.preservePosition = { [weak self] changes in
+            guard let self, let pdf = self.pdfView.document else { changes(); return }
+            // The replacement path already owns the target and its queued
+            // restore. Synchronous custom trimming joins that same install.
+            guard !self.isInstallingDocument else { changes(); return }
+            let target = self.position.targetForInstall(initial: !self.position.restoreStarted)
+            self.position.beginInstall()
+            changes()
+            self.position.aim(in: pdf, target: target) { [weak self, weak pdf] in
+                guard let self, self.pdfView.document === pdf else { return }
+                self.finishInstall()
+            }
+        }
+        readerMode.onPreparationChanged = { [weak reader] in reader?.setReaderModePreparing($0) }
+        reader.onViewportSizeChange = { [weak self] in self?.readerMode.viewportDidChange() }
+        reader.pdfView.onReaderModeZoomToFit = { [weak self] in self?.readerMode.zoomToFit() }
+        reader.pdfView.onReaderModeManualZoom = { [weak self] in self?.readerMode.scaleDidChange() }
+        sidebarVC.onSearchRequested = { [weak self] in self?.focusSidebarSearch(nil) }
+        sidebarVC.searchResults.queryField.delegate = self
+        sidebarVC.searchResults.queryField.target = self
+        sidebarVC.searchResults.queryField.action = #selector(searchChanged(_:))
         sidebarVC.searchResults.onSelect = { [weak self] index in
             self?.findController.showMatch(index)
         }
@@ -189,6 +214,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             name: .PDFViewScaleChanged,
             object: pdfView
         )
+        NotificationCenter.default.addObserver(self, selector: #selector(readerScaleChanged),
+                                               name: .PDFViewScaleChanged, object: pdfView)
         // Markdown documents get their PDF asynchronously, and again on every
         // reload; this is the one place a new document is installed.
         NotificationCenter.default.addObserver(
@@ -645,13 +672,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     // cancel-button click that AppKit swallows into a search interaction can
     // empty the field without sending it. Any route to an empty field resets.
     func controlTextDidChange(_ obj: Notification) {
-        guard let field = obj.object as? NSSearchField, field === searchField,
-              field.stringValue.isEmpty else { return }
-        clearSearch()
+        guard let field = obj.object as? NSSearchField, ownsSearchField(field) else { return }
+        synchronizeSearchQuery(field.stringValue)
+        if field.stringValue.isEmpty { clearSearch() }
     }
 
     func searchFieldDidEndSearching(_ sender: NSSearchField) {
-        guard sender === searchField, sender.stringValue.isEmpty else { return }
+        guard ownsSearchField(sender), sender.stringValue.isEmpty else { return }
         clearSearch()
     }
 
@@ -659,6 +686,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     /// input boundary: FindController clears its matches for a new query and
     /// Markdown reload too, and those must leave the sidebar open.
     private func clearSearch() {
+        synchronizeSearchQuery("")
         if !findController.lastQuery.isEmpty { findController.startFind("") }
         if sidebarVC.showsSearchResults {
             sidebarItem?.isCollapsed = true
@@ -719,6 +747,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             item.preferredWidthForSearchField = 180
             item.resignsFirstResponderWithCancel = true
             let field = item.searchField
+            field.stringValue = sidebarVC.searchResults.queryField.stringValue
             field.delegate = self
             field.sendsWholeSearchString = false
             field.sendsSearchStringImmediately = false
@@ -738,6 +767,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: Find
 
     private var searchField: NSSearchField? { searchItem?.searchField }
+
+    private func ownsSearchField(_ field: NSSearchField) -> Bool {
+        field === searchField || field === sidebarVC.searchResults.queryField
+    }
+
+    private func synchronizeSearchQuery(_ query: String) {
+        for field in [searchField, sidebarVC.searchResults.queryField].compactMap({ $0 }) {
+            if field.stringValue != query { field.stringValue = query }
+        }
+    }
 
     private func makeSearchCountItem() -> NSToolbarItem {
         let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize,
@@ -809,6 +848,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     @objc func searchChanged(_ sender: NSSearchField) {
+        synchronizeSearchQuery(sender.stringValue)
         guard !sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             clearSearch()
             return
@@ -832,7 +872,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     private func step(by delta: Int) {
         // False means the reader has already searched for exactly this and it
         // came up empty; there is nowhere to step to.
-        if !findController.step(by: delta, query: searchField?.stringValue ?? "") {
+        if !findController.step(by: delta, query: sidebarVC.searchResults.queryField.stringValue) {
             NSSound.beep()
         }
     }
@@ -905,9 +945,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         searchItem?.beginSearchInteraction()
     }
 
+    @objc func focusSidebarSearch(_ sender: Any?) {
+        showSearchResults(nil)
+        window?.makeFirstResponder(sidebarVC.searchResults.queryField)
+        sidebarVC.searchResults.queryField.currentEditor()?.selectAll(nil)
+    }
+
     @objc func useSelectionForFind(_ sender: Any?) {
         guard let text = pdfView.currentSelection?.string, !text.isEmpty else { return }
-        searchField?.stringValue = text
+        synchronizeSearchQuery(text)
         findController.startFind(text)
         showSearchResults(nil)
     }
@@ -923,6 +969,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         if control is NSSearchField {
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
+                synchronizeSearchQuery(control.stringValue)
                 if findController.matches.isEmpty {
                     findController.startFind(control.stringValue)
                 } else if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
@@ -985,9 +1032,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // A plain PDF is never installed through documentDidReplacePDF, so this
         // is the one chance to read its outline; a Markdown document has no PDF
         // yet and picks its mode up when the first render lands.
-        if pdfView.document != nil { sidebarVC.documentDidChange() }
+        if pdfView.document != nil {
+            sidebarVC.documentDidChange(isContinuousMarkdown: showsProgress)
+        }
         observeScrollGeometry()
         restorePositionIfNeeded()
+        readerMode.documentDidChange()
     }
 
     // MARK: Sidebar mode
@@ -995,6 +1045,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc private func highlightsChanged(_ notification: Notification) {
         sidebarVC.highlights.refresh()
         let pages = notification.userInfo?["pages"] as? [PDFPage] ?? pdfView.visiblePages
+        readerMode.annotationsDidChange(on: pages)
         for page in pages { pdfView.annotationsChanged(on: page) }
         pdfView.needsDisplay = true
     }
@@ -1004,17 +1055,34 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         sidebarItem?.isCollapsed = false
     }
 
+    @objc private func readerScaleChanged() { readerMode.scaleDidChange() }
+
+    @objc func toggleReaderMode(_ sender: Any?) { readerMode.toggle() }
+
+    @objc func showReaderModeMargins(_ sender: Any?) {
+        guard readerMode.isEnabled, let window, window.attachedSheet == nil else { return }
+        let controller = ReaderModeSettingsController(settings: readerMode.settings) { [weak self] in
+            self?.readerMode.update($0)
+        }
+        guard let sheet = controller.window else { return }
+        readerModeSettingsController = controller
+        window.beginSheet(sheet) { [weak self] _ in self?.readerModeSettingsController = nil }
+    }
+
     @objc func showSearchResults(_ sender: Any?) {
         sidebarVC.showSearchResults()
         sidebarItem?.isCollapsed = false
     }
 
-    @objc func showThumbnails(_ sender: Any?) { setSidebarMode(.thumbnails) }
+    @objc func showThumbnails(_ sender: Any?) {
+        guard !showsProgress else { return }
+        setSidebarMode(.thumbnails)
+    }
 
     @objc func showOutline(_ sender: Any?) { setSidebarMode(.outline) }
 
     private func setSidebarMode(_ mode: SidebarMode) {
-        Prefs.sidebarMode = mode
+        if !showsProgress { Prefs.sidebarMode = mode }
         sidebarVC.mode = mode
         if sidebarItem?.isCollapsed == true {
             sidebarItem?.animator().isCollapsed = false
@@ -1023,11 +1091,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(toggleReaderMode(_:)):
+            menuItem.state = readerMode.isEnabled ? .on : .off
+            return readerMode.isAvailable
+        case #selector(showReaderModeMargins(_:)):
+            return readerMode.isEnabled
         case #selector(showThumbnails(_:)):
             menuItem.state = !sidebarVC.showsSearchResults && !sidebarVC.showsHighlights && sidebarVC.mode == .thumbnails ? .on : .off
+            return !showsProgress
         case #selector(showOutline(_:)):
             menuItem.state = !sidebarVC.showsSearchResults && !sidebarVC.showsHighlights && sidebarVC.mode == .outline ? .on : .off
-            return sidebarVC.hasOutline
+            return sidebarVC.canShowOutline
         case #selector(showSearchResults(_:)):
             menuItem.state = sidebarVC.showsSearchResults ? .on : .off
         case #selector(showHighlights(_:)):
@@ -1104,8 +1178,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // Every PDFSelection we hold points into the document about to go away.
         findController.reset(for: replacement)
 
+        isInstallingDocument = true
         pdfView.document = replacement
-        sidebarVC.documentDidChange()
+        readerMode.documentDidChange()
+        isInstallingDocument = false
+        sidebarVC.documentDidChange(isContinuousMarkdown: showsProgress)
         observeScrollGeometry()
         updateIndicatorMode()
         updatePageField()

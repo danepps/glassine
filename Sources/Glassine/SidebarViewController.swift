@@ -17,10 +17,19 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     private let thumbnailView = PDFThumbnailView()
     private let outlineView = NSOutlineView()
     private let outlineScrollView = NSScrollView()
+    private let emptyOutlineView = NSView()
     private let modeControl = NSSegmentedControl()
     private let pdfView: PDFView
     private var pendingFilters: [CIFilter] = []
     private var outlineRoot: PDFOutline?
+    private(set) var isContinuousMarkdown: Bool
+    var onSearchRequested: (() -> Void)?
+
+    private enum Pane { case thumbnails, outline, search, highlights }
+    private var panes: [Pane] {
+        isContinuousMarkdown ? [.outline, .search, .highlights]
+            : [.thumbnails, .outline, .search, .highlights]
+    }
     /// Set while the reading position is driving the selection, so the
     /// selection handler does not turn around and navigate.
     private var isSyncingSelection = false
@@ -28,6 +37,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("glassine.outlineCell")
 
     var hasOutline: Bool { (outlineRoot?.numberOfChildren ?? 0) > 0 }
+    var canShowOutline: Bool { hasOutline || isContinuousMarkdown }
 
     private var storedMode: SidebarMode = .thumbnails
 
@@ -36,13 +46,14 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         set {
             showsSearchResults = false
             showsHighlights = false
-            storedMode = newValue
+            storedMode = resolvedMode(newValue)
             if isViewLoaded { applyMode() }
         }
     }
 
-    init(pdfView: PDFView) {
+    init(pdfView: PDFView, isContinuousMarkdown: Bool = false) {
         self.pdfView = pdfView
+        self.isContinuousMarkdown = isContinuousMarkdown
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -55,10 +66,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        storedMode = Prefs.sidebarMode
+        storedMode = resolvedMode(Prefs.sidebarMode)
         buildModeControl()
         buildThumbnails()
         buildOutline()
+        buildEmptyOutline()
         addChild(searchResults)
         pin(searchResults.view)
         addChild(highlights)
@@ -69,26 +81,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     // MARK: Construction
 
     private func buildModeControl() {
-        modeControl.segmentCount = 4
         modeControl.segmentStyle = .texturedRounded
         modeControl.trackingMode = .selectOne
-        modeControl.setImage(NSImage(systemSymbolName: "square.grid.2x2",
-                                     accessibilityDescription: "Thumbnails"),
-                             forSegment: SidebarMode.thumbnails.rawValue)
-        modeControl.setImage(NSImage(systemSymbolName: "list.bullet",
-                                     accessibilityDescription: "Table of Contents"),
-                             forSegment: SidebarMode.outline.rawValue)
-        modeControl.setToolTip("Thumbnails (\u{2325}\u{2318}2)",
-                               forSegment: SidebarMode.thumbnails.rawValue)
-        modeControl.setToolTip("Table of Contents (\u{2325}\u{2318}3)",
-                               forSegment: SidebarMode.outline.rawValue)
-        modeControl.setEnabled(false, forSegment: SidebarMode.outline.rawValue)
-        modeControl.setImage(NSImage(systemSymbolName: "magnifyingglass",
-                                     accessibilityDescription: "Search Results"), forSegment: 2)
-        modeControl.setToolTip("Search Results (⌥⌘4)", forSegment: 2)
-        modeControl.setImage(NSImage(systemSymbolName: "highlighter",
-                                     accessibilityDescription: "Highlights"), forSegment: 3)
-        modeControl.setToolTip("Highlights (⌥⌘5)", forSegment: 3)
+        updateModeControl()
         modeControl.target = self
         modeControl.action = #selector(modeChanged(_:))
         modeControl.translatesAutoresizingMaskIntoConstraints = false
@@ -100,8 +95,27 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         ])
     }
 
+    private func updateModeControl() {
+        modeControl.segmentCount = panes.count
+        for (index, pane) in panes.enumerated() {
+            let symbol: String
+            let title: String
+            let shortcut: String
+            switch pane {
+            case .thumbnails: (symbol, title, shortcut) = ("square.grid.2x2", "Thumbnails", "⌥⌘2")
+            case .outline: (symbol, title, shortcut) = ("list.bullet", "Table of Contents", "⌥⌘3")
+            case .search: (symbol, title, shortcut) = ("magnifyingglass", "Search Results", "⌥⌘4")
+            case .highlights: (symbol, title, shortcut) = ("highlighter", "Highlights", "⌥⌘5")
+            }
+            modeControl.setImage(NSImage(systemSymbolName: symbol, accessibilityDescription: title),
+                                 forSegment: index)
+            modeControl.setToolTip("\(title) (\(shortcut))", forSegment: index)
+            modeControl.setEnabled(pane != .outline || canShowOutline, forSegment: index)
+        }
+    }
+
     private func buildThumbnails() {
-        thumbnailView.pdfView = pdfView
+        thumbnailView.pdfView = isContinuousMarkdown ? nil : pdfView
         thumbnailView.thumbnailSize = NSSize(width: 120, height: 160)
         thumbnailView.maximumNumberOfColumns = 1
         // Clear so the sidebar's vibrant material shows through.
@@ -109,6 +123,34 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         thumbnailView.wantsLayer = true
         thumbnailView.contentFilters = pendingFilters
         pin(thumbnailView)
+    }
+
+    private func buildEmptyOutline() {
+        let title = NSTextField(labelWithString: "No headings")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detail = NSTextField(wrappingLabelWithString: "Search this document to find a passage.")
+        detail.font = .systemFont(ofSize: 12)
+        detail.textColor = .secondaryLabelColor
+        detail.alignment = .center
+        let search = NSButton(title: "Search Document", target: self, action: #selector(requestSearch(_:)))
+        search.bezelStyle = .rounded
+        let stack = NSStackView(views: [title, detail, search])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        emptyOutlineView.addSubview(stack)
+        pin(emptyOutlineView)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: emptyOutlineView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: emptyOutlineView.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: emptyOutlineView.topAnchor, constant: 32)
+        ])
+    }
+
+    @objc private func requestSearch(_ sender: Any?) {
+        if let onSearchRequested { onSearchRequested() }
+        else { showSearchResults() }
     }
 
     private func buildOutline() {
@@ -147,14 +189,21 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     // MARK: Mode
 
+    private func resolvedMode(_ preferred: SidebarMode) -> SidebarMode {
+        if isContinuousMarkdown { return .outline }
+        return preferred == .outline && hasOutline ? .outline : .thumbnails
+    }
+
     private func applyMode() {
         searchResults.view.isHidden = !showsSearchResults
         highlights.view.isHidden = !showsHighlights
-        let showOutline = !showsSearchResults && !showsHighlights && storedMode == .outline && hasOutline
-        outlineScrollView.isHidden = !showOutline
+        let showOutline = !showsSearchResults && !showsHighlights && storedMode == .outline
+        outlineScrollView.isHidden = !showOutline || !hasOutline
+        emptyOutlineView.isHidden = !showOutline || hasOutline
         thumbnailView.isHidden = showOutline || showsSearchResults || showsHighlights
-        modeControl.selectedSegment = showsHighlights ? 3 : showsSearchResults ? 2 : showOutline
-            ? SidebarMode.outline.rawValue : SidebarMode.thumbnails.rawValue
+        let selected: Pane = showsHighlights ? .highlights : showsSearchResults ? .search
+            : showOutline ? .outline : .thumbnails
+        modeControl.selectedSegment = panes.firstIndex(of: selected) ?? -1
         if showOutline { syncSelection() }
     }
 
@@ -174,24 +223,32 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        if sender.selectedSegment == 2 { showSearchResults(); return }
-        if sender.selectedSegment == 3 { showHighlights(); return }
-        guard let selected = SidebarMode(rawValue: sender.selectedSegment) else { return }
-        Prefs.sidebarMode = selected
+        guard panes.indices.contains(sender.selectedSegment) else { return }
+        let selected: SidebarMode
+        switch panes[sender.selectedSegment] {
+        case .search: requestSearch(sender); return
+        case .highlights: showHighlights(); return
+        case .thumbnails: selected = .thumbnails
+        case .outline: selected = .outline
+        }
+        // Continuous Markdown's local fallback must not replace the user's
+        // preferred pane for ordinary PDFs and paginated Markdown.
+        if !isContinuousMarkdown { Prefs.sidebarMode = selected }
         mode = selected
     }
 
     /// The reader swapped its PDFView's document (a Markdown render or reload).
-    /// PDFThumbnailView observes its pdfView and rebuilds itself, so only the
-    /// outline needs reloading -- verified 2026-09-04 by watching thumbnails
-    /// appear for a Markdown document, whose PDF arrives after the view loads.
-    func documentDidChange() {
+    /// Detach thumbnails for the continuous render and rebuild its contents.
+    /// Use the installed layout, which may lag the preference during a render.
+    func documentDidChange(isContinuousMarkdown: Bool = false) {
+        self.isContinuousMarkdown = isContinuousMarkdown
         guard isViewLoaded else { return }
+        thumbnailView.pdfView = isContinuousMarkdown ? nil : pdfView
         outlineRoot = pdfView.document?.outlineRoot
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
-        modeControl.setEnabled(hasOutline, forSegment: SidebarMode.outline.rawValue)
-        storedMode = hasOutline ? Prefs.sidebarMode : .thumbnails
+        updateModeControl()
+        storedMode = resolvedMode(Prefs.sidebarMode)
         highlights.refresh()
         applyMode()
     }
@@ -228,7 +285,14 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
             }
             return OutlineEntry(node: node, depth: 0, ordinal: start)
         }
-        let best = OutlineSync.index(atOrBefore: here, in: rows)
+        // PDFKit rounds the scroll origin: after a heading jump its reported
+        // destination can sit a fraction of a point above the target. Allow
+        // one view point so the continuous outline keeps the clicked heading
+        // selected, while ordinary scrolling still follows the current section.
+        let selectionPosition = isContinuousMarkdown
+            ? OutlineSync.Ordinal(page: here.page, offset: here.offset + 1 / max(pdfView.scaleFactor, 0.01))
+            : here
+        let best = OutlineSync.index(atOrBefore: selectionPosition, in: rows)
         guard best != outlineView.selectedRow else { return }
 
         isSyncingSelection = true

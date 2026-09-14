@@ -11,6 +11,14 @@ private final class HighlightBox: NSObject {
     init(_ items: [ReaderPage.Highlight]) { self.items = items }
 }
 
+nonisolated(unsafe) private let readerBoundsKey =
+    UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+
+private final class ReaderBoundsBox: NSObject {
+    let rect: CGRect
+    init(_ rect: CGRect) { self.rect = rect }
+}
+
 /// PDFPage subclass used for every page (see `GlassineDocument.classForPage()`).
 /// It draws the dark-mode find highlights: PDFKit renders pages through the
 /// page object, so this is the hook that actually runs, and the highlight
@@ -22,6 +30,38 @@ private final class HighlightBox: NSObject {
 /// State lives in an associated object, which the ObjC runtime keeps
 /// thread-safe, and the boxed array is immutable once published.
 public final class ReaderPage: PDFPage {
+
+    /// A presentation-only box used by the Mac reader's art-box display.
+    /// The PDF's actual page dictionaries and crop/media boxes are untouched.
+    public var readerContentBounds: CGRect? {
+        get { (objc_getAssociatedObject(self, readerBoundsKey) as? ReaderBoundsBox)?.rect }
+        set {
+            objc_setAssociatedObject(self, readerBoundsKey, newValue.map(ReaderBoundsBox.init),
+                                     .OBJC_ASSOCIATION_RETAIN)
+        }
+    }
+
+    private static let originalBoundsKey = "com.epps.Glassine.originalPDFBounds"
+
+    /// PDFKit asks the virtual bounds accessor when serializing, including
+    /// artBox. Suppress presentation bounds on the output thread only, keeping
+    /// concurrent on-screen rendering intact. Restore nesting even on errors.
+    public static func withOriginalBounds<T>(_ body: () throws -> T) rethrows -> T {
+        let dictionary = Thread.current.threadDictionary
+        let previous = dictionary[originalBoundsKey]
+        dictionary[originalBoundsKey] = true
+        defer {
+            if let previous { dictionary[originalBoundsKey] = previous }
+            else { dictionary.removeObject(forKey: originalBoundsKey) }
+        }
+        return try body()
+    }
+
+    public override func bounds(for box: PDFDisplayBox) -> CGRect {
+        if box == .artBox, Thread.current.threadDictionary[Self.originalBoundsKey] == nil,
+           let bounds = readerContentBounds { return bounds }
+        return super.bounds(for: box)
+    }
 
     public struct Highlight: Sendable {
         public let rect: CGRect
@@ -61,6 +101,9 @@ public final class ReaderPage: PDFPage {
     public override func draw(with box: PDFDisplayBox, to context: CGContext) {
         super.draw(with: box, to: context)
 
+        // Save/export snapshots include permanent annotations, never the
+        // temporary find overlay drawn by this page subclass.
+        guard Thread.current.threadDictionary[Self.originalBoundsKey] == nil else { return }
         let boxes = findHighlights
         guard !boxes.isEmpty else { return }
 

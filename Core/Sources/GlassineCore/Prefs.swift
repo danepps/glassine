@@ -69,6 +69,7 @@ public enum Prefs {
     private enum Key {
         static let invertInDarkMode = "invertInDarkMode"
         static let darkPaper = "darkPaper"
+        static let darkModeBrightness = "darkModeBrightness"
         static let appearance = "appearance"
         static let lastPositions = "lastPositions"
         static let markdownStyle = "markdownStyle"
@@ -123,6 +124,27 @@ public enum Prefs {
             defaults.set(newValue.rawValue, forKey: Key.darkPaper)
             NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
         }
+    }
+
+    public static let minDarkModeBrightness = 0.35
+    public static let maxDarkModeBrightness = 1.0
+
+    /// Brightness of inverted page content, independent of the paper colour.
+    /// A screen-space proportion of the paper's available range: 1 preserves
+    /// the normal appearance, while lower values soften text and images without
+    /// changing the dark background. Used by the Mac reader only.
+    public static var darkModeBrightness: Double {
+        get { clampDarkModeBrightness(defaults.object(forKey: Key.darkModeBrightness) as? Double ?? 1) }
+        set {
+            defaults.set(clampDarkModeBrightness(newValue), forKey: Key.darkModeBrightness)
+            NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
+        }
+    }
+
+    private static func clampDarkModeBrightness(_ value: Double) -> Double {
+        guard value.isFinite else { return maxDarkModeBrightness }
+        let clamped = min(max(value, minDarkModeBrightness), maxDarkModeBrightness)
+        return (clamped * 100).rounded() / 100
     }
 
     /// System / Light / Dark override. Default follows the system.

@@ -5,7 +5,8 @@ import PDFKit
 /// the bounded cache is discarded whenever the search or document is replaced.
 final class SearchResultsViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let table = SearchResultsTable()
-    private let status = NSTextField(labelWithString: "Type to search this document")
+    let queryField = NSSearchField()
+    private let status = NSTextField(labelWithString: "")
     private let scroll = NSScrollView()
     private(set) var matches: [PDFSelection] = []
     private var snippets: [Int: Snippet] = [:]
@@ -30,16 +31,23 @@ final class SearchResultsViewController: NSViewController, NSTableViewDataSource
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.contentView.drawsBackground = false
+        queryField.placeholderString = "Search this document"
+        queryField.setAccessibilityLabel("Search this document")
+        queryField.sendsWholeSearchString = false
+        queryField.sendsSearchStringImmediately = false
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.maximumNumberOfLines = 2
         status.lineBreakMode = .byWordWrapping
-        for child in [status, scroll] {
+        for child in [queryField, status, scroll] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
         }
         NSLayoutConstraint.activate([
-            status.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            queryField.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            queryField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            queryField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            status.topAnchor.constraint(equalTo: queryField.bottomAnchor, constant: 8),
             status.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             status.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             scroll.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 8),
@@ -73,7 +81,7 @@ final class SearchResultsViewController: NSViewController, NSTableViewDataSource
     func updateStatus(query: String, count: Int, inProgress: Bool) {
         _ = view
         let countText = "\(count) " + (count == 1 ? "result" : "results")
-        if query.isEmpty { status.stringValue = "Type to search this document" }
+        if query.isEmpty { status.stringValue = "" }
         else if inProgress { status.stringValue = "\(countText) · Searching…" }
         else { status.stringValue = count == 0 ? "No matches" : countText }
         if count > Self.liveHighlightLimit {

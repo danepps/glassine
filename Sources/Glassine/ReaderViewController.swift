@@ -9,6 +9,9 @@ import PDFKit
 /// keys always move a whole page instead of scrolling by a line.
 final class ReaderPDFView: PDFView {
     var onEffectiveAppearanceChange: (() -> Void)?
+    var readerModeActive = false
+    var onReaderModeZoomToFit: (() -> Void)?
+    var onReaderModeManualZoom: (() -> Void)?
     weak var highlightDocument: GlassineDocument?
     var onHighlightAdded: ((PDFAnnotation) -> Void)?
     var onEditHighlightNote: ((PDFAnnotation) -> Void)?
@@ -330,6 +333,8 @@ final class ReaderViewController: NSViewController {
     let pdfView = ReaderPDFView()
     lazy var findMatchIndicator = FindMatchIndicator(pdfView: pdfView)
     private let glassineDocument: GlassineDocument
+    var onViewportSizeChange: (() -> Void)?
+    private let readerModeStatus = NSTextField(labelWithString: "Preparing Reader Mode…")
 
     /// True when pages are being shown light-on-dark.
     private(set) var isInverted = false
@@ -339,9 +344,9 @@ final class ReaderViewController: NSViewController {
     var onInversionChanged: ((Bool) -> Void)?
 
     /// Luminance inversion that keeps hues: invert, then rotate hue 180 degrees,
-    /// so blue links stay blue instead of turning orange. Above Black paper a
-    /// third stage compresses the result into `[lift, top]`, lifting the page
-    /// off pure black without touching the light-mode path.
+    /// so blue links stay blue instead of turning orange. A third stage sets
+    /// the paper's background and dims its content for low-light reading,
+    /// without touching the light-mode path.
     /// CIFilters are mutable objects, so each view gets its own chain rather
     /// than sharing one static set across windows and the sidebar.
     static func makeDarkFilters() -> [CIFilter] {
@@ -350,14 +355,20 @@ final class ReaderViewController: NSViewController {
         hue.setValue(Float.pi, forKey: "inputAngle")
 
         let paper = Prefs.darkPaper
-        guard paper != .black, let compress = CIFilter(name: "CIColorMatrix") else {
+        let brightness = CGFloat(Prefs.darkModeBrightness)
+        guard paper != .black || brightness < 1,
+              let compress = CIFilter(name: "CIColorMatrix") else {
             return [invert, hue]
         }
+        // Brightness changes the content end of the range, leaving the selected
+        // black/charcoal/gray paper unchanged. Interpolate in screen sRGB so the
+        // slider feels even, then convert both endpoints for the layer filter.
+        let top = paper.lift + brightness * (paper.top - paper.lift)
         // out = lift + (top - lift) * in, per channel, in the linear light the
         // layer filters work in (same reason the gutter is 0.997 pre-filter), so
         // the levels are converted from the screen values they are written as.
         let lift = linearLight(paper.lift)
-        let span = linearLight(paper.top) - lift
+        let span = linearLight(top) - lift
         compress.setValue(CIVector(x: span, y: 0, z: 0, w: 0), forKey: "inputRVector")
         compress.setValue(CIVector(x: 0, y: span, z: 0, w: 0), forKey: "inputGVector")
         compress.setValue(CIVector(x: 0, y: 0, z: span, w: 0), forKey: "inputBVector")
@@ -396,6 +407,17 @@ final class ReaderViewController: NSViewController {
             ])
         }
         view = container
+        readerModeStatus.font = .systemFont(ofSize: 12)
+        readerModeStatus.textColor = .secondaryLabelColor
+        readerModeStatus.drawsBackground = true
+        readerModeStatus.backgroundColor = .windowBackgroundColor
+        readerModeStatus.isHidden = true
+        readerModeStatus.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(readerModeStatus)
+        NSLayoutConstraint.activate([
+            readerModeStatus.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            readerModeStatus.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
+        ])
     }
 
     override func viewDidLoad() {
@@ -427,6 +449,15 @@ final class ReaderViewController: NSViewController {
         applyAppearance()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        onViewportSizeChange?()
+    }
+
+    func setReaderModePreparing(_ preparing: Bool) {
+        readerModeStatus.isHidden = !preparing
+    }
+
     @objc private func prefsChanged() {
         applyAppearance()
     }
@@ -452,7 +483,7 @@ final class ReaderViewController: NSViewController {
         pdfView.contentFilters = invert ? Self.makeDarkFilters() : []
         // Inverted, PDFKit's drop shadows become bright halos around every page
         // and a light band at the end of the document.
-        pdfView.pageShadowsEnabled = !invert
+        pdfView.pageShadowsEnabled = !invert && !pdfView.readerModeActive
 
         if isInverted != invert {
             isInverted = invert
@@ -463,10 +494,15 @@ final class ReaderViewController: NSViewController {
     // MARK: Actions
 
     @objc func zoomToFit(_ sender: Any?) {
+        if pdfView.readerModeActive {
+            pdfView.onReaderModeZoomToFit?()
+            return
+        }
         pdfView.autoScales = true
     }
 
     @objc func actualSize(_ sender: Any?) {
+        pdfView.onReaderModeManualZoom?()
         pdfView.autoScales = false
         pdfView.scaleFactor = 1
     }
@@ -478,6 +514,16 @@ final class ReaderViewController: NSViewController {
     /// paginated typesetting Export as PDF uses, and the print panel is given a
     /// real Letter document.
     @objc func printDocument(_ sender: Any?) {
+        if pdfView.readerModeActive, let window = view.window {
+            // Print an independent document with the original page boxes and
+            // no transient find overlays. Print workers cannot inherit the
+            // reader's thread-local output guard or its view-only crop.
+            guard let document = glassineDocument.readerModeDocumentForPrinting(),
+                  let operation = document.printOperation(for: NSPrintInfo.shared,
+                    scalingMode: .pageScaleDownToFit, autoRotate: true) else { return }
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+            return
+        }
         guard glassineDocument.needsPaginatedOutput, let window = view.window else {
             pdfView.print(with: NSPrintInfo.shared, autoRotate: true)
             return

@@ -93,7 +93,7 @@ enum MainMenu {
         menu.addItem(recent)
 
         menu.addItem(.separator())
-        add(menu, "New Tab", #selector(NSWindow.newWindowForTab(_:)), key: "t")
+        add(menu, "New Tab", #selector(AppDelegate.newTab(_:)), key: "t", target: appDelegate)
         add(menu, "Close", #selector(NSWindow.performClose(_:)), key: "w")
         add(menu, "Save", #selector(NSDocument.save(_:)), key: "s")
         add(menu, "Save As…", #selector(NSDocument.saveAs(_:)), key: "s", modifiers: [.command, .shift])
@@ -162,6 +162,10 @@ enum MainMenu {
         add(menu, "Zoom to Fit", #selector(ReaderViewController.zoomToFit(_:)), key: "0")
         add(menu, "Actual Size", #selector(ReaderViewController.actualSize(_:)), key: "1")
         menu.addItem(.separator())
+        add(menu, "Reader Mode", #selector(ReaderWindowController.toggleReaderMode(_:)),
+            key: "r", modifiers: [.command, .option])
+        add(menu, "Reader Mode Margins…", #selector(ReaderWindowController.showReaderModeMargins(_:)))
+        menu.addItem(.separator())
 
         let appearance = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
         let appearanceMenu = NSMenu(title: "Appearance")
@@ -176,6 +180,8 @@ enum MainMenu {
             add(appearanceMenu, paper.title, #selector(AppDelegate.setDarkPaper(_:)),
                 target: appDelegate, tag: paper.rawValue)
         }
+        appearanceMenu.addItem(.separator())
+        appearanceMenu.addItem(DarkModeBrightnessMenu.makeMenuItem())
         appearance.submenu = appearanceMenu
         menu.addItem(appearance)
 

@@ -17,6 +17,16 @@ updated in place.
   View ▸ Appearance.
   View ▸ Appearance also picks how dark the paper is — Black, Charcoal or Gray —
   and the window chrome follows the level you choose.
+  Dark Mode Brightness in the same menu dims page content from 100% to 35% for
+  low-light reading while keeping the chosen background. It is independent of
+  window opacity and Reader Mode; Reset returns to normal brightness.
+- **Reader Mode for PDFs.** View ▸ Reader Mode (⌥⌘R) trims outer margins and
+  reduces page gaps, with a consistent zoom across the document. Automatic
+  detection includes text, scans, figures, footnotes and visible annotations;
+  uncertain pages keep their original boundaries. Reader Mode Margins… adjusts
+  automatic padding or lets you trim each edge manually. Each file remembers
+  its setting, and switching modes keeps your place. Selection and highlighting
+  remain available; saved, exported and printed PDFs retain their original margins.
 - **Adjustable window opacity, with a blurred backdrop.** Window ▸ Opacity
   fades the page from 100% down to 30% so you can read against what is behind
   it, and blurs whatever shows through the way Terminal does; ⌥⌘↑ / ⌥⌘↓ step it,
@@ -50,6 +60,7 @@ updated in place.
 - **One window, native tabs.** Every PDF opens as a tab (⇧⌘[ / ⇧⌘] switch, drag
   tabs out to split). ⌘T and the tab bar's "+" open a start tab: the new tab
   itself shows your recent files, and picking one fills that tab in place.
+  ⌘T also opens a usable start tab when only the standalone Recents window is open.
 - **Opens to your recent files, not a file dialog.** With nothing on screen
   Glassine shows a Recents window (⇧⌘O any time), and a new tab shows the same
   picker: the last thirty files you read, with where you left off in each, a
@@ -78,10 +89,15 @@ updated in place.
 - **Sidebar with a table of contents.** ⌃⌘S shows it; ⌥⌘2 and ⌥⌘3 switch
   between page thumbnails and the document's chapters. Markdown gets an outline
   too, synthesised from its headings, and the current entry follows you.
+  Continuous Markdown shows contents instead of a thumbnail of its entire length;
+  documents without headings offer a Search Document button. Switching back to
+  Pages restores the preferred paginated sidebar pane.
 - **Search-results sidebar.** ⌘F opens a list of matches with page references
   and surrounding text; click a result or use ⌘G / ⇧⌘G to navigate. View ▸
   Search Results (⌥⌘4) returns to the list. Searches over 500 matches keep all
   results in the list and highlight only the selected match on the page.
+  The sidebar has its own editable search field, synchronized with toolbar search;
+  clicking its magnifying-glass button focuses that field for immediate typing.
   The active match has an amber outline and a brief navigation pulse (unless
   Reduce Motion is enabled). Clearing the search dismisses the results pane.
 - Find with a hit counter and green highlights (⌘F,

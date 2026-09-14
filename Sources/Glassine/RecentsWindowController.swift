@@ -77,6 +77,13 @@ final class RecentsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Opening
 
+    /// Native new-tab actions can reach the launch window's controller too.
+    /// Keep that route on the start picker instead of AppKit's untitled-file
+    /// behavior, and do not try to tab into this non-tabbed launch window.
+    override func newWindowForTab(_ sender: Any?) {
+        StartTabWindowController.presentFromCurrentContext()
+    }
+
     private func open(_ url: URL) {
         NSDocumentController.shared.openDocument(withContentsOf: url, display: true) {
             [weak self] _, _, error in

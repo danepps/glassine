@@ -28,6 +28,7 @@ public final class ReadingPosition {
     public private(set) var restoreStarted = false
     public private(set) var restoreFinished = false
     public private(set) var lastInstallTarget: Prefs.Position?
+    private var jumpGeneration = 0
 
     private weak var pdfView: PDFView?
     private let url: @MainActor () -> URL?
@@ -90,6 +91,7 @@ public final class ReadingPosition {
     /// the page readout is worth rebuilding.
     public func restoreIfNeeded(completion: @escaping @MainActor () -> Void) {
         guard !restoreStarted else { return }
+        lastInstallTarget = saved
         // A Markdown document has no PDF yet when its window is shown. Leave
         // restoreStarted false: the first render installs the document and the
         // install path does the restore.
@@ -134,6 +136,7 @@ public final class ReadingPosition {
     /// `PDFView` lay out and report page 1, and those reports would overwrite
     /// the position being restored.
     public func beginInstall() {
+        jumpGeneration &+= 1
         restoreFinished = false
     }
 
@@ -169,14 +172,18 @@ public final class ReadingPosition {
     private func jump(to destination: PDFDestination,
                       expectingPageIndex index: Int,
                       completion: @escaping @MainActor () -> Void) {
+        let generation = jumpGeneration
+        guard let document = destination.page?.document else { return }
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, let pdfView = self.pdfView else { return }
+                guard let self, self.jumpGeneration == generation,
+                      let pdfView = self.pdfView, pdfView.document === document else { return }
                 pdfView.layoutDocumentView()
                 pdfView.go(to: destination)
 
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
+                        guard self.jumpGeneration == generation, pdfView.document === document else { return }
                         let landed = pdfView.currentPage
                             .map { pdfView.document?.index(for: $0) ?? NSNotFound } ?? NSNotFound
                         if landed != index { pdfView.go(to: destination) }
