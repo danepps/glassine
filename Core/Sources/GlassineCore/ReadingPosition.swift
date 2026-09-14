@@ -29,6 +29,7 @@ public final class ReadingPosition {
     public private(set) var restoreFinished = false
     public private(set) var lastInstallTarget: Prefs.Position?
     private var jumpGeneration = 0
+    private var deferredInstall: (document: PDFDocument, completion: @MainActor () -> Void)?
 
     private weak var pdfView: PDFView?
     private let url: @MainActor () -> URL?
@@ -84,6 +85,19 @@ public final class ReadingPosition {
         Prefs.setLastPosition(position, for: fileURL)
     }
 
+    /// A window can close between the two queued passes of a position restore.
+    /// In that case its live destination is still a layout artifact, while the
+    /// recorded install target is the position the reader intended to retain.
+    /// A first Markdown install can have a target before restoreStarted is set.
+    public func saveOnClose() {
+        if restoreFinished {
+            save()
+            return
+        }
+        guard let fileURL = url(), let target = lastInstallTarget else { return }
+        Prefs.setLastPosition(target, for: fileURL)
+    }
+
     // MARK: Restoring
 
     /// Restore the saved position, once. `completion` runs when the restore has
@@ -91,26 +105,45 @@ public final class ReadingPosition {
     /// the page readout is worth rebuilding.
     public func restoreIfNeeded(completion: @escaping @MainActor () -> Void) {
         guard !restoreStarted else { return }
-        lastInstallTarget = saved
-        // A Markdown document has no PDF yet when its window is shown. Leave
-        // restoreStarted false: the first render installs the document and the
-        // install path does the restore.
-        guard let pdfView, pdfView.document != nil else { return }
+        if deferredInstall == nil { lastInstallTarget = lastInstallTarget ?? saved }
+        // A Markdown document has no PDF yet when its window is shown, and a
+        // locked PDF cannot supply a usable destination until it is unlocked.
+        // Leave restoreStarted false so installation or unlock can retry.
+        guard let pdfView, let pdf = pdfView.document, !pdf.isLocked else { return }
         restoreStarted = true
 
-        guard let saved,
-              let pdf = pdfView.document,
-              saved.pageIndex > 0 || saved.x != 0 || saved.y != 0,
-              saved.pageIndex < pdf.pageCount,
-              let page = pdf.page(at: saved.pageIndex)
+        if let pending = deferredInstall {
+            deferredInstall = nil
+            if pending.document === pdf {
+                // The replacement's page count was unavailable while locked.
+                // Clamp now, and complete the install that was waiting for it
+                // before delivering the unlock caller's completion.
+                aim(in: pdf, target: lastInstallTarget) { [weak self] in
+                    guard let self else { return }
+                    self.restoreFinished = true
+                    pending.completion()
+                    completion()
+                }
+                return
+            }
+            // A caller replaced the view's document without beginInstall.
+            // Do not deliver another document's deferred completion or target.
+            lastInstallTarget = saved
+        }
+
+        guard let target = lastInstallTarget,
+              target.pageIndex > 0 || target.x != 0 || target.y != 0,
+              target.pageIndex >= 0,
+              target.pageIndex < pdf.pageCount,
+              let page = pdf.page(at: target.pageIndex)
         else {
             restoreFinished = true
             completion()
             return
         }
 
-        let destination = PDFDestination(page: page, at: CGPoint(x: saved.x, y: saved.y))
-        jump(to: destination, expectingPageIndex: saved.pageIndex) { [weak self] in
+        let destination = PDFDestination(page: page, at: CGPoint(x: target.x, y: target.y))
+        jump(to: destination, expectingPageIndex: target.pageIndex) { [weak self] in
             guard let self else { return }
             self.restoreFinished = true
             completion()
@@ -137,6 +170,7 @@ public final class ReadingPosition {
     /// the position being restored.
     public func beginInstall() {
         jumpGeneration &+= 1
+        deferredInstall = nil
         restoreFinished = false
     }
 
@@ -145,6 +179,15 @@ public final class ReadingPosition {
     public func aim(in document: PDFDocument,
                     target: Prefs.Position?,
                     completion: @escaping @MainActor () -> Void) {
+        guard !document.isLocked else {
+            // A locked replacement may report no pages. Keep the intended
+            // target unmodified, and finish this install only after unlock.
+            lastInstallTarget = target
+            deferredInstall = (document, completion)
+            restoreStarted = false
+            restoreFinished = false
+            return
+        }
         let clamped = target.map {
             Prefs.Position(pageIndex: min(max($0.pageIndex, 0), max(document.pageCount - 1, 0)),
                            x: $0.x, y: $0.y)
@@ -173,7 +216,10 @@ public final class ReadingPosition {
                       expectingPageIndex index: Int,
                       completion: @escaping @MainActor () -> Void) {
         let generation = jumpGeneration
-        guard let document = destination.page?.document else { return }
+        guard let document = destination.page?.document else {
+            completion()
+            return
+        }
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.jumpGeneration == generation,

@@ -74,10 +74,10 @@ struct SearchResultsTests {
         _ = NSApplication.shared
         let view = PDFView()
         view.document = try document()
-        let sidebar = SidebarViewController(pdfView: view)
+        let sidebar = SidebarViewController(pdfView: view, isContinuousMarkdown: false)
         sidebar.showSearchResults()
         #expect(sidebar.showsSearchResults)
-        sidebar.documentDidChange()
+        sidebar.documentDidChange(isContinuousMarkdown: false)
         #expect(sidebar.showsSearchResults)
         sidebar.mode = .thumbnails
         #expect(!sidebar.showsSearchResults)

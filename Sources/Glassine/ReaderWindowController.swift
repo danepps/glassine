@@ -164,7 +164,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         readerMode.onPreparationChanged = { [weak reader] in reader?.setReaderModePreparing($0) }
         reader.onViewportSizeChange = { [weak self] in self?.readerMode.viewportDidChange() }
         reader.pdfView.onReaderModeZoomToFit = { [weak self] in self?.readerMode.zoomToFit() }
-        reader.pdfView.onReaderModeManualZoom = { [weak self] in self?.readerMode.scaleDidChange() }
+        reader.pdfView.onReaderModeManualZoom = { [weak self] in self?.readerMode.manualZoomChosen() }
         sidebarVC.onSearchRequested = { [weak self] in self?.focusSidebarSearch(nil) }
         sidebarVC.searchResults.queryField.delegate = self
         sidebarVC.searchResults.queryField.target = self
@@ -185,6 +185,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
         NotificationCenter.default.addObserver(self, selector: #selector(highlightsChanged(_:)),
             name: .glassineHighlightsDidChange, object: document)
+        NotificationCenter.default.addObserver(self, selector: #selector(documentDidUnlock(_:)),
+            name: .PDFDocumentDidUnlock, object: nil)
         // Installing the content view controller resizes the window to the
         // split view's fitting size (320pt wide, no height), so the frame is
         // chosen only after it: the autosaved one if there is one, else the
@@ -1042,6 +1044,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     // MARK: Sidebar mode
 
+    @objc private func documentDidUnlock(_ notification: Notification) {
+        guard let pdf = notification.object as? PDFDocument, pdf === pdfView.document else { return }
+        sidebarVC.documentDidChange(isContinuousMarkdown: showsProgress)
+        observeScrollGeometry()
+        restorePositionIfNeeded()
+        readerMode.documentDidChange()
+    }
+
     @objc private func highlightsChanged(_ notification: Notification) {
         sidebarVC.highlights.refresh()
         let pages = notification.userInfo?["pages"] as? [PDFPage] ?? pdfView.visiblePages
@@ -1132,7 +1142,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     func windowWillClose(_ notification: Notification) {
         findController.cancelIfFinding()
-        position.save()
+        position.saveOnClose()
     }
 
     // MARK: Reading position

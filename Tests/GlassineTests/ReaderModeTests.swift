@@ -50,6 +50,163 @@ struct ReaderModeTests {
         #expect(abs(actual.height - expected.height) < 0.001)
     }
 
+    private func showReader(for document: GlassineDocument) throws -> (ReaderWindowController, NSWindow, ReaderViewController) {
+        document.makeWindowControllers()
+        let controller = try #require(document.windowControllers.first as? ReaderWindowController)
+        let window = try #require(controller.window)
+        window.tabbingIdentifier = UUID().uuidString
+        window.tabbingMode = .disallowed
+        controller.showWindow(nil)
+        let split = try #require(window.contentViewController?.children.first as? NSSplitViewController)
+        let reader = try #require(split.splitViewItems.last?.viewController as? ReaderViewController)
+        return (controller, window, reader)
+    }
+
+    @Test("Reader width follows window resizing with legacy scrollers and deferred fit notifications")
+    func resizeFitting() async throws {
+        let (document, folder) = try fixture()
+        defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+        let (controller, window, reader) = try showReader(for: document)
+        let view = reader.pdfView
+        let scroll = try #require(view.documentView?.enclosingScrollView)
+        scroll.scrollerStyle = .legacy
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = false
+        window.setContentSize(NSSize(width: 1000, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        controller.toggleReaderMode(nil)
+        try await waitUntil { view.readerModeActive }
+        try await Task.sleep(for: .milliseconds(60))
+        let pdf = try #require(document.pdf)
+        let widths = (0..<pdf.pageCount).compactMap {
+            (pdf.page(at: $0) as? ReaderPage)?.readerContentBounds?.width
+        }
+        let widest = try #require(widths.max())
+        func visibleWidth() -> CGFloat {
+            view.convert(scroll.contentView.bounds, from: scroll.contentView).width
+        }
+
+        for width: CGFloat in [840, 1120, 760] {
+            // Deliver a fit notification on a later pass, as PDFKit is free to do.
+            NotificationCenter.default.post(name: .PDFViewScaleChanged, object: view)
+            window.setContentSize(NSSize(width: width, height: 700))
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await waitUntil {
+                abs(view.scaleFactor * widest - (visibleWidth() - 32)) < 0.1
+            }
+            #expect(visibleWidth() < view.bounds.width)
+        }
+
+        reader.actualSize(nil)
+        window.setContentSize(NSSize(width: 1040, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(abs(view.scaleFactor - 1) < 0.001)
+        reader.zoomToFit(nil)
+        window.setContentSize(NSSize(width: 900, height: 700))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitUntil {
+            abs(view.scaleFactor * widest - (visibleWidth() - 32)) < 0.1
+        }
+    }
+
+    @Test("New annotations expand only necessary crops without restarting content analysis")
+    func annotationUpdates() async throws {
+        let (document, folder) = try fixture(pages: 6)
+        defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+        let pdf = try #require(document.pdf)
+        let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 800))
+        view.document = pdf
+        let mode = ReaderModeController(document: document, pdfView: view)
+        var scans = 0
+        mode.onPreparationChanged = { if $0 { scans += 1 } }
+        mode.toggle()
+        #expect(mode.isPreparing)
+        let first = try #require(pdf.page(at: 0) as? ReaderPage)
+        let early = PDFAnnotation(bounds: CGRect(x: 18, y: 730, width: 25, height: 18),
+                                  forType: .square, withProperties: nil)
+        first.addAnnotation(early)
+        mode.annotationsDidChange(on: [first])
+        #expect(scans == 1)
+        try await waitUntil { view.readerModeActive }
+        #expect(try #require(first.readerContentBounds).contains(early.bounds))
+        let untouched = try #require(pdf.page(at: 2) as? ReaderPage)
+        let originalBounds = untouched.readerContentBounds
+        let second = try #require(pdf.page(at: 1) as? ReaderPage)
+        let late = PDFAnnotation(bounds: CGRect(x: 555, y: 40, width: 30, height: 24),
+                                 forType: .square, withProperties: nil)
+        #expect(!(second.readerContentBounds?.contains(late.bounds) ?? true))
+        second.addAnnotation(late)
+        mode.annotationsDidChange(on: [second])
+        #expect(try #require(second.readerContentBounds).contains(late.bounds))
+        #expect(untouched.readerContentBounds == originalBounds)
+        #expect(scans == 1 && !mode.isPreparing)
+    }
+
+    @Test("Margin slider updates share a layout transaction and cannot reapply after disabling")
+    func coalescedMargins() async throws {
+        let (document, folder) = try fixture()
+        defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+        let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 800))
+        view.document = document.pdf
+        let mode = ReaderModeController(document: document, pdfView: view)
+        var transactions = 0
+        mode.preservePosition = { changes in transactions += 1; changes() }
+        var options = mode.settings
+        options.automatic = false
+        mode.update(options)
+        mode.toggle()
+        let page = try #require(document.pdf?.page(at: 0) as? ReaderPage)
+        let initial = page.readerContentBounds
+        for trim in [0.12, 0.14, 0.18] {
+            options = mode.settings
+            options.left = trim
+            mode.update(options)
+        }
+        #expect(transactions == 1 && page.readerContentBounds == initial)
+        #expect(ReaderModeSettings.load(for: document.fileURL).left == 0.18)
+        try await waitUntil { transactions == 2 }
+        assertRect(try #require(page.readerContentBounds),
+                   equals: mode.settings.customBounds(in: page.bounds(for: .cropBox), rotation: 0))
+        options.left = 0.2
+        mode.update(options)
+        mode.toggle()
+        let afterDisable = transactions
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(transactions == afterDisable && !view.readerModeActive)
+        #expect(page.readerContentBounds == nil)
+    }
+
+    @Test("Unlocking restores saved Reader Mode and reading position", arguments: [true, false])
+    func unlockedReader(automatic: Bool) async throws {
+        let (source, folder) = try fixture()
+        let url = folder.appendingPathComponent("Locked.pdf")
+        defer { source.close(); try? FileManager.default.removeItem(at: folder) }
+        try #require(source.pdf?.write(to: url, withOptions: [
+            .ownerPasswordOption: "owner", .userPasswordOption: "reader"
+        ]) == true)
+        let document = try GlassineDocument(contentsOf: url, ofType: UTType.pdf.identifier)
+        defer { document.close() }
+        var options = ReaderModeSettings()
+        options.enabled = true
+        options.automatic = automatic
+        options.save(for: url)
+        Prefs.setLastPosition(.init(pageIndex: 1, x: 100, y: 500), for: url)
+        let (_, _, reader) = try showReader(for: document)
+        let view = reader.pdfView
+        let pdf = try #require(document.pdf)
+        #expect(pdf.isLocked && !view.readerModeActive)
+        try await Task.sleep(for: .milliseconds(60))
+        try #require(pdf.unlock(withPassword: "reader"))
+        let targetPage = try #require(pdf.page(at: 1) as? ReaderPage)
+        try await waitUntil { view.readerModeActive && view.currentPage === targetPage }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(try #require(targetPage.readerContentBounds).width < targetPage.bounds(for: .cropBox).width)
+        #expect(abs((view.currentDestination?.point.y ?? 0) - 500) < 2)
+        #expect(ReaderModeSettings.load(for: url).enabled)
+        #expect(!document.isDocumentEdited)
+    }
+
     @Test("Automatic trimming keeps position and selections, remembers the file, and restores original layout")
     func automaticLifecycle() async throws {
         let (document, folder) = try fixture()

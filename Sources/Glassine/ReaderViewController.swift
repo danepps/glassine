@@ -507,40 +507,41 @@ final class ReaderViewController: NSViewController {
         pdfView.scaleFactor = 1
     }
 
-    /// A PDF, and a Markdown document already laid out as pages, print exactly
-    /// what is on screen. A *continuous* Markdown render does not: it is one
-    /// 612 × 13,757 pt page, and handing that to the print system leaves the
-    /// pagination to whatever scaling it decides on. So it goes through the same
-    /// paginated typesetting Export as PDF uses, and the print panel is given a
-    /// real Letter document.
+    /// Print original page geometry and permanent annotations, without reader
+    /// crops or transient find ink. Continuous Markdown is typeset as regular
+    /// pages first, through the same output path used by Export as PDF.
     @objc func printDocument(_ sender: Any?) {
-        if pdfView.readerModeActive, let window = view.window {
-            // Print an independent document with the original page boxes and
-            // no transient find overlays. Print workers cannot inherit the
-            // reader's thread-local output guard or its view-only crop.
-            guard let document = glassineDocument.readerModeDocumentForPrinting(),
-                  let operation = document.printOperation(for: NSPrintInfo.shared,
-                    scalingMode: .pageScaleDownToFit, autoRotate: true) else { return }
-            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
-            return
-        }
-        guard glassineDocument.needsPaginatedOutput, let window = view.window else {
-            pdfView.print(with: NSPrintInfo.shared, autoRotate: true)
+        guard glassineDocument.needsPaginatedOutput else {
+            // Every ordinary print uses an independent document. Find overlays
+            // also exist when Reader Mode is off, and print workers cannot
+            // inherit the reader's thread-local output guard.
+            guard let document = glassineDocument.documentForPrinting() else { return }
+            runPrintOperation(for: document)
             return
         }
         glassineDocument.paginatedDocumentForOutput { [weak self] result in
             switch result {
             case .success(let document):
-                // .pageScaleNone: the pages are already the paper's size, and
-                // "fit to page" would inset them by the printer's margins twice.
-                guard let operation = document.printOperation(for: NSPrintInfo.shared,
-                                                              scalingMode: .pageScaleNone,
-                                                              autoRotate: true)
-                else { return }
-                operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+                // This is a fresh paginated render, with no reader/find state.
+                self?.runPrintOperation(for: document)
             case .failure(let error):
                 self?.glassineDocument.presentError(error)
             }
+        }
+    }
+
+    private func runPrintOperation(for document: PDFDocument) {
+        // PDFView.print(with:autoRotate:) uses .pageScaleNone (PDFView.h), so
+        // this preserves ordinary printing's existing size in Reader Mode too.
+        // It also avoids adding a second printer-margin inset to Markdown that
+        // was already typeset to the paper size.
+        guard let operation = document.printOperation(for: NSPrintInfo.shared,
+                                                      scalingMode: .pageScaleNone,
+                                                      autoRotate: true) else { return }
+        if let window = view.window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
         }
     }
 }

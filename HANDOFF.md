@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-13. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-14. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,56 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Reader Mode review follow-up (unreleased; Codex, 2026-09-14).** Implemented
+  the actionable findings in `AI Memos/codex-reader-mode-review-2026-09-13.md`.
+  Width fitting ignores delayed notifications for its own fitted scale and uses
+  the actual visible clip width, including legacy scroll bars. PDFKit scales
+  clip bounds while zooming, so that rectangle must be converted to PDFView
+  coordinates; using its raw width caused a feedback error reproduced by the
+  resize regression. Explicit Actual Size still cancels fitting.
+
+  New annotations expand cached content bounds on affected pages without
+  rerasterizing the document. Changes made during the initial scan merge before
+  its crop is installed. Margin-slider ticks coalesce on the next main-loop
+  pass. Odd page sizes no longer fail detection because raster dimensions round
+  up to 1,201 pixels. Settings decode missing fields from defaults, remove default
+  entries, and retain at most 500 files. Escape dismisses the live margins sheet.
+
+  Closing during a pending geometry install saves the intended position. Locked
+  opens and replacements defer restoration until unlock, retaining the target
+  and install completion. Unlock also restores saved Reader Mode. Integration
+  testing exposed a PDFThumbnailView crash during unlock; thumbnails now remain
+  detached while locked and attach after the unlock notification stack, guarded
+  against document or layout replacement. Native probing found that assigning a
+  locked replacement clears the previous thumbnail collection correctly.
+
+  All ordinary printing now uses `documentForPrinting()` to exclude temporary
+  find ink while retaining permanent annotations and permission state. Scaling
+  is consistently `.pageScaleNone`, PDFView's documented default. Outline
+  selection's rounding tolerance now applies to paginated PDFs too, with a
+  generated, serialized/reopened outline regression. Sidebar layout arguments
+  are mandatory, unexpected ReaderPage types assert and disable Reader Mode,
+  and Appearance includes a standard Reset Dark Mode Brightness menu item.
+
+  Validation: all 70 macOS tests and 145 Core tests pass. The macOS suite covers
+  multiple window widths with legacy scroll bars, deferred scale notifications,
+  initial-scan annotation changes, coalesced settings, both automatic and custom
+  Reader Mode after unlock, thumbnail lifecycle, and ordinary-print pixel output.
+  Release build and ad-hoc signature verification also pass. Live checks on
+  September 14 verified narrowing and widening the window by dragging its edge:
+  pages refit and the sample highlight stays aligned with its text. Changing
+  automatic padding from 12 to 18 points and pressing Escape dismisses the sheet
+  while retaining the change and highlight alignment. Computer Use initially
+  returned `cgWindowNotFound`, then recovered; opening the fixture required
+  expanding Finder's Open With submenu before choosing the test app.
+
+  Logs: `build/reader-review-tests.log`, `build/reader-review-core-tests.log`,
+  `build/reader-review-build.log`. Isolated app:
+  `build/Glassine Reader Review Test.app`, bundle id
+  `com.epps.Glassine.ReaderReviewTest`, automatic updates disabled. The release
+  executable was verified byte-for-byte before signing the bundle. No
+  installed-app replacement or release was performed.
 
 - **Reader Mode, low-light brightness, and Recents-only New Tab (unreleased;
   Codex, 2026-09-13).** View ▸ Reader Mode (⌥⌘R) trims PDF margins for reading,

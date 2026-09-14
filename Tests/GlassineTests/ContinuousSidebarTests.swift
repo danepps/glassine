@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import GlassineCore
 import PDFKit
 import Testing
@@ -27,6 +28,180 @@ struct ContinuousSidebarTests {
 
     private func descendants(of view: NSView) -> [NSView] {
         view.subviews.flatMap { [$0] + descendants(of: $0) }
+    }
+
+    /// A real paginated PDF with drawn heading baselines and an outline that
+    /// survives serialization. Fractional destinations reproduce the same
+    /// scroll-origin rounding as a typeset Markdown document.
+    private func outlinedPDF() throws -> PDFDocument {
+        let data = NSMutableData()
+        let consumer = try #require(CGDataConsumer(data: data))
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = try #require(CGContext(consumer: consumer, mediaBox: &mediaBox, nil))
+        let headings: [(page: Int, y: CGFloat, title: String)] = [
+            (0, 720, "Introduction"),
+            (1, 720, "Earlier section"),
+            (1, 539.63, "Fractional heading"),
+            (1, 180.37, "End of page section"),
+            (2, 792, "Next page section"),
+            (3, 720, "Conclusion")
+        ]
+        for pageIndex in 0..<4 {
+            context.beginPDFPage(nil)
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(mediaBox)
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            for heading in headings where heading.page == pageIndex {
+                context.textPosition = CGPoint(x: 72, y: min(heading.y, 760))
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: heading.title,
+                    attributes: [.font: NSFont.systemFont(ofSize: 14)]))
+                CTLineDraw(line, context)
+            }
+            context.endPDFPage()
+        }
+        context.closePDF()
+        let source = try #require(PDFDocument(data: data as Data))
+        let root = PDFOutline()
+        for heading in headings {
+            let page = try #require(source.page(at: heading.page))
+            let outline = PDFOutline()
+            outline.label = heading.title
+            outline.destination = PDFDestination(page: page, at: CGPoint(x: 72, y: heading.y))
+            root.insertChild(outline, at: root.numberOfChildren)
+        }
+        source.outlineRoot = root
+        let serialized = try #require(source.dataRepresentation())
+        return try #require(PDFDocument(data: serialized))
+    }
+
+    private func lockedPDF() throws -> PDFDocument {
+        let source = try outlinedPDF()
+        let options: [PDFDocumentWriteOption: Any] = [
+            .ownerPasswordOption: "owner", .userPasswordOption: "reader"
+        ]
+        let encrypted = try #require(source.dataRepresentation(options: options))
+        let locked = try #require(PDFDocument(data: encrypted))
+        try #require(locked.isLocked)
+        return locked
+    }
+
+    @Test("Locked PDFs attach thumbnails after unlock notifications and rebuild their page collection")
+    func lockedPDFThumbnails() async throws {
+        _ = NSApplication.shared
+        let locked = try lockedPDF()
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.document = locked
+        let sidebar = SidebarViewController(pdfView: pdfView, isContinuousMarkdown: false)
+        _ = sidebar.view
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        let thumbnails = try #require(descendants(of: sidebar.view).compactMap { $0 as? PDFThumbnailView }.first)
+        #expect(thumbnails.pdfView == nil)
+
+        try #require(locked.unlock(withPassword: "reader"))
+        // The reader's unlock observer refreshes the same installed document.
+        // Repeated refreshes must not attach inside that notification stack.
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        #expect(thumbnails.pdfView == nil)
+        for _ in 0..<50 where thumbnails.pdfView == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(thumbnails.pdfView === pdfView)
+        thumbnails.layoutSubtreeIfNeeded()
+        let collection = try #require(descendants(of: thumbnails).compactMap { $0 as? NSCollectionView }.first)
+        #expect(collection.numberOfSections == 1)
+        #expect(collection.numberOfItems(inSection: 0) == locked.pageCount)
+        for index in 0..<locked.pageCount {
+            let page = try #require(locked.page(at: index))
+            pdfView.go(to: page)
+            #expect(pdfView.currentPage === page)
+        }
+    }
+
+    @Test("A pending thumbnail attachment cannot outlive its document or installed layout")
+    func pendingUnlockedThumbnails() async throws {
+        _ = NSApplication.shared
+        let locked = try lockedPDF()
+        let pdfView = PDFView()
+        pdfView.document = locked
+        let sidebar = SidebarViewController(pdfView: pdfView, isContinuousMarkdown: false)
+        _ = sidebar.view
+        let thumbnails = try #require(descendants(of: sidebar.view).compactMap { $0 as? PDFThumbnailView }.first)
+        try #require(locked.unlock(withPassword: "reader"))
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        // Changing layout while attachment is pending must keep the tall
+        // continuous document detached, including after the queued work runs.
+        sidebar.documentDidChange(isContinuousMarkdown: true)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(thumbnails.pdfView == nil && thumbnails.isHidden)
+
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        let replacement = try lockedPDF()
+        pdfView.document = replacement
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(thumbnails.pdfView == nil && replacement.isLocked)
+        try #require(replacement.unlock(withPassword: "reader"))
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        for _ in 0..<50 where thumbnails.pdfView == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(thumbnails.pdfView === pdfView && pdfView.document === replacement)
+    }
+
+    @Test("Paginated PDF outline selection tolerates rounded jumps without crossing page boundaries")
+    func paginatedOutlineRounding() throws {
+        _ = NSApplication.shared
+        let suite = "PaginatedOutlineTests.\(UUID())"
+        let previous = Prefs.defaults
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        Prefs.defaults = defaults
+        defer { Prefs.defaults = previous; defaults.removePersistentDomain(forName: suite) }
+
+        let pdf = try outlinedPDF()
+        #expect(pdf.pageCount == 4 && pdf.string?.contains("Fractional heading") == true)
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.document = pdf
+        let sidebar = SidebarViewController(pdfView: pdfView, isContinuousMarkdown: false)
+        _ = sidebar.view
+        sidebar.documentDidChange(isContinuousMarkdown: false)
+        sidebar.mode = .outline
+        let outline = try #require(descendants(of: sidebar.view).compactMap { $0 as? NSOutlineView }.first)
+        #expect(outline.numberOfRows == 6)
+        let target = try #require(pdf.outlineRoot?.child(at: 2)?.destination)
+        let page = try #require(target.page)
+        let nextPage = try #require(pdf.outlineRoot?.child(at: 4)?.destination)
+
+        for scale in [0.7, 1.0, 1.337, 2.0] {
+            pdfView.autoScales = false
+            pdfView.scaleFactor = scale
+            pdfView.layoutDocumentView()
+            outline.deselectAll(nil)
+            // Selection invokes the real sidebar delegate and PDFKit jump.
+            outline.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+            sidebar.syncSelection()
+            #expect(outline.selectedRow == 2,
+                    "scale: \(scale); destination: \(String(describing: pdfView.currentDestination?.point)); heading: \(target.point)")
+
+            pdfView.go(to: PDFDestination(page: page,
+                at: CGPoint(x: target.point.x, y: target.point.y + 8 / scale)))
+            sidebar.syncSelection()
+            #expect(outline.selectedRow == 1)
+            pdfView.go(to: PDFDestination(page: page,
+                at: CGPoint(x: target.point.x, y: target.point.y - 8 / scale)))
+            sidebar.syncSelection()
+            #expect(outline.selectedRow == 2)
+
+            pdfView.go(to: PDFDestination(page: page, at: CGPoint(x: 72, y: 0.37)))
+            #expect(OutlineSync.currentOrdinal(of: pdfView)?.page == 1)
+            sidebar.syncSelection()
+            #expect(outline.selectedRow == 3)
+            pdfView.go(to: nextPage)
+            sidebar.syncSelection()
+            #expect(outline.selectedRow == 4)
+        }
     }
 
     @Test("Continuous layout replaces the strip with contents and preserves the paginated preference")

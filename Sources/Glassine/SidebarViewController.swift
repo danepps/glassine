@@ -20,6 +20,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     private let emptyOutlineView = NSView()
     private let modeControl = NSSegmentedControl()
     private let pdfView: PDFView
+    private weak var thumbnailAwaitingUnlock: PDFDocument?
+    private var thumbnailAttachmentGeneration = 0
     private var pendingFilters: [CIFilter] = []
     private var outlineRoot: PDFOutline?
     private(set) var isContinuousMarkdown: Bool
@@ -51,7 +53,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         }
     }
 
-    init(pdfView: PDFView, isContinuousMarkdown: Bool = false) {
+    init(pdfView: PDFView, isContinuousMarkdown: Bool) {
         self.pdfView = pdfView
         self.isContinuousMarkdown = isContinuousMarkdown
         super.init(nibName: nil, bundle: nil)
@@ -115,7 +117,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
 
     private func buildThumbnails() {
-        thumbnailView.pdfView = isContinuousMarkdown ? nil : pdfView
+        updateThumbnailDocument()
         thumbnailView.thumbnailSize = NSSize(width: 120, height: 160)
         thumbnailView.maximumNumberOfColumns = 1
         // Clear so the sidebar's vibrant material shows through.
@@ -123,6 +125,39 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         thumbnailView.wantsLayer = true
         thumbnailView.contentFilters = pendingFilters
         pin(thumbnailView)
+    }
+
+    private func updateThumbnailDocument() {
+        thumbnailAttachmentGeneration += 1
+        let document = pdfView.document
+        if document?.isLocked == true {
+            thumbnailAwaitingUnlock = document
+        } else if document !== thumbnailAwaitingUnlock {
+            thumbnailAwaitingUnlock = nil
+        }
+        guard !isContinuousMarkdown, let document, !document.isLocked else {
+            thumbnailView.pdfView = nil
+            return
+        }
+
+        guard document === thumbnailAwaitingUnlock else {
+            thumbnailView.pdfView = pdfView
+            return
+        }
+        // PDFView posts a page-change notification while processing unlock,
+        // before a previously empty thumbnail collection can rebuild. Keep
+        // thumbnails detached through that notification stack, then attach to
+        // the unlocked document. Repeated refreshes must keep deferring too.
+        thumbnailView.pdfView = nil
+        let generation = thumbnailAttachmentGeneration
+        DispatchQueue.main.async { [weak self, weak document] in
+            guard let self, let document,
+                  self.thumbnailAttachmentGeneration == generation,
+                  self.pdfView.document === document,
+                  !self.isContinuousMarkdown, !document.isLocked else { return }
+            self.thumbnailView.pdfView = self.pdfView
+            self.thumbnailAwaitingUnlock = nil
+        }
     }
 
     private func buildEmptyOutline() {
@@ -240,10 +275,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     /// The reader swapped its PDFView's document (a Markdown render or reload).
     /// Detach thumbnails for the continuous render and rebuild its contents.
     /// Use the installed layout, which may lag the preference during a render.
-    func documentDidChange(isContinuousMarkdown: Bool = false) {
+    func documentDidChange(isContinuousMarkdown: Bool) {
         self.isContinuousMarkdown = isContinuousMarkdown
         guard isViewLoaded else { return }
-        thumbnailView.pdfView = isContinuousMarkdown ? nil : pdfView
+        updateThumbnailDocument()
         outlineRoot = pdfView.document?.outlineRoot
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
@@ -287,11 +322,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         }
         // PDFKit rounds the scroll origin: after a heading jump its reported
         // destination can sit a fraction of a point above the target. Allow
-        // one view point so the continuous outline keeps the clicked heading
-        // selected, while ordinary scrolling still follows the current section.
-        let selectionPosition = isContinuousMarkdown
-            ? OutlineSync.Ordinal(page: here.page, offset: here.offset + 1 / max(pdfView.scaleFactor, 0.01))
-            : here
+        // one view point for every PDF, including ordinary paginated documents,
+        // so the clicked heading stays selected. Keep the page index unchanged:
+        // this tolerance must never advance the selection onto the next page.
+        let selectionPosition = OutlineSync.Ordinal(
+            page: here.page, offset: here.offset + 1 / max(pdfView.scaleFactor, 0.01))
         let best = OutlineSync.index(atOrBefore: selectionPosition, in: rows)
         guard best != outlineView.selectedRow else { return }
 

@@ -131,6 +131,34 @@ struct DarkModeBrightnessTests {
         }
     }
 
+    @Test("Appearance has a standard keyboard-accessible reset that restores Normal")
+    func standardResetMenuItem() throws {
+        let app = NSApplication.shared
+        let previousWindowsMenu = app.windowsMenu
+        let previousHelpMenu = app.helpMenu
+        defer { app.windowsMenu = previousWindowsMenu; app.helpMenu = previousHelpMenu }
+        let delegate = AppDelegate(startingUpdater: false)
+        let mainMenu = MainMenu.build(appDelegate: delegate)
+        let viewMenu = try #require(mainMenu.items.first { $0.title == "View" }?.submenu)
+        let appearance = try #require(viewMenu.items.first { $0.title == "Appearance" }?.submenu)
+        let reset = try #require(appearance.items.first { $0.title == "Reset Dark Mode Brightness" })
+        let action = try #require(reset.action)
+        #expect(reset.view == nil)
+        let resetIndex = appearance.index(of: reset)
+        #expect(resetIndex > 0)
+        #expect(appearance.items[resetIndex - 1].view is DarkModeBrightnessMenuView)
+
+        try withDefaults { _ in
+            Prefs.darkModeBrightness = 0.4
+            appearance.update()
+            #expect(reset.isEnabled)
+            #expect(app.sendAction(action, to: reset.target, from: reset))
+            #expect(Prefs.darkModeBrightness == 1)
+            appearance.update()
+            #expect(!reset.isEnabled)
+        }
+    }
+
     private func verifyMatrix(_ matrix: CIFilter, lift: CGFloat, top: CGFloat) throws {
         func linear(_ value: CGFloat) -> CGFloat {
             value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)

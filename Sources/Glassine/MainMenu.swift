@@ -182,6 +182,7 @@ enum MainMenu {
         }
         appearanceMenu.addItem(.separator())
         appearanceMenu.addItem(DarkModeBrightnessMenu.makeMenuItem())
+        appearanceMenu.addItem(DarkModeBrightnessMenu.makeResetMenuItem())
         appearance.submenu = appearanceMenu
         menu.addItem(appearance)
 

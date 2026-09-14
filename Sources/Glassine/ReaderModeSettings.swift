@@ -10,6 +10,25 @@ struct ReaderModeSettings: Codable, Equatable {
     var top = 0.08
     var bottom = 0.08
 
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, automatic, padding, left, right, top, bottom
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? enabled
+        automatic = try values.decodeIfPresent(Bool.self, forKey: .automatic) ?? automatic
+        padding = try values.decodeIfPresent(Double.self, forKey: .padding) ?? padding
+        left = try values.decodeIfPresent(Double.self, forKey: .left) ?? left
+        right = try values.decodeIfPresent(Double.self, forKey: .right) ?? right
+        top = try values.decodeIfPresent(Double.self, forKey: .top) ?? top
+        bottom = try values.decodeIfPresent(Double.self, forKey: .bottom) ?? bottom
+        self = validated
+    }
+
     var validated: Self {
         var value = self
         value.padding = padding.isFinite ? min(max(padding, 0), 48) : 12
@@ -21,19 +40,78 @@ struct ReaderModeSettings: Codable, Equatable {
     }
 
     private static let key = "readerModeDocuments"
+    static let maximumStoredDocuments = 500
 
-    static func load(for url: URL?) -> Self {
+    /// The existing path -> JSON Data format stays readable by older builds.
+    /// The optional flat timestamp only controls eviction; old entries have
+    /// no timestamp and are pruned first, with path order breaking ties.
+    private struct StoredSettings: Codable {
+        let settings: ReaderModeSettings
+        let lastSaved: Double
+
+        private enum CodingKeys: String, CodingKey { case lastSaved }
+
+        init(settings: ReaderModeSettings, lastSaved: Double) {
+            self.settings = settings
+            self.lastSaved = lastSaved
+        }
+
+        init(from decoder: Decoder) throws {
+            settings = try ReaderModeSettings(from: decoder)
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            let stamp = (try? values.decode(Double.self, forKey: .lastSaved)) ?? 0
+            lastSaved = stamp.isFinite ? stamp : 0
+        }
+
+        func encode(to encoder: Encoder) throws {
+            try settings.encode(to: encoder)
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encode(lastSaved, forKey: .lastSaved)
+        }
+    }
+
+    static func load(for url: URL?, defaults: UserDefaults = Prefs.defaults) -> Self {
         guard let url,
-              let data = Prefs.defaults.dictionary(forKey: key)?[url.standardizedFileURL.path] as? Data,
+              let data = defaults.dictionary(forKey: key)?[url.standardizedFileURL.path] as? Data,
               let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
         return value.validated
     }
 
-    func save(for url: URL?) {
-        guard let url, let data = try? JSONEncoder().encode(validated) else { return }
-        var entries = Prefs.defaults.dictionary(forKey: Self.key) ?? [:]
-        entries[url.standardizedFileURL.path] = data
-        Prefs.defaults.set(entries, forKey: Self.key)
+    func save(for url: URL?, defaults: UserDefaults = Prefs.defaults) {
+        guard let url else { return }
+        let path = url.standardizedFileURL.path
+        let value = validated
+        var entries = defaults.dictionary(forKey: Self.key) ?? [:]
+        if value == Self() {
+            entries.removeValue(forKey: path)
+        } else {
+            let stored = StoredSettings(settings: value, lastSaved: Date().timeIntervalSinceReferenceDate)
+            guard let data = try? JSONEncoder().encode(stored) else { return }
+            entries[path] = data
+        }
+
+        let decoder = JSONDecoder()
+        var ages: [String: Double] = [:]
+        for (entryPath, raw) in entries {
+            guard let data = raw as? Data,
+                  let stored = try? decoder.decode(StoredSettings.self, from: data),
+                  stored.settings != Self() else {
+                entries.removeValue(forKey: entryPath)
+                continue
+            }
+            ages[entryPath] = stored.lastSaved
+        }
+        if entries.count > Self.maximumStoredDocuments {
+            let oldest = entries.keys.filter { $0 != path }.sorted { lhs, rhs in
+                let left = ages[lhs] ?? 0, right = ages[rhs] ?? 0
+                return left == right ? lhs < rhs : left < right
+            }
+            for key in oldest.prefix(entries.count - Self.maximumStoredDocuments) {
+                entries.removeValue(forKey: key)
+            }
+        }
+        if entries.isEmpty { defaults.removeObject(forKey: Self.key) }
+        else { defaults.set(entries, forKey: Self.key) }
     }
 
     func bounds(in original: CGRect, content: CGRect?) -> CGRect {
@@ -63,6 +141,15 @@ struct ReaderModeSettings: Codable, Equatable {
     }
 }
 
+@MainActor
+private final class ReaderModeSettingsPanel: NSPanel {
+    override func cancelOperation(_ sender: Any?) {
+        // Settings apply live, so Escape and Done only dismiss the sheet.
+        if let parent = sheetParent { parent.endSheet(self) }
+        else { orderOut(sender) }
+    }
+}
+
 /// Live, per-document margin controls. Automatic padding cannot remove detected
 /// ink. Custom insets let the reader handle scanner borders or unusual layouts.
 @MainActor
@@ -78,8 +165,8 @@ final class ReaderModeSettingsController: NSWindowController {
     init(settings: ReaderModeSettings, onChange: @escaping (ReaderModeSettings) -> Void) {
         self.settings = settings.validated
         self.onChange = onChange
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 336),
-                            styleMask: [.titled], backing: .buffered, defer: false)
+        let panel = ReaderModeSettingsPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 336),
+                                            styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Reader Mode Margins"
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
@@ -174,7 +261,6 @@ final class ReaderModeSettingsController: NSWindowController {
     }
 
     @objc private func done(_ sender: Any?) {
-        guard let window else { return }
-        window.sheetParent?.endSheet(window)
+        window?.cancelOperation(sender)
     }
 }

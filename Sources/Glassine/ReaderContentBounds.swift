@@ -53,10 +53,12 @@ enum ReaderContentBounds {
         let scale = min(maximumPixelsPerPoint,
                         CGFloat(maximumRasterDimension) / max(crop.width, crop.height))
         guard scale >= minimumPixelsPerPoint else { return nil }
-        let width = Int(ceil(crop.width * scale))
-        let height = Int(ceil(crop.height * scale))
+        // The longest side can round a fraction above 1,200 before ceil
+        // (for example at 1,101 pt). Clamp that numerical overshoot instead
+        // of silently declining to trim an otherwise ordinary page size.
+        let width = min(Int(ceil(crop.width * scale)), maximumRasterDimension)
+        let height = min(Int(ceil(crop.height * scale)), maximumRasterDimension)
         guard width >= 32, height >= 32,
-              width <= maximumRasterDimension, height <= maximumRasterDimension,
               let context = CGContext(data: nil, width: width, height: height,
                                       bitsPerComponent: 8, bytesPerRow: width * 4,
                                       space: CGColorSpaceCreateDeviceRGB(),

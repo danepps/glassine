@@ -147,7 +147,7 @@ struct HighlightsTests {
         let pdfView = ReaderPDFView()
         pdfView.document = doc.pdf
         pdfView.highlightDocument = doc
-        let sidebar = SidebarViewController(pdfView: pdfView)
+        let sidebar = SidebarViewController(pdfView: pdfView, isContinuousMarkdown: false)
         sidebar.highlights.document = doc
         sidebar.showHighlights()
         #expect(sidebar.showsHighlights)

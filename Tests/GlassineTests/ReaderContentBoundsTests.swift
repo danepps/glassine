@@ -96,6 +96,27 @@ struct ReaderContentBoundsTests {
         #expect(result.maxX < 525 && result.maxY < 685)
     }
 
+    @Test("Odd page dimensions do not exceed the raster cap through rounding")
+    func roundingAtRasterLimit() throws {
+        for longSide in [1101.0, 1128.5, 1133.75] {
+            for landscape in [false, true] {
+                let box = CGRect(x: 0, y: 0, width: landscape ? longSide : 700,
+                                 height: landscape ? 700 : longSide)
+                let artwork = box.insetBy(dx: 70, dy: 90)
+                let document = try fixture(mediaBox: box) { context in
+                    context.setFillColor(CGColor(gray: 0, alpha: 1))
+                    context.fill(artwork)
+                }
+                let page = try #require(document.page(at: 0))
+                let result = try #require(ReaderContentBounds.detect(on: page))
+                #expect(contains(result, artwork))
+                #expect(result.width < box.width && result.height < box.height)
+                #expect(result.minX > 65 && result.minY > 85)
+                #expect(result.maxX < artwork.maxX + 5 && result.maxY < artwork.maxY + 5)
+            }
+        }
+    }
+
     /// Make a small PDF with an explicit page dictionary. This avoids PDFKit's
     /// save-time rewriting of a shifted media box changing the fixture's stream.
     private func rotatedFixture(_ rotation: Int) throws -> PDFDocument {

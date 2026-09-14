@@ -19,14 +19,17 @@ updated in place.
   and the window chrome follows the level you choose.
   Dark Mode Brightness in the same menu dims page content from 100% to 35% for
   low-light reading while keeping the chosen background. It is independent of
-  window opacity and Reader Mode; Reset returns to normal brightness.
+  window opacity and Reader Mode; Reset returns to normal brightness. The
+  standard Reset Dark Mode Brightness menu item also works from the keyboard.
 - **Reader Mode for PDFs.** View ▸ Reader Mode (⌥⌘R) trims outer margins and
   reduces page gaps, with a consistent zoom across the document. Automatic
   detection includes text, scans, figures, footnotes and visible annotations;
   uncertain pages keep their original boundaries. Reader Mode Margins… adjusts
   automatic padding or lets you trim each edge manually. Each file remembers
-  its setting, and switching modes keeps your place. Selection and highlighting
-  remain available; saved, exported and printed PDFs retain their original margins.
+  its setting, and switching modes keeps your place. Resizing fits the available
+  width until you zoom manually; ⌘0 resumes fitting. Escape closes the margins
+  sheet while keeping its live changes. Selection and highlighting remain
+  available; saved, exported and printed PDFs retain their original margins.
 - **Adjustable window opacity, with a blurred backdrop.** Window ▸ Opacity
   fades the page from 100% down to 30% so you can read against what is behind
   it, and blurs whatever shows through the way Terminal does; ⌥⌘↑ / ⌥⌘↓ step it,
