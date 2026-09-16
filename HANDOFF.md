@@ -108,6 +108,18 @@ Dan's stated requirements, all met as of this handoff:
   clicking a heading or footnote link inside Finder's Quick Look panel
   actually navigates; the WebKit test covers a bare web view only.
 
+  PDF preview correction (Codex, 2026-09-15, PR #4): the preview filter now
+  accepts the exact `application/pdf` data-URI media type, including parameters
+  and case variants, alongside image types. Previously it discarded PDFs after
+  the shared inliner had admitted and charged them against the image budget.
+  Added regressions for embedded/local figures, body/footnotes, the shared
+  PDF/PNG budget and rejected non-image media types; the two new Core tests
+  failed before the fix. All 156 Core tests and 77 macOS tests pass, with the
+  AppKit suite run serially to avoid the reader-layout assertion seen in
+  concurrent review runs. The native WebKit test now verifies that real embedded
+  and local PDF figures load at their expected dimensions in both appearances.
+  The app and Quick Look extension also compile successfully in release mode.
+
 - **Released 1.8.0 (Codex, 2026-09-15).** Build 15, release commit/tag
   `3a4405b` / `v1.8.0`, includes the six feature/fix sections immediately below.
   All 76 macOS tests and 147 Core tests passed before packaging. Apple accepted

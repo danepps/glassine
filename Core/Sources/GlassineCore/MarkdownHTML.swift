@@ -493,7 +493,12 @@ public enum MarkdownHTML {
             // Unavailable local assets and blocked remote images still have an
             // accessible, readable label instead of an unexplained empty box.
             let label = image.plainText.isEmpty ? "Image" : image.plainText
-            guard let source = image.source, source.lowercased().hasPrefix("data:image/") else {
+            // The inliner also produces application/pdf: WebKit paints PDF
+            // figures in <img>. Compare the media type before any parameters
+            // or payload so similar-looking application types stay blocked.
+            let mediaType = image.source?.prefix { $0 != ";" && $0 != "," }.lowercased() ?? ""
+            guard let source = image.source,
+                  mediaType.hasPrefix("data:image/") || mediaType == "data:application/pdf" else {
                 return Text("[\(label)]")
             }
             return InlineHTML("<img src=\"\(escape(source))\" alt=\"\(escape(label))\" />")
