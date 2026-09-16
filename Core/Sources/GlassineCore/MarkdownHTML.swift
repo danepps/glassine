@@ -135,6 +135,12 @@ public struct MarkdownHeading: Sendable {
 /// deliberately *not* in it (no `@page` rule) because the print info supplies
 /// the margins and WebKit would otherwise apply both.
 public enum MarkdownHTML {
+    public enum Output {
+        case pdf
+        /// Interactive HTML: real heading anchors, passive Markdown content,
+        /// and a total budget for embedded local images.
+        case preview
+    }
 
     /// Decode file bytes as text. UTF-8 is the rule; a UTF-16 byte-order mark is
     /// honoured, and anything else is reported the way an unreadable PDF is.
@@ -172,13 +178,18 @@ public enum MarkdownHTML {
     /// footnote inside a heading is already a marker by the time the anchorer
     /// formats the heading's children.
     public static func body(fromMarkdown markdown: String,
-                     baseDirectory: URL?) -> (html: String,
+                     baseDirectory: URL?, output: Output = .pdf) -> (html: String,
                                               headings: [MarkdownHeading],
                                               stats: MarkdownStats) {
         let base = baseDirectory?.standardizedFileURL
+        var inliner = base.map {
+            ImageInliner(baseDirectory: $0,
+                         remainingBytes: output == .preview ? 8 * 1024 * 1024 : nil)
+        }
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
-        document = inliningImages(document, baseDirectory: base)
+        document = inliningImages(document, inliner: &inliner)
+        if output == .preview { document = previewContent(document) }
 
         // A document with no definitions cannot have a reference, so it is not
         // worth rebuilding its whole tree to find out.
@@ -195,7 +206,8 @@ public enum MarkdownHTML {
         for label in referencer.order {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
-            note = inliningImages(note, baseDirectory: base)
+            note = inliningImages(note, inliner: &inliner)
+            if output == .preview { note = previewContent(note) }
             noteWords += statistics(of: note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
         }
@@ -203,7 +215,7 @@ public enum MarkdownHTML {
         var stats = statistics(of: document)
         stats.words += noteWords
 
-        var anchorer = HeadingAnchorer()
+        var anchorer = HeadingAnchorer(includeOutlineLinks: output == .pdf)
         if let rewritten = anchorer.visit(document) as? Document {
             document = rewritten
         }
@@ -211,10 +223,14 @@ public enum MarkdownHTML {
         return (html, anchorer.headings, stats)
     }
 
-    private static func inliningImages(_ document: Document, baseDirectory: URL?) -> Document {
-        guard let baseDirectory else { return document }
-        var inliner = ImageInliner(baseDirectory: baseDirectory)
-        return (inliner.visit(document) as? Document) ?? document
+    private static func inliningImages(_ document: Document,
+                                      inliner: inout ImageInliner?) -> Document {
+        (inliner?.visit(document) as? Document) ?? document
+    }
+
+    private static func previewContent(_ document: Document) -> Document {
+        var filter = PreviewContentFilter()
+        return (filter.visit(document) as? Document) ?? document
     }
 
     /// Wrap a formatted body in the full page: charset, CSP, and the stylesheet
@@ -316,6 +332,7 @@ public enum MarkdownHTML {
     /// without any annotation surgery. A fragment that matches no heading is
     /// simply dead, as it was before.
     private struct HeadingAnchorer: MarkupRewriter {
+        let includeOutlineLinks: Bool
         var headings: [MarkdownHeading] = []
         /// How many headings have already claimed each slug, so a repeated
         /// title becomes `slug-1`, `slug-2`, … the way GitHub numbers them.
@@ -329,9 +346,11 @@ public enum MarkdownHTML {
                                             index: index))
             let inner = heading.children.map { HTMLFormatter.format($0) }.joined()
             let level = heading.level
+            let content = includeOutlineLinks
+                ? "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
+                : inner
             return HTMLBlock("<h\(level) id=\"\(slug(for: title))\">"
-                             + "<a class=\"fh\" href=\"glassine-outline://\(index)\">"
-                             + inner + "</a></h\(level)>\n")
+                             + content + "</h\(level)>\n")
         }
 
         /// GitHub's anchor slug: lower-cased, everything but letters, numbers,
@@ -381,6 +400,8 @@ public enum MarkdownHTML {
     /// keeps them from loading, so a render never touches the network.
     private struct ImageInliner: MarkupRewriter {
         let baseDirectory: URL
+        /// Shared across the body and footnotes for a preview request.
+        var remainingBytes: Int?
         /// Refuse to inline anything huge: it would bloat the HTML and stall
         /// the render for no reading benefit.
         static let sizeCap = 8 * 1024 * 1024
@@ -390,21 +411,82 @@ public enum MarkdownHTML {
             if let url = URL(string: source), url.scheme != nil { return image }
 
             let relative = source.removingPercentEncoding ?? source
-            let resolved = URL(fileURLWithPath: relative,
+            var resolved = URL(fileURLWithPath: relative,
                                relativeTo: baseDirectory).standardizedFileURL
             // Stay inside the document's folder; "../../secret.png" is not ours
             // to inline.
             guard resolved.path.hasPrefix(baseDirectory.path + "/") else { return image }
 
-            guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey]),
-                  let size = values.fileSize, size <= Self.sizeCap,
-                  let data = try? Data(contentsOf: resolved),
+            if remainingBytes != nil {
+                resolved = resolved.resolvingSymlinksInPath()
+                let folder = baseDirectory.resolvingSymlinksInPath().path
+                guard resolved.path.hasPrefix(folder + "/") else { return image }
+            }
+            let limit = min(Self.sizeCap, remainingBytes ?? Self.sizeCap)
+            guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize, size <= limit,
                   let type = UTType(filenameExtension: resolved.pathExtension),
-                  let mime = type.preferredMIMEType
+                  type.conforms(to: .image), let mime = type.preferredMIMEType,
+                  let file = try? FileHandle(forReadingFrom: resolved)
             else { return image }
+            defer { try? file.close() }
+            guard let data = try? file.read(upToCount: limit + 1), data.count <= limit
+            else { return image }
+            if let remainingBytes { self.remainingBytes = remainingBytes - data.count }
 
             var copy = image
             copy.source = "data:\(mime);base64,\(data.base64EncodedString())"
+            return copy
+        }
+    }
+
+    /// Quick Look is an interactive browser surface. Keep Markdown formatting
+    /// while rendering arbitrary embedded HTML as text; generated footnote and
+    /// heading HTML is added after this pass. The page's CSP adds a second layer
+    /// that blocks scripts, remote resources and embedded documents.
+    private struct PreviewContentFilter: MarkupRewriter {
+        mutating func visitHTMLBlock(_ block: HTMLBlock) -> Markup? {
+            let raw = block.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.hasPrefix("<!--"), raw.hasSuffix("-->") { return nil }
+            return CodeBlock(block.rawHTML)
+        }
+
+        mutating func visitInlineHTML(_ inline: InlineHTML) -> Markup? {
+            let raw = inline.rawHTML.lowercased()
+            if ["<br>", "<br/>", "<br />", "<sup>", "</sup>", "<sub>", "</sub>"].contains(raw) {
+                return InlineHTML(raw)
+            }
+            return Text(inline.rawHTML)
+        }
+
+        mutating func visitLink(_ link: Link) -> Markup? {
+            guard var copy = defaultVisit(link) as? Link else { return link }
+            if let destination = link.destination,
+               destination.hasPrefix("#") || ["https", "http", "mailto"].contains(URL(string: destination)?.scheme?.lowercased() ?? "") {
+                copy.destination = escape(destination)
+            } else {
+                copy.destination = nil
+            }
+            return copy
+        }
+
+        mutating func visitImage(_ image: Image) -> Markup? {
+            // Unavailable local assets and blocked remote images still have an
+            // accessible, readable label instead of an unexplained empty box.
+            let label = image.plainText.isEmpty ? "Image" : image.plainText
+            guard let source = image.source, source.lowercased().hasPrefix("data:image/") else {
+                return Text("[\(label)]")
+            }
+            return InlineHTML("<img src=\"\(escape(source))\" alt=\"\(escape(label))\" />")
+        }
+
+        mutating func visitCodeBlock(_ block: CodeBlock) -> Markup? {
+            var copy = block
+            if let language = copy.language,
+               language.range(of: "^[A-Za-z0-9_+-]+$", options: .regularExpression) == nil {
+                copy.language = nil
+            }
             return copy
         }
     }
