@@ -40,6 +40,18 @@ if [[ -f "$ROOT/Support/Assets.car" ]]; then
   cp "$ROOT/Support/Assets.car" "$APP/Contents/Resources/Assets.car"
 fi
 
+# Finder discovers the preview extension inside the installed app. Its version
+# must track the host so Sparkle replacements update both bundles together.
+PREVIEW="$APP/Contents/PlugIns/GlassineQuickLook.appex"
+mkdir -p "$PREVIEW/Contents/MacOS"
+cp "$ROOT/.build/$CONFIG/GlassineQuickLook" "$PREVIEW/Contents/MacOS/GlassineQuickLook"
+cp "$ROOT/Support/QuickLook/Info.plist" "$PREVIEW/Contents/Info.plist"
+printf 'XPC!????' > "$PREVIEW/Contents/PkgInfo"
+for key in CFBundleShortVersionString CFBundleVersion; do
+  value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist")"
+  /usr/libexec/PlistBuddy -c "Set :$key $value" "$PREVIEW/Contents/Info.plist"
+done
+
 # Sparkle. `swift build` links against the SwiftPM binary artifact but, unlike
 # Xcode, embeds nothing, so the framework is copied in by hand; the target's
 # linkerSettings add the matching @executable_path/../Frameworks rpath. ditto
@@ -72,6 +84,8 @@ fi
 # https://sparkle-project.org/documentation/sandboxing/ -- note Sparkle warns
 # against signing the app itself with --deep.
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" \
+  --entitlements "$ROOT/Support/QuickLook/GlassineQuickLook.entitlements" "$PREVIEW"
 codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" "$SPARKLE/XPCServices/Installer.xpc"
 codesign --force "${SIGN_OPTS[@]}" --preserve-metadata=entitlements \
   --sign "$SIGN_ID" "$SPARKLE/XPCServices/Downloader.xpc"

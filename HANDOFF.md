@@ -34,6 +34,69 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Markdown Finder Quick Look (unreleased; Codex, 2026-09-15).**
+  `Sources/GlassineQuickLook/PreviewProvider.swift` implements Apple's
+  `QLPreviewProvider` data-reply API. It returns self-contained HTML using
+  GlassineCore's existing Markdown parser, footnotes and Manuscript typography;
+  macOS supplies the interactive preview window. `MarkdownPreview` adds a
+  responsive reading column and system light/dark CSS. This does not run the
+  reader's offscreen PDF printing pipeline or change its style preferences.
+
+  A separate SwiftPM executable uses Apple's `_NSExtensionMain` entry point
+  and extension-only API/linker flags. `build.sh` wraps it in
+  `Contents/PlugIns/GlassineQuickLook.appex`, copies the host's version/build,
+  and signs the extension before the app. Identifier:
+  `com.epps.Glassine.QuickLook`; principal class:
+  `GlassineQuickLook.PreviewProvider`. Its only entitlements are App Sandbox
+  and user-selected read-only file access. Supported types are six Markdown
+  identifiers; it does not claim plain text or PDF.
+
+  The preview loader accepts UTF-8 and BOM-marked UTF-16, closes files after
+  bounded reads, and shows notices for empty files or files over 2 MiB. Preview
+  image inlining has an 8 MiB total shared across body/footnotes and rejects
+  paths and symlinks outside the document's folder. Inaccessible/remote images
+  show alt text; embedded data images work. The preview-only AST pass renders
+  arbitrary embedded HTML as text, permits simple br/sup/sub tags, hides HTML
+  comments, and strips unsafe link schemes. Generated footnotes and real
+  heading anchors remain live. The existing no-script/no-network CSP remains;
+  PDF output retains its private outline links and stylesheet snapshot hashes.
+  Math/Mermaid rendering, custom preview styles, thumbnails and persistent
+  access to sibling image folders are not included.
+
+  Validation: 153 Core tests and 77 macOS tests pass. New cases cover rich
+  Markdown, encoding/read errors, file/image budgets, symlinks and passive HTML.
+  A native WebKit test checks both appearances, heading/footnote targets, an
+  actual fragment navigation and blocked active content. Release-mode Developer
+  ID builds and deep/strict signature checks pass. Finder's Space-bar preview
+  rendered `.md` and `.markdown` fixtures in dark mode, including tables, task
+  lists, code, footnotes and an embedded icon. A sibling PNG showed its alt-text
+  fallback under Finder's file access. The first screenshot captured a loading
+  window; a later capture and a second file displayed the complete preview.
+  `qlmanage -p -o` crashed in ExtensionFoundation on this macOS 27 build, so the
+  actual Finder host, not that command, is the end-to-end verification.
+
+  Tested through `build/Glassine Quick Look Test.app`, identifier
+  `com.epps.Glassine.QuickLookTest`, automatic updates disabled, document handler
+  rank None. `lsregister -f` plus `pluginkit -a`/`-e use` registered its embedded
+  test provider. After verification its election was reset and the test app
+  unregistered; neither test nor production preview is left registered, and
+  Marked Quick Look's original registration/election is unchanged. Installing
+  the eventual release in Applications and enabling Glassine Markdown Preview
+  in System Settings is documented in README. The installed app was not replaced.
+
+  Final development app: `build/Glassine.app`. Logs and fixtures:
+  `build/quicklook-validation/`. Apple accepted notarization submission
+  `028bc74d-1e43-4698-a638-babc92a7af6d` on 2026-09-15 for source commit
+  `b1343c1`. Ticket stapling/validation, app and extension code-signature checks,
+  and Gatekeeper acceptance passed. The notarized development archive is
+  `build/quicklook-validation/Glassine-QuickLook-development.zip`, SHA-256
+  `a3dd952325a8f0fddcd5a008eef121b2bdb500a0e7987da0958a276b784d26f3`.
+  Branch `codex/markdown-quicklook` is pushed; draft PR:
+  https://github.com/danepps/glassine/pull/3
+  The extension remains unreleased. The published 1.8.0 release below does not
+  include it; the development bundle retains 1.8.0/build 15 pending the next
+  release version bump.
+
 - **Released 1.8.0 (Codex, 2026-09-15).** Build 15, release commit/tag
   `3a4405b` / `v1.8.0`, includes the six feature/fix sections immediately below.
   All 76 macOS tests and 147 Core tests passed before packaging. Apple accepted

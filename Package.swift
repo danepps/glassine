@@ -15,6 +15,18 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
+            name: "GlassineQuickLook",
+            dependencies: [.product(name: "GlassineCore", package: "Core")],
+            path: "Sources/GlassineQuickLook",
+            swiftSettings: [.unsafeFlags(["-application-extension"])],
+            // Apple's app-extension entry point, also used by Xcode's template.
+            // build.sh supplies the .appex wrapper and signs it before the app.
+            linkerSettings: [.unsafeFlags([
+                "-Xlinker", "-e", "-Xlinker", "_NSExtensionMain",
+                "-Xlinker", "-application_extension"
+            ])]
+        ),
+        .executableTarget(
             name: "Glassine",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
