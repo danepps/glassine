@@ -46,6 +46,8 @@ public final class ReaderPage: PDFPage {
     /// PDFKit asks the virtual bounds accessor when serializing, including
     /// artBox. Suppress presentation bounds on the output thread only, keeping
     /// concurrent on-screen rendering intact. Restore nesting even on errors.
+    /// The body must finish copying or serializing synchronously on this thread;
+    /// the guard does not propagate to asynchronous work or PDFKit print workers.
     public static func withOriginalBounds<T>(_ body: () throws -> T) rethrows -> T {
         let dictionary = Thread.current.threadDictionary
         let previous = dictionary[originalBoundsKey]

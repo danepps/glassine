@@ -60,7 +60,14 @@ struct ContinuousSidebarTests {
             context.endPDFPage()
         }
         context.closePDF()
-        let source = try #require(PDFDocument(data: data as Data))
+        let drawn = try #require(PDFDocument(data: data as Data))
+        // Build a fresh page tree before adding bookmarks. On macOS 27,
+        // PDFKit can omit newly added outlines when reusing the source PDF's
+        // unchanged page tree during serialization.
+        let source = PDFDocument()
+        for index in 0..<drawn.pageCount {
+            source.insert(try #require(drawn.page(at: index)), at: source.pageCount)
+        }
         let root = PDFOutline()
         for heading in headings {
             let page = try #require(source.page(at: heading.page))

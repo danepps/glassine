@@ -23,6 +23,8 @@ public struct HighlightExcerpt: Sendable {
 }
 
 public enum HighlightMarkdown {
+    /// Excerpts must already be in page order and the desired order within each
+    /// page. Adjacent excerpts from the same page share a heading.
     public static func render(_ excerpts: [HighlightExcerpt], title: String, sourceURL: URL?) -> String {
         var lines = ["# Highlights — \(escape(title))", ""]
         if let sourceURL {
@@ -52,10 +54,27 @@ public enum HighlightMarkdown {
     /// PDF text and notes are plain text, not executable HTML or Markdown.
     private static func escape(_ text: String) -> String {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-        let escaped = normalized.map { "\\`*_[]<>#|~".contains($0) ? "\\\($0)" : String($0) }.joined()
-        return escaped.components(separatedBy: "\n").map { line in
-            if line.hasPrefix("- ") || line.hasPrefix("+ ") { return "\\" + line }
-            return line.replacingOccurrences(of: #"^(\s*\d+)([.)]) "#, with: #"$1\\$2 "#, options: .regularExpression)
+        return normalized.components(separatedBy: "\n").map { line in
+            // Entity-encode indentation so literal tabs/spaces cannot start a
+            // code block or nested list, even after a blank line or inside a quote.
+            let indentation = line.prefix { $0 == " " || $0 == "\t" }
+            let prefix = indentation.map { $0 == "\t" ? "&#9;" : "&#32;" }.joined()
+            var escaped = line.dropFirst(indentation.count).map { character -> String in
+                if character == "&" { return "&amp;" }
+                return "\\`*_[]<>#|~".contains(character) ? "\\\(character)" : String(character)
+            }.joined()
+            // Leading hyphens and equals signs also form setext headings and
+            // thematic breaks; escaping only list markers misses those blocks.
+            if escaped.hasPrefix("-") {
+                // Escape the entire separator, including its remaining dashes
+                // so smart punctuation cannot turn them into an en/em dash.
+                escaped = escaped.replacingOccurrences(of: "-", with: "\\-")
+            } else if let first = escaped.first, "+=".contains(first) {
+                escaped = "\\" + escaped
+            }
+            escaped = escaped.replacingOccurrences(of: #"^(\d+)([.)])(?=[ \t]|$)"#,
+                with: #"$1\\$2"#, options: .regularExpression)
+            return prefix + escaped
         }.joined(separator: "\n")
     }
 }

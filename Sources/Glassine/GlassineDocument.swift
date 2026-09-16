@@ -528,11 +528,18 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
+    /// Cheap enough for menu validation; preparing a print copy happens only
+    /// after the user invokes Print. Markdown waits for its first render.
+    var canPrint: Bool {
+        guard let pdf else { return false }
+        return !pdf.isLocked && pdf.allowsPrinting && pdf.pageCount > 0
+    }
+
     /// A detached print source keeps transient display bounds and find ink out
     /// of PDFKit's print workers. Copying also retains the current unlocked
     /// permission state; reopening serialized encrypted bytes would relock it.
     func documentForPrinting() -> PDFDocument? {
-        guard let pdf, !pdf.isLocked, pdf.allowsPrinting,
+        guard canPrint, let pdf,
               let snapshot = ReaderPage.withOriginalBounds({ pdf.copy() as? PDFDocument }),
               !snapshot.isLocked, snapshot.allowsPrinting else { return nil }
         return snapshot

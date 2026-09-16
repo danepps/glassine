@@ -42,6 +42,10 @@ struct ReaderModeSettings: Codable, Equatable {
     private static let key = "readerModeDocuments"
     static let maximumStoredDocuments = 500
 
+    // Clean legacy/corrupt records on the first save for each defaults store.
+    // Weak references allow isolated stores to disappear without retaining them.
+    @MainActor private static let cleanedStores = NSHashTable<UserDefaults>.weakObjects()
+
     /// The existing path -> JSON Data format stays readable by older builds.
     /// The optional flat timestamp only controls eviction; old entries have
     /// no timestamp and are pruned first, with path order breaking ties.
@@ -77,7 +81,7 @@ struct ReaderModeSettings: Codable, Equatable {
         return value.validated
     }
 
-    func save(for url: URL?, defaults: UserDefaults = Prefs.defaults) {
+    @MainActor func save(for url: URL?, defaults: UserDefaults = Prefs.defaults) {
         guard let url else { return }
         let path = url.standardizedFileURL.path
         let value = validated
@@ -90,16 +94,21 @@ struct ReaderModeSettings: Codable, Equatable {
             entries[path] = data
         }
 
-        let decoder = JSONDecoder()
         var ages: [String: Double] = [:]
-        for (entryPath, raw) in entries {
-            guard let data = raw as? Data,
-                  let stored = try? decoder.decode(StoredSettings.self, from: data),
-                  stored.settings != Self() else {
-                entries.removeValue(forKey: entryPath)
-                continue
+        // Slider ticks still persist immediately, but only maintenance/eviction
+        // decodes other files' records. The ordinary save encodes just this file.
+        if !Self.cleanedStores.contains(defaults) || entries.count > Self.maximumStoredDocuments {
+            let decoder = JSONDecoder()
+            for (entryPath, raw) in entries {
+                guard let data = raw as? Data,
+                      let stored = try? decoder.decode(StoredSettings.self, from: data),
+                      stored.settings != Self() else {
+                    entries.removeValue(forKey: entryPath)
+                    continue
+                }
+                ages[entryPath] = stored.lastSaved
             }
-            ages[entryPath] = stored.lastSaved
+            Self.cleanedStores.add(defaults)
         }
         if entries.count > Self.maximumStoredDocuments {
             let oldest = entries.keys.filter { $0 != path }.sorted { lhs, rhs in

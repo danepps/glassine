@@ -1,4 +1,5 @@
 import Foundation
+import Markdown
 import Testing
 @testable import GlassineCore
 
@@ -73,5 +74,52 @@ struct HighlightMarkdownTests {
         #expect(!markdown.contains("> A comment"))
         #expect(!markdown.contains("file:"))
         #expect(markdown.contains("Custom color · Page 1"))
+    }
+
+    @Test("Plain-text block markers and indentation cannot create Markdown structure", arguments: [
+        "Key point\n---", "Key point\n===", "Key point\n-", "Key point\n--",
+        "---", "- - -", "  ---", "\t---", "Key point\n\n    Indented text",
+        "Key point\n\n\tIndented text", "Key point\n\n  - item", "Key point\n\n + item",
+        "Key point\n\n  1. item", "Key point\n1)\titem", "Key point\n\n    # Heading",
+        "Key point\n\n```swift\ncode\n```", "Key point\n\n> nested quote"
+    ])
+    func literalBlocks(_ text: String) throws {
+        let markdown = HighlightMarkdown.render([
+            HighlightExcerpt(text: text, note: text, pageIndex: 0, pageLabel: "1", color: "Yellow")
+        ], title: "Reading", sourceURL: nil)
+        let document = Markdown.Document(parsing: markdown)
+        let all = nodes(document)
+        #expect(all.compactMap { $0 as? Heading }.map(\.level) == [1, 2])
+        #expect(all.filter { $0 is ThematicBreak }.count == 1) // The export's own separator.
+        #expect(all.filter { $0 is BlockQuote }.count == 1)
+        #expect(!all.contains { $0 is CodeBlock || $0 is ListItem || $0 is HTMLBlock })
+        let quote = try #require(all.compactMap { $0 as? BlockQuote }.first)
+        #expect(literalText(quote) == text)
+        let noteParagraphs = Array(document.children).compactMap { $0 as? Paragraph }
+        let note = noteParagraphs.dropFirst().dropLast().map { literalText($0) }.joined(separator: "\n\n")
+        #expect(note == "Note: " + text)
+    }
+
+    @Test("HTML entity spellings in literal text are preserved")
+    func literalEntities() throws {
+        let text = "A & B &copy; &#35; &lt;script&gt;"
+        let markdown = HighlightMarkdown.render([
+            HighlightExcerpt(text: text, note: text, pageIndex: 0, pageLabel: "1", color: "Yellow")
+        ], title: "Reading", sourceURL: nil)
+        let all = nodes(Markdown.Document(parsing: markdown))
+        let quote = try #require(all.compactMap { $0 as? BlockQuote }.first)
+        #expect(literalText(quote) == text)
+        #expect(all.compactMap { $0 as? Paragraph }.contains { literalText($0) == "Note: " + text })
+    }
+
+    private func nodes(_ node: any Markup) -> [any Markup] {
+        [node] + node.children.flatMap { nodes($0) }
+    }
+
+    private func literalText(_ node: any Markup) -> String {
+        if let text = node as? Text { return text.string }
+        if node is SoftBreak || node is LineBreak { return "\n" }
+        let separator = node is BlockQuote ? "\n\n" : ""
+        return node.children.map { literalText($0) }.joined(separator: separator)
     }
 }

@@ -1065,6 +1065,50 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         sidebarItem?.isCollapsed = false
     }
 
+    /// The window owns Print so PDFKit cannot intercept it when the page view,
+    /// sidebar, or a text field has focus.
+    @objc func printReaderDocument(_ sender: Any?) {
+        guard glassineDocument.canPrint else { return }
+        guard glassineDocument.needsPaginatedOutput else {
+            // Print workers cannot inherit the thread-local output guard.
+            // Give them a detached copy with original bounds and no find ink.
+            guard let document = glassineDocument.documentForPrinting() else {
+                glassineDocument.presentError(Self.printPreparationError)
+                return
+            }
+            runPrintOperation(for: document)
+            return
+        }
+        glassineDocument.paginatedDocumentForOutput { [weak self] result in
+            switch result {
+            case .success(let document):
+                self?.runPrintOperation(for: document)
+            case .failure(let error):
+                self?.glassineDocument.presentError(error)
+            }
+        }
+    }
+
+    private func runPrintOperation(for document: PDFDocument) {
+        // Match PDFView's default scale and avoid adding a second margin inset
+        // to Markdown already typeset to the paper size.
+        guard let operation = document.printOperation(for: NSPrintInfo.shared,
+                                                      scalingMode: .pageScaleNone,
+                                                      autoRotate: true) else {
+            glassineDocument.presentError(Self.printPreparationError)
+            return
+        }
+        if let window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
+    private static let printPreparationError = NSError(
+        domain: "com.epps.Glassine.Printing", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Glassine could not prepare this document for printing."])
+
     @objc private func readerScaleChanged() { readerMode.scaleDidChange() }
 
     @objc func toggleReaderMode(_ sender: Any?) { readerMode.toggle() }
@@ -1101,6 +1145,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(printReaderDocument(_:)):
+            return glassineDocument.canPrint
         case #selector(toggleReaderMode(_:)):
             menuItem.state = readerMode.isEnabled ? .on : .off
             return readerMode.isAvailable

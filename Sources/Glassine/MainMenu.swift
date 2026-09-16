@@ -98,7 +98,9 @@ enum MainMenu {
         add(menu, "Save", #selector(NSDocument.save(_:)), key: "s")
         add(menu, "Save As…", #selector(NSDocument.saveAs(_:)), key: "s", modifiers: [.command, .shift])
         menu.addItem(.separator())
-        add(menu, "Print…", #selector(NSDocument.printDocument(_:)), key: "p")
+        // PDFView implements printDocument: itself, bypassing our output copy
+        // and Markdown pagination. Use a reader-owned action through the chain.
+        add(menu, "Print…", #selector(ReaderWindowController.printReaderDocument(_:)), key: "p")
         menu.addItem(.separator())
         // ⇧⌘E because ⌘E is Use Selection for Find.
         add(menu, "Export as PDF…", #selector(GlassineDocument.exportAsPDF(_:)),

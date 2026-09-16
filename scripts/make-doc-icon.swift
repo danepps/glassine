@@ -1,16 +1,17 @@
-// make-doc-icon.swift — builds Support/MarkdownDocument.icns, the Finder
-// document icon for Markdown files.
+// make-doc-icon.swift — builds matching Finder document icons for Markdown
+// and PDF files, using the same sheet, fold, rim and coloured rules.
 //
 // Usage:
-//   swift scripts/make-doc-icon.swift [output.icns] [--keep-iconset]
+//   swift scripts/make-doc-icon.swift [output.icns] [--pdf] [--keep-iconset]
 //
+//   --pdf          Build Support/PDFDocument.icns instead of MarkdownDocument.icns.
 //   --keep-iconset  Leave the intermediate .iconset beside the output so the
 //                   individual sizes can be inspected.
 //
 // The app icon's drawing language on a single sheet: the same folded page, a
-// coral rim, and the four coloured rules — with the M↓ mark above them saying
-// which kind of document this is. Light variant only: Finder draws one document
-// icon whatever the appearance is. Each size is drawn at its own pixel
+// coral rim, and the four coloured rules — with an M↓ or PDF mark above them
+// saying which kind of document this is. Light variant only: Finder draws one
+// document icon whatever the appearance is. Each size is drawn at its own pixel
 // resolution rather than downsampled, so the 16 and 32 px tiles can snap their
 // edges to the pixel grid and carry a heavier mark. Pure CoreGraphics +
 // ImageIO, so it runs as a plain script.
@@ -105,7 +106,66 @@ func tuning(for side: Int) -> Tuning {
 
 // MARK: - Drawing
 
-func render(side: Int) -> CGImage {
+// Geometric lettering keeps PDF's weight and slate ink consistent with M↓,
+// without depending on an installed font. At 16 px, simplify to a bold P just
+// as Markdown simplifies to M; at 32 px and above, spell out the file type.
+func drawPDFMark(in ctx: CGContext, sheet: CGRect, side: Int, unit: CGFloat) {
+    let compact = side == 16
+    let h: CGFloat = compact ? 9 : side == 32 ? 8 : (192 * unit).rounded()
+    let stroke: CGFloat = side <= 32 ? 2 : max(1, (h * 0.22).rounded())
+    let pWidth: CGFloat = compact ? 8 : (h * 0.60).rounded()
+    let dWidth = (h * 0.68).rounded()
+    let fWidth = (h * 0.55).rounded()
+    let gap = max(1, (h * 0.15).rounded())
+    let total = compact ? pWidth : pWidth + dWidth + fWidth + 2 * gap
+    let x = (sheet.midX - total / 2).rounded()
+    // Keep the full PDF label below the folded corner, including its F.
+    let center = compact ? sheet.midY : (664 - 512) * unit + CGFloat(side) / 2
+    let y = (center - h / 2).rounded()
+    let bowlBottom = max(stroke, (h * 0.38).rounded())
+
+    func bowl(left: CGFloat, bottom: CGFloat, width: CGFloat, height: CGFloat) -> CGPath {
+        let path = CGMutablePath()
+        let shoulder = left + width * 0.48
+        let right = left + width
+        let top = bottom + height
+        path.move(to: CGPoint(x: left, y: bottom))
+        path.addLine(to: CGPoint(x: shoulder, y: bottom))
+        path.addCurve(to: CGPoint(x: right, y: bottom + height / 2),
+                      control1: CGPoint(x: right, y: bottom),
+                      control2: CGPoint(x: right, y: bottom + height * 0.20))
+        path.addCurve(to: CGPoint(x: shoulder, y: top),
+                      control1: CGPoint(x: right, y: top - height * 0.20),
+                      control2: CGPoint(x: right, y: top))
+        path.addLine(to: CGPoint(x: left, y: top))
+        path.closeSubpath()
+        return path
+    }
+
+    ctx.setFillColor(inkColor)
+    // P: a straight stem and a bowl with an open counter.
+    ctx.addPath(bowl(left: x, bottom: y + bowlBottom, width: pWidth,
+                     height: h - bowlBottom))
+    ctx.addPath(bowl(left: x + stroke, bottom: y + bowlBottom + stroke,
+                     width: pWidth - 2 * stroke, height: h - bowlBottom - 2 * stroke))
+    ctx.fillPath(using: .evenOdd)
+    ctx.fill(CGRect(x: x, y: y, width: stroke, height: h))
+
+    guard !compact else { return }
+    let dx = x + pWidth + gap
+    ctx.addPath(bowl(left: dx, bottom: y, width: dWidth, height: h))
+    ctx.addPath(bowl(left: dx + stroke, bottom: y + stroke,
+                     width: dWidth - 2 * stroke, height: h - 2 * stroke))
+    ctx.fillPath(using: .evenOdd)
+
+    let fx = dx + dWidth + gap
+    ctx.fill(CGRect(x: fx, y: y, width: stroke, height: h))
+    ctx.fill(CGRect(x: fx, y: y + h - stroke, width: fWidth, height: stroke))
+    ctx.fill(CGRect(x: fx, y: y + bowlBottom, width: max(stroke, (fWidth * 0.82).rounded()),
+                    height: stroke))
+}
+
+func render(side: Int, pdf: Bool) -> CGImage {
     let t = tuning(for: side)
     let s = CGFloat(side)
     let unit = s / 1024 * t.zoom
@@ -185,6 +245,11 @@ func render(side: Int) -> CGImage {
                 radius: ruleH <= 2 ? 0 : ruleH / 2, ruleColors[index], in: ctx)
     }
 
+    if pdf {
+        drawPDFMark(in: ctx, sheet: sheet, side: side, unit: unit)
+        return ctx.makeImage()!
+    }
+
     let h = t.markHeight ?? size(markSize)
     let stroke = t.markStroke ?? max(1, (h * 0.25).rounded())
     let mW = t.markWidth ?? (h * 1.02).rounded()
@@ -248,9 +313,11 @@ func write(_ image: CGImage, to url: URL) {
 
 var outputPath: String?
 var keepIconset = false
+var pdf = false
 for argument in CommandLine.arguments.dropFirst() {
     switch argument {
     case "--keep-iconset": keepIconset = true
+    case "--pdf": pdf = true
     default:
         guard !argument.hasPrefix("--") else {
             fputs("unknown option \(argument)\n", stderr)
@@ -263,7 +330,7 @@ for argument in CommandLine.arguments.dropFirst() {
 let repoRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent()
 let output = URL(fileURLWithPath: outputPath
-    ?? repoRoot.appendingPathComponent("Support/MarkdownDocument.icns").path)
+    ?? repoRoot.appendingPathComponent("Support/\(pdf ? "PDFDocument" : "MarkdownDocument").icns").path)
 
 let iconset = output.deletingLastPathComponent()
     .appendingPathComponent(output.deletingPathExtension().lastPathComponent + ".iconset")
@@ -278,7 +345,7 @@ let variants: [(points: Int, scale: Int)] = [
 var images: [Int: CGImage] = [:]
 for variant in variants {
     let side = variant.points * variant.scale
-    let image = images[side] ?? render(side: side)
+    let image = images[side] ?? render(side: side, pdf: pdf)
     images[side] = image
     let suffix = variant.scale == 1 ? "" : "@2x"
     write(image, to: iconset.appendingPathComponent(

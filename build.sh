@@ -33,9 +33,9 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [[ -f "$ROOT/Support/Glassine.icns" ]]; then
   cp "$ROOT/Support/Glassine.icns" "$APP/Contents/Resources/Glassine.icns"
 fi
-if [[ -f "$ROOT/Support/MarkdownDocument.icns" ]]; then
-  cp "$ROOT/Support/MarkdownDocument.icns" "$APP/Contents/Resources/MarkdownDocument.icns"
-fi
+for icon in MarkdownDocument PDFDocument; do
+  cp "$ROOT/Support/$icon.icns" "$APP/Contents/Resources/$icon.icns"
+done
 if [[ -f "$ROOT/Support/Assets.car" ]]; then
   cp "$ROOT/Support/Assets.car" "$APP/Contents/Resources/Assets.car"
 fi

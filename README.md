@@ -240,6 +240,10 @@ fallback for macOS 14 and 15, drawing every size at its own resolution rather
 than downsampling 1024. `swift scripts/make-doc-icon.swift` builds
 `Support/MarkdownDocument.icns`, the Finder document icon for `.md` files: one
 sheet of the same family, coral-rimmed, with an M↓ over the four rules.
+`swift scripts/make-doc-icon.swift --pdf` builds the matching
+`Support/PDFDocument.icns`, with a PDF mark. Both are bundled by `build.sh` and
+registered in `Support/Info.plist`. At 16 px the marks simplify to M and P;
+larger sizes retain the full marks and colored rules.
 
 ## License
 

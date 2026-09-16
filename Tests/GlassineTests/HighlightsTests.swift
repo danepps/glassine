@@ -178,6 +178,34 @@ struct HighlightsTests {
         #expect(pdfView.validateMenuItem(item))
     }
 
+    @Test("Deleting noncontiguous rows reselects near the first deletion, regardless of click order",
+          arguments: [[1, 4], [4, 1], [6, 7]])
+    func multipleDeletionSelection(_ rows: [Int]) throws {
+        let (doc, folder) = try fixture()
+        defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+        let page = try #require(doc.pdf?.page(at: 0))
+        for index in 0..<8 {
+            let annotation = PDFAnnotation(bounds: CGRect(x: 72, y: 640 - index * 40, width: 150, height: 18),
+                                           forType: .highlight, withProperties: nil)
+            annotation.contents = "Note \(index)"
+            page.addAnnotation(annotation)
+        }
+        let sidebar = HighlightsViewController()
+        sidebar.document = doc
+        _ = sidebar.view
+        let original = sidebar.highlights.map(\.annotation)
+        for (index, row) in rows.enumerated() {
+            sidebar.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: index > 0)
+        }
+        edit(doc) { sidebar.deleteHighlight(nil) }
+        #expect(sidebar.highlights.count == 6)
+        let expectedIndex = rows.min() == 1 ? 2 : 5
+        #expect(sidebar.selectedHighlight?.annotation === original[expectedIndex])
+        #expect(rows.allSatisfy { row in !sidebar.highlights.contains { $0.annotation === original[row] } })
+        doc.undoManager?.undo()
+        #expect(doc.savedHighlights.count == 8)
+    }
+
     @Test("Save As preserves the source, existing annotations and rotated-page geometry")
     func saveAs() async throws {
         let (doc, folder) = try fixture()

@@ -102,6 +102,34 @@ struct ReaderModeSettingsTests {
             #expect(entries[path(0)] == nil && entries[path(1)] == nil)
             #expect(entries[path(2)] != nil && entries[path(count)] != nil)
             #expect(ReaderModeSettings.load(for: file, defaults: defaults) == settings)
+
+            // Subsequent saves still enforce the cap after initial maintenance.
+            let nextFile = URL(fileURLWithPath: "/ReaderModeSettingsTests/next.pdf")
+            settings.save(for: nextFile, defaults: defaults)
+            let nextEntries = try #require(defaults.dictionary(forKey: storageKey))
+            #expect(nextEntries.count == count && nextEntries[nextFile.path] != nil)
+            #expect(nextEntries[file.path] == nil) // The only non-future timestamp.
+        }
+    }
+
+    @Test("Rapid margin changes persist the last value immediately without rewriting other records")
+    func rapidChanges() throws {
+        try withDefaults { defaults in
+            var settings = ReaderModeSettings()
+            settings.enabled = true
+            let file = URL(fileURLWithPath: "/ReaderModeSettingsTests/slider.pdf")
+            let other = URL(fileURLWithPath: "/ReaderModeSettingsTests/other.pdf")
+            settings.save(for: other, defaults: defaults)
+            let original = try #require(defaults.dictionary(forKey: storageKey)?[other.path] as? Data)
+            for tick in 0..<120 {
+                settings.padding = Double(tick % 49)
+                settings.save(for: file, defaults: defaults)
+            }
+            #expect(ReaderModeSettings.load(for: file, defaults: defaults) == settings)
+            #expect(defaults.dictionary(forKey: storageKey)?[other.path] as? Data == original)
+            ReaderModeSettings().save(for: file, defaults: defaults)
+            #expect(defaults.dictionary(forKey: storageKey)?[file.path] == nil)
+            #expect(defaults.dictionary(forKey: storageKey)?[other.path] as? Data == original)
         }
     }
 

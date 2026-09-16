@@ -506,42 +506,4 @@ final class ReaderViewController: NSViewController {
         pdfView.autoScales = false
         pdfView.scaleFactor = 1
     }
-
-    /// Print original page geometry and permanent annotations, without reader
-    /// crops or transient find ink. Continuous Markdown is typeset as regular
-    /// pages first, through the same output path used by Export as PDF.
-    @objc func printDocument(_ sender: Any?) {
-        guard glassineDocument.needsPaginatedOutput else {
-            // Every ordinary print uses an independent document. Find overlays
-            // also exist when Reader Mode is off, and print workers cannot
-            // inherit the reader's thread-local output guard.
-            guard let document = glassineDocument.documentForPrinting() else { return }
-            runPrintOperation(for: document)
-            return
-        }
-        glassineDocument.paginatedDocumentForOutput { [weak self] result in
-            switch result {
-            case .success(let document):
-                // This is a fresh paginated render, with no reader/find state.
-                self?.runPrintOperation(for: document)
-            case .failure(let error):
-                self?.glassineDocument.presentError(error)
-            }
-        }
-    }
-
-    private func runPrintOperation(for document: PDFDocument) {
-        // PDFView.print(with:autoRotate:) uses .pageScaleNone (PDFView.h), so
-        // this preserves ordinary printing's existing size in Reader Mode too.
-        // It also avoids adding a second printer-margin inset to Markdown that
-        // was already typeset to the paper size.
-        guard let operation = document.printOperation(for: NSPrintInfo.shared,
-                                                      scalingMode: .pageScaleNone,
-                                                      autoRotate: true) else { return }
-        if let window = view.window {
-            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
-        } else {
-            operation.run()
-        }
-    }
 }

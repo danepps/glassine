@@ -140,7 +140,7 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
     @objc func deleteHighlight(_ sender: Any?) {
         let selected = selectedHighlights
         guard !selected.isEmpty, selected.allSatisfy({ document?.canEdit($0.annotation) == true }) else { return }
-        let row = table.selectedRow
+        let row = table.selectedRowIndexes.first ?? 0
         document?.removeHighlights(selected.map(\.annotation))
         refresh()
         if !highlights.isEmpty {
