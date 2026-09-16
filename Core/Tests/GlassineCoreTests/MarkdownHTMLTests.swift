@@ -100,6 +100,23 @@ struct MarkdownHTMLTests {
         #expect(under.html.contains("data:image/png;base64,"))
     }
 
+    @Test("The reader inlines image and PDF figures, and nothing else")
+    func imageTypes() {
+        let root = TempDirectory()
+        root.write(Data([0x25, 0x50, 0x44, 0x46, 0x2D]), to: "figure.pdf")
+        root.write(Data("plain".utf8), to: "notes.txt")
+
+        // A PDF figure is what a pandoc or LaTeX workflow produces, and WebKit
+        // draws it in an <img>; it must keep inlining in the reader.
+        let figure = MarkdownHTML.body(fromMarkdown: "![fig](figure.pdf)", baseDirectory: root.url)
+        #expect(figure.html.contains("data:application/pdf;base64,"))
+
+        // A file that is not drawable is left as its reference, not embedded.
+        let text = MarkdownHTML.body(fromMarkdown: "![notes](notes.txt)", baseDirectory: root.url)
+        #expect(!text.html.contains("data:"))
+        #expect(text.html.contains("notes.txt"))
+    }
+
     @Test("Word count is over the plain text, not the markup")
     func wordCount() {
         let markdown = """

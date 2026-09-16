@@ -137,12 +137,14 @@ On older macOS versions, find Quick Look under the Extensions settings.
 
 The preview uses the built-in Manuscript style at 12 pt, independently of the
 reader's style preferences. Files over 2 MiB show an Open in Glassine notice.
-Embedded images work; local images require the file access macOS grants the
-extension, and inaccessible images show their alt text. Relative images are
-limited to the document's folder and an 8 MiB total. Remote images and scripts
-do not load. Embedded HTML is shown as text, except simple line breaks and
-superscript/subscript tags; HTML comments stay hidden. Math and Mermaid blocks
-are shown as source. PDF previews continue to use macOS's built-in provider.
+Images embedded as `data:` URIs display. Image files next to the document do
+not: macOS sandboxes the extension to the Markdown file itself, so a relative
+image shows its alt text in Finder, and only the reader inlines it. Remote
+images and scripts do not load. Embedded HTML is shown as text, except line
+breaks and bare formatting tags (`<u>`, `<b>`, `<i>`, `<em>`, `<strong>`,
+`<s>`, `<sup>`, `<sub>`, `<kbd>`, `<mark>`, `<small>`); HTML comments stay
+hidden. Math and Mermaid blocks are shown as source. PDF previews continue to
+use macOS's built-in provider.
 
 [extension-settings]: https://support.apple.com/guide/mac-help/mtusr003/mac
 

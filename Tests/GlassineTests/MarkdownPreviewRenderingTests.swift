@@ -11,6 +11,17 @@ struct MarkdownPreviewRenderingTests {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("GlassinePreview-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
+        let pdf = NSMutableData()
+        var figureBounds = CGRect(x: 0, y: 0, width: 180, height: 120)
+        let consumer = try #require(CGDataConsumer(data: pdf))
+        let context = try #require(CGContext(consumer: consumer, mediaBox: &figureBounds, nil))
+        context.beginPDFPage(nil)
+        context.setFillColor(CGColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 1))
+        context.fill(figureBounds.insetBy(dx: 10, dy: 10))
+        context.endPDFPage()
+        context.closePDF()
+        let pdfData = pdf as Data
+        try pdfData.write(to: folder.appendingPathComponent("Figure.pdf"))
         let file = folder.appendingPathComponent("Preview.md")
         try """
         # Quick Look
@@ -24,6 +35,10 @@ struct MarkdownPreviewRenderingTests {
         | Name | Value |
         | --- | --- |
         | One | Two |
+
+        ![Embedded PDF](data:application/pdf;base64,\(pdfData.base64EncodedString()))
+
+        ![Local PDF](Figure.pdf)
 
         [^note]: A readable footnote.
         """.write(to: file, atomically: true, encoding: .utf8)
@@ -54,6 +69,8 @@ struct MarkdownPreviewRenderingTests {
             #expect(attack == "undefined")
             let tables = try await web.evaluateJavaScript("document.querySelectorAll('table').length") as? Int
             #expect(tables == 1)
+            let renderedFigures = try await web.evaluateJavaScript("Array.from(document.images).filter(img => img.complete && img.naturalWidth === 180 && img.naturalHeight === 120).length") as? Int
+            #expect(renderedFigures == 2, "Embedded and local PDF figures must render in both appearances")
             let broken = try await web.evaluateJavaScript("Array.from(document.querySelectorAll('a[href^=\"#\"]')).filter(a => !document.getElementById(decodeURIComponent(a.hash.slice(1)))).length") as? Int
             #expect(broken == 0, "All heading and footnote links must have a target")
             _ = try await web.evaluateJavaScript("document.querySelector('a[href=\"#destination\"]').click()")

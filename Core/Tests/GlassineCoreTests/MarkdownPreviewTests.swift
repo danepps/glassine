@@ -68,6 +68,9 @@ struct MarkdownPreviewTests {
 
         <!-- This comment should stay hidden. -->
 
+        Mid-sentence <!-- an inline aside --> text with <U>underline</U>, a
+        <span onclick="alert(1)">span</span> and a [sibling](docs/other.md) link.
+
         Footnote.[^note]
 
         [^note]: <iframe src="https://example.com"></iframe>
@@ -81,6 +84,17 @@ struct MarkdownPreviewTests {
         #expect(html.contains("<sup>2</sup><br>"))
         #expect(html.contains("[Remote image]"))
         #expect(!html.contains("This comment should stay hidden"))
+        // An inline comment is dropped like a block one; a bare formatting tag
+        // survives; a tag with attributes is shown as text; a link that lost
+        // its destination is an anchor without an href, styled as plain text.
+        #expect(!html.contains("an inline aside"))
+        #expect(html.contains("<u>underline</u>"))
+        #expect(!html.contains("<span"))
+        #expect(html.contains("&lt;span onclick="))
+        #expect(html.contains("span&lt;/span&gt;"))
+        #expect(html.contains("<a>sibling</a>"))
+        #expect(!html.contains("docs/other.md"))
+        #expect(html.contains("a:not([href]) { color: inherit; }"))
         #expect(html.contains("default-src 'none'; img-src data:; style-src 'unsafe-inline'"))
     }
 
@@ -131,6 +145,60 @@ struct MarkdownPreviewTests {
         #expect(html.contains("alt=\"Inside\""))
         #expect(html.contains("[Symlink]"))
         #expect(html.contains("[Missing]"))
+    }
+
+    @Test("Local and embedded PDF figures survive in preview bodies and footnotes")
+    func pdfFigures() throws {
+        let folder = TempDirectory()
+        let pdf = makeTextPDFData(pages: ["A PDF figure"])
+        folder.write(pdf, to: "Figure.pdf")
+        let encoded = pdf.base64EncodedString()
+        for source in ["Figure.pdf", "data:application/pdf;base64,\(encoded)",
+                       "DATA:APPLICATION/PDF;base64,\(encoded)",
+                       "data:application/pdf;version=1.3;base64,\(encoded)"] {
+            let html = try render("""
+            ![Figure](\(source))
+
+            Note.[^note]
+
+            [^note]: ![Footnote figure](\(source))
+            """, folder: folder)
+            let imageCount = html.components(separatedBy: "<img ").count - 1
+            #expect(imageCount == 2)
+        }
+
+        // Accept the exact PDF media type, not a prefix that admits other
+        // application types or arbitrary HTML documents.
+        for mediaType in ["application/pdf-other", "application/pdf+xml", "text/html"] {
+            let html = try render("![Unsupported](data:\(mediaType);base64,\(encoded))", folder: folder)
+            #expect(!html.contains("<img "))
+            #expect(html.contains("[Unsupported]"))
+        }
+    }
+
+    @Test("PDF figures share the preview image budget with PNGs and footnotes")
+    func pdfImageBudget() throws {
+        let folder = TempDirectory()
+        var pdf = makeTextPDFData(pages: ["A large PDF figure"])
+        pdf.append(Data("\n%".utf8))
+        pdf.append(Data(repeating: 0x20, count: 5 * 1024 * 1024 - pdf.count))
+        folder.write(pdf, to: "Large.pdf")
+        let png = try #require(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZuoAAAAASUVORK5CYII="))
+        folder.write(png, to: "Small.png")
+        let html = try render("""
+        ![PDF figure](Large.pdf)
+
+        ![PNG figure](Small.png)
+
+        Note.[^note]
+
+        [^note]: ![Over budget](Large.pdf)
+        """, folder: folder)
+        let pdfCount = html.components(separatedBy: "src=\"data:application/pdf;base64,").count - 1
+        let pngCount = html.components(separatedBy: "src=\"data:image/png;base64,").count - 1
+        #expect(pdfCount == 1)
+        #expect(pngCount == 1)
+        #expect(html.contains("[Over budget]"))
     }
 
     @Test("The image budget spans the body and footnotes")

@@ -184,7 +184,7 @@ public enum MarkdownHTML {
         let base = baseDirectory?.standardizedFileURL
         var inliner = base.map {
             ImageInliner(baseDirectory: $0,
-                         remainingBytes: output == .preview ? 8 * 1024 * 1024 : nil)
+                         remainingBytes: output == .preview ? ImageInliner.sizeCap : nil)
         }
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
@@ -398,6 +398,11 @@ public enum MarkdownHTML {
     /// Rewrites relative image sources that point inside the document's own
     /// folder into `data:` URIs. Remote sources are left alone and the CSP then
     /// keeps them from loading, so a render never touches the network.
+    ///
+    /// In a Finder preview the sandbox grants the extension the Markdown file
+    /// alone, so a sibling image normally fails to open and falls back to its
+    /// alt text. The total budget and the symlink check below are defence in
+    /// depth for whatever access a host does grant, not the everyday path.
     private struct ImageInliner: MarkupRewriter {
         let baseDirectory: URL
         /// Shared across the body and footnotes for a preview request.
@@ -423,11 +428,15 @@ public enum MarkdownHTML {
                 guard resolved.path.hasPrefix(folder + "/") else { return image }
             }
             let limit = min(Self.sizeCap, remainingBytes ?? Self.sizeCap)
+            // Only something WebKit can draw in an <img>: any image type, and
+            // PDF, which pandoc and LaTeX workflows use for figures and which
+            // WebKit on Apple platforms renders inline.
             guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
                   values.isRegularFile == true,
                   let size = values.fileSize, size <= limit,
                   let type = UTType(filenameExtension: resolved.pathExtension),
-                  type.conforms(to: .image), let mime = type.preferredMIMEType,
+                  type.conforms(to: .image) || type.conforms(to: .pdf),
+                  let mime = type.preferredMIMEType,
                   let file = try? FileHandle(forReadingFrom: resolved)
             else { return image }
             defer { try? file.close() }
@@ -452,10 +461,19 @@ public enum MarkdownHTML {
             return CodeBlock(block.rawHTML)
         }
 
+        /// A bare formatting tag: no attributes, so nowhere for a handler or a
+        /// URL to hide. Anything else inline is shown as the text it was.
+        private static let passiveTag =
+            #"^</?(br|sup|sub|u|b|i|em|strong|s|kbd|mark|small)\s*/?>$"#
+
         mutating func visitInlineHTML(_ inline: InlineHTML) -> Markup? {
-            let raw = inline.rawHTML.lowercased()
-            if ["<br>", "<br/>", "<br />", "<sup>", "</sup>", "<sub>", "</sub>"].contains(raw) {
-                return InlineHTML(raw)
+            let raw = inline.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A comment is invisible in the reader and stays invisible here,
+            // whether it sits on its own line (an HTML block) or mid-sentence.
+            if raw.hasPrefix("<!--"), raw.hasSuffix("-->") { return nil }
+            if raw.range(of: Self.passiveTag,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+                return InlineHTML(raw.lowercased())
             }
             return Text(inline.rawHTML)
         }
@@ -475,7 +493,12 @@ public enum MarkdownHTML {
             // Unavailable local assets and blocked remote images still have an
             // accessible, readable label instead of an unexplained empty box.
             let label = image.plainText.isEmpty ? "Image" : image.plainText
-            guard let source = image.source, source.lowercased().hasPrefix("data:image/") else {
+            // The inliner also produces application/pdf: WebKit paints PDF
+            // figures in <img>. Compare the media type before any parameters
+            // or payload so similar-looking application types stay blocked.
+            let mediaType = image.source?.prefix { $0 != ";" && $0 != "," }.lowercased() ?? ""
+            guard let source = image.source,
+                  mediaType.hasPrefix("data:image/") || mediaType == "data:application/pdf" else {
                 return Text("[\(label)]")
             }
             return InlineHTML("<img src=\"\(escape(source))\" alt=\"\(escape(label))\" />")
