@@ -68,6 +68,9 @@ struct MarkdownPreviewTests {
 
         <!-- This comment should stay hidden. -->
 
+        Mid-sentence <!-- an inline aside --> text with <U>underline</U>, a
+        <span onclick="alert(1)">span</span> and a [sibling](docs/other.md) link.
+
         Footnote.[^note]
 
         [^note]: <iframe src="https://example.com"></iframe>
@@ -81,6 +84,17 @@ struct MarkdownPreviewTests {
         #expect(html.contains("<sup>2</sup><br>"))
         #expect(html.contains("[Remote image]"))
         #expect(!html.contains("This comment should stay hidden"))
+        // An inline comment is dropped like a block one; a bare formatting tag
+        // survives; a tag with attributes is shown as text; a link that lost
+        // its destination is an anchor without an href, styled as plain text.
+        #expect(!html.contains("an inline aside"))
+        #expect(html.contains("<u>underline</u>"))
+        #expect(!html.contains("<span"))
+        #expect(html.contains("&lt;span onclick="))
+        #expect(html.contains("span&lt;/span&gt;"))
+        #expect(html.contains("<a>sibling</a>"))
+        #expect(!html.contains("docs/other.md"))
+        #expect(html.contains("a:not([href]) { color: inherit; }"))
         #expect(html.contains("default-src 'none'; img-src data:; style-src 'unsafe-inline'"))
     }
 

@@ -11,7 +11,7 @@ public enum MarkdownPreview {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true else {
-            throw CocoaError(.fileReadUnsupportedScheme)
+            throw CocoaError(.fileReadUnknown, userInfo: [NSURLErrorKey: url])
         }
         if let size = values.fileSize, size > maximumFileSize {
             return notice("This file is too large to preview. Open it in Glassine to read the full document.", title: url.lastPathComponent)
@@ -57,6 +57,9 @@ public enum MarkdownPreview {
     }
     h1, h2, h3, h4, h5, h6 { scroll-margin-top: 24px; }
     a[href]:hover { text-decoration: underline; }
+    /* A link whose destination was stripped (a relative file, an unsafe
+       scheme) is plain text now and must not dress as a link. */
+    a:not([href]) { color: inherit; }
     img { height: auto; }
     table { display: block; overflow-x: auto; }
     .preview-notice { color: var(--muted); }
