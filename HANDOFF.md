@@ -85,9 +85,17 @@ Dan's stated requirements, all met as of this handoff:
   in System Settings is documented in README. The installed app was not replaced.
 
   Final development app: `build/Glassine.app`. Logs and fixtures:
-  `build/quicklook-validation/`. The new bundle is signed but not notarized;
-  notarization remains a packaging check before its next release. The published
-  1.8.0 release below does not include this extension.
+  `build/quicklook-validation/`. Apple accepted notarization submission
+  `028bc74d-1e43-4698-a638-babc92a7af6d` on 2026-09-15 for source commit
+  `b1343c1`. Ticket stapling/validation, app and extension code-signature checks,
+  and Gatekeeper acceptance passed. The notarized development archive is
+  `build/quicklook-validation/Glassine-QuickLook-development.zip`, SHA-256
+  `a3dd952325a8f0fddcd5a008eef121b2bdb500a0e7987da0958a276b784d26f3`.
+  Branch `codex/markdown-quicklook` is pushed; draft PR:
+  https://github.com/danepps/glassine/pull/3
+  The extension remains unreleased. The published 1.8.0 release below does not
+  include it; the development bundle retains 1.8.0/build 15 pending the next
+  release version bump.
 
 - **Released 1.8.0 (Codex, 2026-09-15).** Build 15, release commit/tag
   `3a4405b` / `v1.8.0`, includes the six feature/fix sections immediately below.
