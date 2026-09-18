@@ -34,7 +34,30 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Stronger maximum blur (unreleased; Codex, 2026-09-18).** Dan's screenshot
+- **Released 1.9.1 (Codex, 2026-09-18).** Build 17, release commit/tag
+  `0f25206` / `v1.9.1`, includes the three appearance improvements below.
+  Feature commit `126d4ce` was fast-forwarded to main from
+  `codex/appearance-controls-and-blur` at Dan's release request. Historical
+  preview notes below describe the work before publication.
+
+  Validation: the final full macOS suite passed all 82 tests. The separate
+  rendered-blur and native menu-slider regressions had already passed for
+  these changes. The release build used the same local Command Line Tools /
+  native SwiftPM workaround as 1.9.0; release scripts and Xcode license state
+  were unchanged.
+
+  Apple accepted notarization submission `fad682b0-d708-423a-84bd-6d5479d563f1`.
+  Independent unauthenticated downloads of the versioned and stable archives
+  match the local archive. Bundle metadata and icons, Developer ID signature,
+  stapled ticket, Gatekeeper acceptance, and the public Sparkle Ed25519
+  signature all passed verification. `glassine-appcast.xml` offers build 17;
+  Folio's frozen `appcast.xml` is unchanged. The installed app was not replaced.
+  Archive SHA-256:
+  `51e2395fa5c45619c55670bd0d301a6eedf5fd6d5c18fbae8b27b8b65c7fcc08`.
+  Logs and verification files: `build/.release-1.9.1/`.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.1
+
+- **Stronger maximum blur (1.9.1; Codex, 2026-09-18).** Dan's screenshot
   showed recognizable background icons at 100%. The backdrop scale now keeps
   the original 0–50% behavior, then adds a smooth quadratic increase above the
   midpoint, reaching 16x instead of 4x at 100%. The curve and its slope are
@@ -60,7 +83,7 @@ Dan's stated requirements, all met as of this handoff:
   remains under a hidden build path, and the running/installed apps were not
   restarted or replaced.
 
-- **Appearance menu consolidation (unreleased; Codex, 2026-09-18).** All
+- **Appearance menu consolidation (1.9.1; Codex, 2026-09-18).** All
   app-wide visual settings now live under View ▸ Appearance: System/Light/Dark,
   page inversion, Dark Paper, dark-mode brightness, Toolbar Tint, both opacity
   sliders and their existing keyboard shortcuts, Blur Behind Window and Blur
@@ -92,7 +115,7 @@ Dan's stated requirements, all met as of this handoff:
   flags rather than its requested-state filenames. Only the first light/blur
   frame in `app.log` captured a confirmed active state.
 
-- **Clear active-tab title (unreleased; Codex, 2026-09-18).** Dan's
+- **Clear active-tab title (1.9.1; Codex, 2026-09-18).** Dan's
   screenshot showed that the native text-color difference was too subtle after
   the chrome changes. The selected tab now has a bold title. A colored marker
   was tried initially and removed at Dan's request. AppKit retains native tab
