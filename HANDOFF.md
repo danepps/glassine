@@ -34,7 +34,23 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Release/preview tab appearance fix (Codex, 2026-09-18).** The installed
+- **Released 1.9.2 (Codex, 2026-09-18).** Build 18, release commit/tag
+  `b365ce6` / `v1.9.2`, delivers the SDK-metadata correction below (fix commit
+  `e553cec`). The signed release now matches the preview's rounded native tabs.
+  Apple accepted notarization submission `ea2ad885-65d3-4315-a61b-980fa12c6c15`.
+  Public versioned and stable downloads match the local archive; both the
+  Sparkle Ed25519 signature and the downloaded app's Developer ID signature,
+  stapled ticket and Gatekeeper acceptance passed. Public executable metadata
+  confirms SDK 27.0 with minimum macOS 14.0. The update feed offers build 18,
+  and Folio's feed is unchanged. The installed app was not replaced manually.
+  This changes build configuration only; the 82-test app suite passed for
+  1.9.1, and matched native fixtures verified the corrected tab rendering.
+  Archive SHA-256:
+  `722bbe28c1ba4d5578d28ce42c5fc4e0650bf59f04546dae24c94873d8699a67`.
+  Logs and verification files: `build/.release-1.9.2/`.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.2
+
+- **Release/preview tab appearance fix (1.9.2; Codex, 2026-09-18).** The installed
   1.9.1 executable matched the published archive, but its `LC_BUILD_VERSION`
   recorded SDK 14.0 while the UI preview recorded SDK 27.0. This selected
   AppKit's older squared tabs despite identical window code. The Command Line
