@@ -16,7 +16,7 @@ updated in place.
   Toggle with View ▸ Invert Page Colors in Dark Mode, or force Light/Dark under
   View ▸ Appearance.
   View ▸ Appearance also picks how dark the paper is — Black, Charcoal or Gray —
-  and the window chrome follows the level you choose.
+  and the tinted window chrome follows the level you choose.
   Dark Mode Brightness in the same menu dims page content from 100% to 35% for
   low-light reading while keeping the chosen background. It is independent of
   window opacity and Reader Mode; Reset returns to normal brightness. The
@@ -30,10 +30,18 @@ updated in place.
   width until you zoom manually; ⌘0 resumes fitting. Escape closes the margins
   sheet while keeping its live changes. Selection and highlighting remain
   available; saved, exported and printed PDFs retain their original margins.
-- **Adjustable window opacity, with a blurred backdrop.** Window ▸ Opacity
-  fades the page from 100% down to 30% so you can read against what is behind
-  it, and blurs whatever shows through the way Terminal does; ⌥⌘↑ / ⌥⌘↓ step it,
-  and Window ▸ Blur Behind Window turns the blur off for a sharp backdrop.
+- **Unified, tinted toolbar and tabs.** Both share one continuous background in
+  light and dark mode. Window ▸ Toolbar Tint offers Sea Glass, Blue, Lavender,
+  Rose, Sand and Graphite. Window ▸ Toolbar & Tabs Opacity makes that
+  background translucent while keeping controls and labels legible. Window ▸
+  Document Opacity independently fades the document area from 100% down to 30%;
+  ⌥⌘↑ / ⌥⌘↓ step it. Blur Behind Window softens whatever shows through either
+  area; turn it off for a sharp backdrop. The Blur Strength slider runs from
+  Off at 0% to Strong at 100%, independently of opacity. Turning blur off
+  remembers its strength. macOS 26 and later use the interior of a clear-glass
+  backdrop, with its refractive edges outside the visible area and the tint
+  and document opacity controlled separately; earlier
+  systems use the standard macOS frosted material.
 - **Opens Markdown too.** A `.md` file is typeset into real pages and shown
   through the same reader, so tabs, dark mode, find, paging, and position memory
   all work on it. It re-renders within about half a second whenever the file
@@ -59,7 +67,10 @@ updated in place.
 - **Pages or continuous.** Markdown ▸ Pages / Continuous: real Letter
   pages, or one uninterrupted column with no page breaks at all. Reading
   continuously, the toolbar's page counter becomes a progress percentage, and
-  ⌥⌘G jumps to one.
+  ⌥⌘G jumps to one. In Pages view and PDF exports, short Markdown tables stay
+  together; long tables break between rows and repeat their column headers.
+  A row taller than a whole page can still flow across pages rather than lose
+  content.
 - **One window, native tabs.** Every PDF opens as a tab (⇧⌘[ / ⇧⌘] switch, drag
   tabs out to split). ⌘T and the tab bar's "+" open a start tab: the new tab
   itself shows your recent files, and picking one fills that tab in place.

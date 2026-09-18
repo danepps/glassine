@@ -296,14 +296,33 @@ enum MainMenu {
     /// above the standard items, because they are properties of the window.
     private static func windowMenu(appDelegate: AppDelegate) -> NSMenu {
         let menu = NSMenu(title: "Window")
-        let opacity = NSMenuItem(title: "Window Opacity", action: nil, keyEquivalent: "")
-        opacity.view = OpacityMenuItemView()
-        menu.addItem(opacity)
+        for target in [WindowAppearanceSliderView.Target.document, .interface] {
+            let opacity = NSMenuItem(title: target.title, action: nil, keyEquivalent: "")
+            opacity.view = WindowAppearanceSliderView(target: target)
+            menu.addItem(opacity)
+        }
+        let tint = NSMenuItem(title: "Toolbar Tint", action: nil, keyEquivalent: "")
+        let tintMenu = NSMenu(title: "Toolbar Tint")
+        for color in ToolbarTint.allCases {
+            let item = add(tintMenu, color.title, #selector(AppDelegate.setToolbarTint(_:)),
+                           target: appDelegate, tag: color.rawValue)
+            let swatch = WindowChrome.backgroundColor(dark: false, tint: color)
+            item.image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
+                swatch.setFill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
+                return true
+            }
+        }
+        tint.submenu = tintMenu
+        menu.addItem(tint)
         add(menu, "Blur Behind Window", #selector(AppDelegate.toggleWindowBlur(_:)),
             target: appDelegate)
-        add(menu, "Increase Opacity", #selector(AppDelegate.increaseOpacity(_:)),
+        let blur = NSMenuItem(title: "Blur Strength", action: nil, keyEquivalent: "")
+        blur.view = WindowAppearanceSliderView(target: .blur)
+        menu.addItem(blur)
+        add(menu, "Increase Document Opacity", #selector(AppDelegate.increaseOpacity(_:)),
             key: upArrowKey, modifiers: [.command, .option], target: appDelegate)
-        add(menu, "Decrease Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
+        add(menu, "Decrease Document Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
             key: downArrowKey, modifiers: [.command, .option], target: appDelegate)
         menu.addItem(.separator())
         add(menu, "Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m")
@@ -314,19 +333,52 @@ enum MainMenu {
     }
 }
 
-/// The Window ▸ Opacity row: caption, slider, live percentage. A menu item
+/// Window appearance sliders: caption, slider, live percentage. A menu item
 /// with a custom view draws none of the usual chrome, so the leading inset is
 /// hand-matched to the title inset of the plain items around it.
-final class OpacityMenuItemView: NSView {
+final class WindowAppearanceSliderView: NSView {
+    enum Target {
+        case document, interface, blur
 
+        var title: String {
+            switch self {
+            case .document: return "Document Opacity"
+            case .interface: return "Toolbar & Tabs Opacity"
+            case .blur: return "Blur Strength"
+            }
+        }
+
+        var value: Double {
+            get {
+                switch self {
+                case .document: return Prefs.windowOpacity
+                case .interface: return Prefs.interfaceOpacity
+                case .blur: return Prefs.windowBlur ? Prefs.windowBlurStrength : 0
+                }
+            }
+            nonmutating set {
+                switch self {
+                case .document: Prefs.windowOpacity = newValue
+                case .interface: Prefs.interfaceOpacity = newValue
+                case .blur:
+                    Prefs.windowBlurStrength = newValue
+                    if newValue > 0 && !Prefs.windowBlur { Prefs.windowBlur = true }
+                }
+            }
+        }
+    }
+
+    private let target: Target
     private let slider = NSSlider()
     private let percentLabel = NSTextField(labelWithString: "100%")
+    private var isApplyingSliderValue = false
 
-    init() {
+    init(target: Target) {
+        self.target = target
         super.init(frame: .zero)
 
         let menuFont = NSFont.menuFont(ofSize: 0)
-        let caption = NSTextField(labelWithString: "Opacity")
+        let caption = NSTextField(labelWithString: target.title)
         caption.font = menuFont
         caption.textColor = .labelColor
         percentLabel.font = NSFont.monospacedDigitSystemFont(ofSize: menuFont.pointSize,
@@ -334,13 +386,16 @@ final class OpacityMenuItemView: NSView {
         percentLabel.textColor = .labelColor
         percentLabel.alignment = .right
 
-        slider.minValue = Prefs.minWindowOpacity
+        slider.minValue = target == .blur ? 0 : Prefs.minWindowOpacity
         slider.maxValue = Prefs.maxWindowOpacity
         slider.isContinuous = true
         slider.controlSize = .small
         slider.target = self
         slider.action = #selector(sliderMoved)
-        slider.setAccessibilityLabel("Window opacity")
+        slider.setAccessibilityLabel(target.title)
+        if target == .blur {
+            slider.toolTip = "Off at 0%; normal at 50%; strongest at 100%. Independent of opacity."
+        }
 
         for subview in [caption, slider, percentLabel] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
@@ -351,6 +406,8 @@ final class OpacityMenuItemView: NSView {
             heightAnchor.constraint(equalToConstant: 24),
             caption.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
             caption.centerYAnchor.constraint(equalTo: centerYAnchor),
+            caption.widthAnchor.constraint(equalToConstant:
+                ceil(Target.interface.title.size(withAttributes: [.font: menuFont]).width)),
             slider.leadingAnchor.constraint(equalTo: caption.trailingAnchor, constant: 10),
             slider.centerYAnchor.constraint(equalTo: centerYAnchor),
             slider.widthAnchor.constraint(equalToConstant: 150),
@@ -362,11 +419,15 @@ final class OpacityMenuItemView: NSView {
 
         // A menu sizes an item's view from its frame, not its constraints.
         frame = NSRect(origin: .zero, size: fittingSize)
+        NotificationCenter.default.addObserver(self, selector: #selector(sync),
+                                               name: .glassinePrefsChanged, object: nil)
         sync()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     /// The menu builds a fresh window every time it opens, so this is where the
     /// row picks up an opacity the keyboard shortcuts changed behind its back.
@@ -375,17 +436,25 @@ final class OpacityMenuItemView: NSView {
         if window != nil { sync() }
     }
 
-    private func sync() {
-        slider.doubleValue = Prefs.windowOpacity
-        showPercent(Prefs.windowOpacity)
+    @objc private func sync() {
+        // Preference notifications are synchronous. Do not feed rounded
+        // saved values back into the cell while it is sending a drag update.
+        guard !isApplyingSliderValue else { return }
+        let enabled = target != .blur || Prefs.hasWindowTransparency
+        if slider.isEnabled != enabled { slider.isEnabled = enabled }
+        if slider.doubleValue != target.value { slider.doubleValue = target.value }
+        showPercent(target.value)
     }
 
     private func showPercent(_ value: Double) {
-        percentLabel.stringValue = "\(Int((value * 100).rounded()))%"
+        percentLabel.stringValue = target == .blur && value == 0
+            ? "Off" : "\(Int((value * 100).rounded()))%"
     }
 
     @objc private func sliderMoved() {
-        Prefs.windowOpacity = slider.doubleValue
-        showPercent(slider.doubleValue)
+        isApplyingSliderValue = true
+        defer { isApplyingSliderValue = false }
+        target.value = slider.doubleValue
+        showPercent(target.value)
     }
 }

@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-15. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-18. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,179 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Markdown table pagination and slider tracking (unreleased; Codex,
+  2026-09-18).** The native WebKit print regression reproduced missing table
+  headers and four split rows in a 45-row Markdown table. On macOS, the print
+  pipeline now measures at WebKit's actual printable width and prepares
+  separate table sections in the client JavaScript world before printing.
+  Each section has the same column widths and a repeated header; ordinary
+  rows stay together, short tables stay whole, and cell links are preserved.
+  Continuous view bypasses this step. The shared HTML/CSS and its snapshots
+  are unchanged. The new `MarkdownTablePagination.swift` holds the preparation
+  script; document scripts and the network remain blocked as before.
+
+  A single row taller than the printable page remains breakable so its text
+  is not clipped; its header does not repeat inside that oversized row.
+  Raw HTML tables with spanning cells or multiple body groups retain native
+  layout. Original first-section placement is estimated from laid-out content;
+  native keep-together rules may move that first section onto the next page.
+  Later sections start on new pages. A small-table visual regression (five
+  rows on an otherwise empty page, then three more) was caught and fixed by
+  keeping tables shorter than one printable page whole.
+
+  Validation: actual WebKit-to-PDF output across all six built-in styles,
+  9/13/17 pt sizes, continuous mode, and mixed prose/multiple tables passes.
+  Every ordinary row appears exactly once on one page; headers repeat on
+  table pages; all 45 cell links survive; an oversized row loses no text.
+  Poppler-rendered continuation pages for each style, plus mixed-table page
+  transitions, were visually inspected. Fixtures and renders are under
+  `build/.markdown-pagination/`; log `/tmp/glassine-markdown-styles-tests.log`.
+  Opt in with `GLASSINE_RUN_MARKDOWN_PRINT_TEST=1`, filter
+  `markdownTablesRepeatHeadersWithoutSplittingRows`, and optionally set
+  `GLASSINE_MARKDOWN_CAPTURE_DIR`. Requires unsandboxed WebKit/printing services.
+
+  Slider follow-up: Dan clarified the failure happens when clicking after
+  opening Window. Preference notifications no longer reset the active slider
+  while it sends a value; unchanged values/enabled state are left alone.
+  Reader appearance preferences are tracked separately, so blur/opacity/tint
+  ticks no longer rebuild PDF filters, sidebar filters and find highlights.
+  Actual appearance, inversion, paper and brightness changes still apply.
+  Native open-menu click/drag, small-step cell dragging, preference feedback,
+  tab geometry, and brightness regressions pass. Logs:
+  `/tmp/glassine-open-menu-final-tests.log`, `/tmp/glassine-final-build-tests.log`,
+  and `/tmp/glassine-slider-final-tests.log`. An exploratory drag-into-menu
+  subclass was removed once Dan clarified the normal click path. The exact
+  freeze was not reproduced with the small fixture; redundant live redraws
+  and synchronous control feedback were confirmed in the prior code.
+
+  The running preview was launched at 11:03, before the 11:17 edge-blur build,
+  so it had not loaded that update. Quit/reopen is required for rebuilt previews.
+  `build/Glassine UI Preview.app` now includes both follow-ups and its signature
+  has been verified. The previous preview is retained under a hidden build path;
+  neither running app nor the installed release was replaced or restarted.
+
+- **Blur margins and stronger range (unreleased; Codex, 2026-09-18).** Dan's
+  screenshot showed weak blur and vertically flipped/stretched background
+  text at a margin. Clear glass's edge refraction is the suspected cause;
+  isolated ScreenCaptureKit captures did not reproduce the exact flipping.
+  Each backdrop now clips an oversized glass surface, putting its physical
+  edges 64 effect-coordinate points beyond all four visible margins. This
+  includes the document/toolbar boundary. Foreground geometry, separate
+  document/interface opacity, saved tint and the blur toggle are unchanged.
+  Strength now scales the radius from 0.1x to 4x (previously 0.1x to 2x),
+  making both the midpoint and maximum substantially stronger. Zero is Off.
+
+  Validation: native three-tab geometry and menu-action tests pass, as does
+  the expanded rendered regression in both appearances. Large green text is
+  softened at all four document margins and the center; broad color steps
+  confirm a wider transition at Strong, while background colors survive.
+  The old narrow color bands truncated the stronger kernel, so transition
+  width is now tested on a separate broad blue/red step. Captures inspected
+  in `build/.blur-probe/edge-regression/`. Logs:
+  `/tmp/glassine-blur-edge-build.log` and
+  `/tmp/glassine-blur-edge-render-tests.log`. One capture initialization
+  failed transiently with ScreenCaptureKit -3811; the rerun passed.
+  The exact reported artifact still needs confirmation in Dan's document;
+  the tests exercise owned fixture windows, not his running app.
+  `build/Glassine UI Preview.app` rebuilt and signature-verified. Quit/reopen
+  to load it; the running app was not interrupted and the prior build is saved.
+
+- **Blur strength and tint choices (unreleased; Codex, 2026-09-18).** Window ▸
+  Blur Strength now runs from Off (0%) through the original effect (50%, the
+  default) to Strong (100%). It changes the displayed blur radius using a
+  scaled plain NSView parent around each glass view. Effect alpha stays at one;
+  foreground opacity is independent. Transforming the glass view's own bounds
+  left its material mask clipped after live strength changes; the plain parent
+  avoids this, and the glass view keeps equal frame and bounds sizes.
+  Turning blur off retains its strength, and dragging the slider enables blur.
+  Turning it back on after zero strength restores 50%. The slider is disabled
+  while both document and interface are opaque, and all sliders update live
+  when another appearance control changes.
+
+  Window ▸ Toolbar Tint offers Sea Glass (default), Blue, Lavender, Rose, Sand
+  and Graphite, with swatches and a checked selection. Each has light/dark
+  variants and applies to the shared toolbar/tab backing. `toolbarTint` and
+  `windowBlurStrength` are saved separately from opacity and page preferences.
+
+  Validation: two preference tests, native menu-action and three-tab geometry
+  tests, and the opt-in rendered-image regression pass. Rendering checks cover
+  Off, Low, Normal, Strong, zero and Off again in light/dark; they verify
+  softening of fine stripes, widening colour transitions at Strong, retained
+  background colour, and sharpness returning at Off. Captures were inspected.
+  Compare 10–90% colour-transition width rather than squared pixel gradients:
+  8-bit quantization gives gradual ramps identical 1/255 steps. Captures are
+  in `build/.blur-probe/strength-regression/`; logs are
+  `/tmp/glassine-appearance-controls-tests.log`,
+  `/tmp/glassine-appearance-prefs-tests.log`, and
+  `/tmp/glassine-blur-strength-render-tests.log`.
+  `build/Glassine UI Preview.app` rebuilt and signature-verified; quit/reopen
+  it to load the change. Older-macOS material fallback remains unverified on
+  an older OS. No installed-app replacement or release was performed.
+
+- **Unified tinted chrome and independent toolbar transparency (unreleased;
+  Codex, 2026-09-18).** Toolbar and tabs share a muted green-gray backing in
+  both appearances, with the standard titlebar background and separator
+  disabled even in opaque light mode. Dark Paper adjusts the tint's base
+  brightness. Window now offers Document Opacity (the existing saved
+  `windowOpacity` setting and shortcuts) and Toolbar & Tabs Opacity (new
+  `interfaceOpacity`, default 100%). The latter fades the chrome backing while
+  leaving native controls and labels at normal alpha. Blur Behind Window is
+  available when either area is translucent. The document can stay opaque
+  while the top background is translucent.
+
+  Validation: debug build, the native three-tab chrome regression, all 14 Core
+  Prefs tests, and preview signature verification pass. The chrome test covers
+  independent opacity combinations, light/dark, blur, resizing, tab switching
+  and detachment. Live visual inspection was unavailable because the Computer
+  Use service returned `sky requires node_repl; configure NODE_REPL_TRUSTED_SERVICES`.
+  The exact on-screen tint and native tab hover rendering still need review.
+  Preview: `build/Glassine UI Preview.app`, id `com.epps.Glassine.UIPreview`,
+  automatic updates disabled. This is a debug preview, not an installed release.
+
+  Toolchain note: Xcode's license is pending on this machine. The build used
+  `DEVELOPER_DIR=/Library/Developer/CommandLineTools`, `--build-system native`,
+  local SwiftPM/module caches, and `--disable-sandbox`. Tests additionally used
+  the installed Xcode Testing framework search path, its `libTestingMacros.dylib`
+  plugin, and the framework runtime search path. Core Prefs needed an
+  unsandboxed test run for bookmark services to exit cleanly. Logs:
+  `/tmp/glassine-ui-build.log`, `/tmp/glassine-chrome-tests.log`, and
+  `/tmp/glassine-prefs-tests-unsandboxed.log`.
+
+  Opacity follow-up: Dan reported a sheet behind images. The shared frosted
+  material was still at full alpha when either foreground faded, and enabling
+  toolbar-only transparency activated it across the whole window. Split it
+  into document and title-band effects, each constrained to its own region,
+  hidden when that region is opaque, and faded by that region's opacity.
+  The expanded native regression passes and the same preview app was rebuilt
+  and signature-verified (`/tmp/glassine-opacity-tests.log`). Previous preview
+  retained under a hidden `build/.Glassine UI Preview previous-*.app` path.
+  Quit and reopen the preview to load the change. Visual confirmation of
+  Dan's reported artifact is still pending; Computer Use remains unavailable.
+
+  Blur follow-up supersedes the effect-alpha change above: Dan confirmed the
+  appearance improved but blur stopped working. A two-window rendering probe
+  reproduced both failures on this Mac: fading `NSVisualEffectView` left sharp
+  stripes, while full-strength `.underWindowBackground` hid the background
+  behind an almost solid tint. macOS 26+ now uses `NSGlassEffectView` with
+  `.clear` style, zero corner radius and unit alpha. Document opacity and the
+  subtle toolbar/tab tint remain separate foreground surfaces. Earlier macOS
+  retains the standard full-strength visual-effect material; that fallback was
+  not visually checked on an older OS.
+
+  Added opt-in `windowBlurPreservesColorAndSoftensBackgroundDetail`: capture
+  only the test process's two windows using `SCShareableContent.currentProcess`
+  and a display filter including those windows. A single-window capture omits
+  the backdrop and cannot verify this bug. Run this test alone with
+  `GLASSINE_RUN_BLUR_RENDER_TEST=1`; optionally set `GLASSINE_BLUR_CAPTURE_DIR`.
+  It verifies fine-detail suppression, preservation of background colours (to
+  reject a solid sheet), and sharp detail returning after blur is disabled,
+  in both light and dark appearances at 45% document / 30% toolbar opacity.
+  The rendered test and existing multi-tab regression pass. Captures were also
+  inspected. Logs: `/tmp/glassine-rendered-blur-tests.log` and
+  `/tmp/glassine-blur-tests.log`; fixture captures: `build/.blur-probe/regression/`.
+  Preview rebuilt and signature-verified; quit and reopen to load it. Dan
+  explicitly confirmed the subtle tinted toolbar/tab design during this pass.
 
 - **Released 1.8.0 (Codex, 2026-09-15).** Build 15, release commit/tag
   `3a4405b` / `v1.8.0`, includes the six feature/fix sections immediately below.

@@ -99,6 +99,66 @@ struct PrefsTests {
         }
     }
 
+    @Test("Interface opacity persists independently of existing document settings")
+    func interfaceOpacity() {
+        withIsolatedDefaults {
+            // Upgrading retains the user's document opacity, and the new
+            // control starts opaque until explicitly adjusted.
+            Prefs.defaults.set(0.55, forKey: "windowOpacity")
+            #expect(Prefs.interfaceOpacity == 1)
+            Prefs.interfaceOpacity = 0.719
+            #expect(Prefs.interfaceOpacity == 0.72)
+            #expect(Prefs.defaults.double(forKey: "interfaceOpacity") == 0.72)
+            #expect(Prefs.windowOpacity == 0.55)
+            Prefs.windowOpacity = 1
+            #expect(Prefs.interfaceOpacity == 0.72)
+            #expect(Prefs.hasWindowTransparency)
+            Prefs.interfaceOpacity = 1
+            #expect(!Prefs.hasWindowTransparency)
+            Prefs.windowOpacity = 0.55
+            #expect(Prefs.hasWindowTransparency)
+
+            for (requested, expected) in [(0.1, 0.3), (2.0, 1.0), (0.889, 0.89),
+                                           (Double.nan, 1.0), (Double.infinity, 1.0)] {
+                Prefs.interfaceOpacity = requested
+                #expect(Prefs.interfaceOpacity == expected)
+                Prefs.defaults.set(requested, forKey: "interfaceOpacity")
+                #expect(Prefs.interfaceOpacity == expected)
+            }
+            Prefs.defaults.set("invalid", forKey: "interfaceOpacity")
+            #expect(Prefs.interfaceOpacity == 1)
+        }
+    }
+
+    @Test("Blur strength and toolbar tint preserve independent appearance settings")
+    func blurAndTintPreferences() {
+        withIsolatedDefaults {
+            #expect(Prefs.windowBlurStrength == 0.5)
+            #expect(Prefs.toolbarTint == .seaGlass)
+            Prefs.windowOpacity = 0.45
+            Prefs.interfaceOpacity = 0.3
+            Prefs.windowBlurStrength = 0.76
+            Prefs.toolbarTint = .rose
+            #expect(Prefs.defaults.double(forKey: "windowBlurStrength") == 0.76)
+            #expect(Prefs.toolbarTint == .rose)
+            Prefs.windowBlur = false
+            #expect(Prefs.windowBlurStrength == 0.76)
+            #expect(Prefs.windowOpacity == 0.45 && Prefs.interfaceOpacity == 0.3)
+
+            for (input, expected) in [(0.0, 0.0), (-1.0, 0.0), (5.0, 1.0),
+                                      (0.456, 0.46), (Double.nan, 0.5), (Double.infinity, 0.5)] {
+                Prefs.windowBlurStrength = input
+                #expect(Prefs.windowBlurStrength == expected)
+                Prefs.defaults.set(input, forKey: "windowBlurStrength")
+                #expect(Prefs.windowBlurStrength == expected)
+            }
+            Prefs.defaults.set("invalid", forKey: "windowBlurStrength")
+            Prefs.defaults.set(999, forKey: "toolbarTint")
+            #expect(Prefs.windowBlurStrength == 0.5)
+            #expect(Prefs.toolbarTint == .seaGlass)
+        }
+    }
+
     @Test("The 501st position evicts the least recently used entry")
     func positionLRUEviction() {
         withIsolatedDefaults {

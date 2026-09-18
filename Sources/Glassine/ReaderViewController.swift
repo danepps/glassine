@@ -339,6 +339,19 @@ final class ReaderViewController: NSViewController {
     /// True when pages are being shown light-on-dark.
     private(set) var isInverted = false
 
+    private struct AppearancePreferences: Equatable {
+        let mode: AppearanceMode
+        let invert: Bool
+        let paper: DarkPaper
+        let brightness: Double
+
+        static var current: Self {
+            Self(mode: Prefs.appearance, invert: Prefs.invertInDarkMode, paper: Prefs.darkPaper,
+                 brightness: Prefs.darkModeBrightness)
+        }
+    }
+    private var appliedPreferences: AppearancePreferences?
+
     /// Called after every appearance pass with the current inversion state, so
     /// the window can keep the sidebar and the find highlights in step.
     var onInversionChanged: ((Bool) -> Void)?
@@ -459,12 +472,17 @@ final class ReaderViewController: NSViewController {
     }
 
     @objc private func prefsChanged() {
+        // Blur and opacity sliders notify on every tick. Rebuilding PDF
+        // filters, sidebar thumbnails and find highlights for those ticks
+        // can stall menu tracking, especially with several documents open.
+        guard appliedPreferences != .current else { return }
         applyAppearance()
     }
 
     // MARK: Appearance
 
     private func applyAppearance() {
+        appliedPreferences = .current
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let invert = dark && Prefs.invertInDarkMode
 

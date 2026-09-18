@@ -123,7 +123,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 960, height: 1040),
             // The chrome host keeps the PDF below contentLayoutGuide, so only
-            // page-coloured backing extends underneath the toolbar and tabs.
+            // the shared chrome backing extends beneath the toolbar and tabs.
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -132,7 +132,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.tabbingIdentifier
         window.toolbarStyle = .unified
-        window.titlebarSeparatorStyle = .automatic
+        window.titlebarSeparatorStyle = .none
         window.contentMinSize = Self.minimumContentSize
 
         super.init(window: window)

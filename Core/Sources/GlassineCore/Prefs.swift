@@ -11,6 +11,22 @@ public enum AppearanceMode: Int, Sendable {
     case system = 0, light = 1, dark = 2
 }
 
+/// Colour of the Mac's shared toolbar and tab background.
+public enum ToolbarTint: Int, CaseIterable, Sendable {
+    case seaGlass = 0, blue = 1, lavender = 2, rose = 3, sand = 4, graphite = 5
+
+    public var title: String {
+        switch self {
+        case .seaGlass: return "Sea Glass"
+        case .blue: return "Blue"
+        case .lavender: return "Lavender"
+        case .rose: return "Rose"
+        case .sand: return "Sand"
+        case .graphite: return "Graphite"
+        }
+    }
+}
+
 /// Which pane the sidebar shows. `recents` is iOS-only: the iPad sidebar puts
 /// the recents picker beside Thumbnails and Contents, where the Mac has a start
 /// tab instead. The Mac's segmented control only ever writes 0 or 1, and its
@@ -77,7 +93,10 @@ public enum Prefs {
         static let markdownFontSize = "markdownFontSize"
         static let sidebarMode = "sidebarMode"
         static let windowOpacity = "windowOpacity"
+        static let interfaceOpacity = "interfaceOpacity"
+        static let toolbarTint = "toolbarTint"
         static let windowBlur = "windowBlur"
+        static let windowBlurStrength = "windowBlurStrength"
         static let recentDocuments = "recentDocuments"
         static let recentDocumentsSeeded = "recentDocumentsSeeded"
     }
@@ -174,11 +193,33 @@ public enum Prefs {
     /// One press of Increase/Decrease Opacity.
     public static let windowOpacityStep = 0.1
 
-    /// Alpha applied to every reader window. Default fully opaque.
+    /// Opacity of the document area. Keeps the original key for saved settings.
     public static var windowOpacity: Double {
         get { clampOpacity(defaults.object(forKey: Key.windowOpacity) as? Double ?? 1) }
         set {
             defaults.set(clampOpacity(newValue), forKey: Key.windowOpacity)
+            NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
+        }
+    }
+
+    /// Opacity of the shared toolbar/tab background, independent of the page.
+    /// Controls and tab labels retain their normal contrast. macOS only.
+    public static var interfaceOpacity: Double {
+        get { clampOpacity(defaults.object(forKey: Key.interfaceOpacity) as? Double ?? 1) }
+        set {
+            defaults.set(clampOpacity(newValue), forKey: Key.interfaceOpacity)
+            NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
+        }
+    }
+
+    public static var hasWindowTransparency: Bool {
+        windowOpacity < maxWindowOpacity || interfaceOpacity < maxWindowOpacity
+    }
+
+    public static var toolbarTint: ToolbarTint {
+        get { ToolbarTint(rawValue: defaults.integer(forKey: Key.toolbarTint)) ?? .seaGlass }
+        set {
+            defaults.set(newValue.rawValue, forKey: Key.toolbarTint)
             NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
         }
     }
@@ -193,10 +234,31 @@ public enum Prefs {
         }
     }
 
+    public static let defaultWindowBlurStrength = 0.5
+
+    /// Relative blur amount, independent of foreground opacity. Zero is off;
+    /// the midpoint is the default strength. macOS only.
+    public static var windowBlurStrength: Double {
+        get {
+            clampBlurStrength(defaults.object(forKey: Key.windowBlurStrength) as? Double
+                ?? defaultWindowBlurStrength)
+        }
+        set {
+            defaults.set(clampBlurStrength(newValue), forKey: Key.windowBlurStrength)
+            NotificationCenter.default.post(name: .glassinePrefsChanged, object: nil)
+        }
+    }
+
+    private static func clampBlurStrength(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultWindowBlurStrength }
+        return min(max((value * 100).rounded() / 100, 0), 1)
+    }
+
     /// Rounded to the step, or repeated ⌥⌘↑ lands on 0.9999… and the menu item
     /// never notices it has reached the top.
     private static func clampOpacity(_ value: Double) -> Double {
-        min(max((value * 100).rounded() / 100, minWindowOpacity), maxWindowOpacity)
+        guard value.isFinite else { return maxWindowOpacity }
+        return min(max((value * 100).rounded() / 100, minWindowOpacity), maxWindowOpacity)
     }
 
     // MARK: Markdown typography

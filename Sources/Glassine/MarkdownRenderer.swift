@@ -51,6 +51,10 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     /// fall back to Letter pages.
     private var continuousHeight: CGFloat?
 
+    private var layoutWidth: CGFloat {
+        (Self.paperSize.width - (wantsContinuous ? 0 : 2 * Self.margin)) * Self.printShrinkFactor
+    }
+
     override init() { super.init() }
 
     // MARK: HTMLPrinter
@@ -66,12 +70,9 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
         didRestartWebProcess = false
         continuousHeight = nil
         let view = makeWebView()
-        // Lay a continuous job out at the width WebKit will print it at, so its
-        // measured height is the printed height; a paginated job is never
-        // measured and its frame does not matter.
-        view.frame.size.width = wantsContinuous
-            ? Self.paperSize.width * Self.printShrinkFactor
-            : Self.paperSize.width
+        // Match WebKit's print width before measuring continuous content or
+        // dividing paginated tables into sections with repeating headers.
+        view.frame.size.width = layoutWidth
         activeNavigation = view.loadHTMLString(html, baseURL: baseURL)
     }
 
@@ -100,7 +101,7 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
         configuration.preferences.shouldPrintBackgrounds = true
         configuration.suppressesIncrementalRendering = true
 
-        let frame = NSRect(origin: .zero, size: Self.paperSize)
+        let frame = NSRect(x: 0, y: 0, width: layoutWidth, height: Self.paperSize.height)
         let view = WKWebView(frame: frame, configuration: configuration)
         view.navigationDelegate = self
 
@@ -147,13 +148,27 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     private func printWhenMeasured() {
         guard pendingCompletion != nil else { return }
         guard wantsContinuous else {
-            printLoadedPage()
+            prepareTablePagination()
             return
         }
         measureContentHeight { [weak self] height in
             guard let self, self.pendingCompletion != nil else { return }
             self.continuousHeight = height
             self.printLoadedPage()
+        }
+    }
+
+    private func prepareTablePagination() {
+        guard let webView else { return }
+        let navigation = activeNavigation
+        let height = (Self.paperSize.height - 2 * Self.margin) * Self.printShrinkFactor
+        webView.callAsyncJavaScript(MarkdownTablePagination.script,
+            arguments: ["printableHeight": height], in: nil, in: .defaultClient) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.pendingCompletion != nil,
+                      self.activeNavigation === navigation else { return }
+                self.printLoadedPage()
+            }
         }
     }
 

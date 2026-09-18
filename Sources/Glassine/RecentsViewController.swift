@@ -155,8 +155,7 @@ final class RecentsViewController: NSViewController, NSTableViewDataSource,
     @objc private func prefsChanged() { applyBackingColour() }
 
     /// The reader's page colour: black or the Dark Paper lift in dark mode, the
-    /// page's white in light mode -- the same tone `WindowChrome` paints the
-    /// title-bar band, so a start tab reads as one surface with the reader.
+    /// page's white in light mode. The toolbar and tabs use their own tint.
     private func applyBackingColour() {
         guard drawsListBackground == false, isViewLoaded, let layer = view.layer else { return }
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

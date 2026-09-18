@@ -27,7 +27,7 @@ public enum DarkPaper: Int, Sendable {
 
     /// The two ends of the compressed range, as on-screen greys: paper
     /// (inverted black) rises to `lift`, ink (inverted white) falls to `top`.
-    /// `lift` is also the window's chrome colour, so the two always match.
+    /// The Mac window's tinted chrome uses `lift` as its base brightness.
     /// Tuned by eye against a text-heavy PDF; edit here to re-tune.
     public var lift: CGFloat {
         switch self {

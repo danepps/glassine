@@ -3,6 +3,7 @@ build/
 *.xcodeproj
 .DS_Store
 Support/Glassine-partial-Info.plist
+Support/Folio-partial-Info.plist
 .codex-memo/
 Support/IconConcepts/
 .claude/

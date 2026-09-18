@@ -145,6 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Prefs.darkPaper = paper
     }
 
+    @objc func setToolbarTint(_ sender: NSMenuItem) {
+        guard let tint = ToolbarTint(rawValue: sender.tag) else { return }
+        Prefs.toolbarTint = tint
+    }
+
     /// The paper levels are stages of the inversion filter, so they do nothing
     /// unless pages are actually being inverted right now.
     private var isInvertingNow: Bool {
@@ -161,7 +166,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func toggleWindowBlur(_ sender: NSMenuItem) {
-        Prefs.windowBlur.toggle()
+        if Prefs.windowBlur && Prefs.windowBlurStrength > 0 {
+            Prefs.windowBlur = false
+        } else {
+            if Prefs.windowBlurStrength == 0 {
+                Prefs.windowBlurStrength = Prefs.defaultWindowBlurStrength
+            }
+            Prefs.windowBlur = true
+        }
     }
 
     @objc func setMarkdownStyle(_ sender: NSMenuItem) {
@@ -252,10 +264,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(setDarkPaper(_:)):
             menuItem.state = (menuItem.tag == Prefs.darkPaper.rawValue) ? .on : .off
             return isInvertingNow
+        case #selector(setToolbarTint(_:)):
+            menuItem.state = menuItem.tag == Prefs.toolbarTint.rawValue ? .on : .off
         case #selector(toggleWindowBlur(_:)):
-            menuItem.state = Prefs.windowBlur ? .on : .off
+            menuItem.state = Prefs.windowBlur && Prefs.windowBlurStrength > 0 ? .on : .off
             // Nothing to blur behind an opaque window.
-            return Prefs.windowOpacity < Prefs.maxWindowOpacity
+            return Prefs.hasWindowTransparency
         case #selector(increaseOpacity(_:)):
             return Prefs.windowOpacity < Prefs.maxWindowOpacity
         case #selector(decreaseOpacity(_:)):
