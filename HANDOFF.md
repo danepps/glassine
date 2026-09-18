@@ -25,8 +25,8 @@ Dan's stated requirements, all met as of this handoff:
 - Simple, really clean Mac interface, zippy.
 - One window, tabs.
 - Dark mode tied to system settings, and the **PDF content itself**
-  white-on-black in dark mode (not just the chrome). Chrome should be pure
-  black, not gray.
+  white-on-black in dark mode (not just the chrome). Toolbar and tabs share
+  a subtle, customizable tint, with independent background transparency.
 - Arrow keys always move by page (↑/← prev, ↓/→ next; ⌘↑/⌘↓ first/last).
 - Search shows a hit count; matches are bright green (#5CF25C-ish), current
   match underlined.
@@ -34,7 +34,34 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Markdown table pagination and slider tracking (unreleased; Codex,
+- **Released 1.9.0 (Codex, 2026-09-18).** Build 16, release commit/tag
+  `707467b` / `v1.9.0`, includes the four feature/fix sections immediately below.
+  Dan approved the final preview and requested publication. The changes were
+  rebased onto the verified 1.8.0 release before packaging, preserving its
+  printing fixes and PDF document icon. Historical preview notes below record
+  the iterations leading to this release; their unreleased status is superseded.
+
+  Validation on macOS 27 with Swift 6.4: the full macOS suite (82 tests) and
+  Core suite (149 tests) passed. All three opt-in regressions also passed when
+  run separately: native open-menu slider click/drag, rendered blur in both
+  appearances, and actual WebKit table pagination across all six styles.
+  Release-mode build and continuation-page visual checks passed. The local
+  Command Line Tools/native SwiftPM workaround described below was used;
+  release scripts and the Xcode license state were not changed.
+
+  Apple accepted notarization submission `fb02981f-6e19-416f-84d9-7f67fb0649b3`.
+  Independent unauthenticated downloads of the versioned and stable archives
+  match the local release. The downloaded app's version, identifier, update
+  feed, document icons, Developer ID signature, stapled ticket and Gatekeeper
+  acceptance were verified, as was the Sparkle Ed25519 archive signature using
+  the public key. `glassine-appcast.xml` offers build 16; Folio's `appcast.xml`
+  is unchanged. The installed app was not replaced.
+  Archive SHA-256:
+  `a0d310081d1470b55205cf1ba6e4acbcf541be7ad2f4c8dd1edf3159cc8ce46c`.
+  Logs and verification files: `build/.release-1.9.0/`.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.0
+
+- **Markdown table pagination and slider tracking (1.9.0; Codex,
   2026-09-18).** The native WebKit print regression reproduced missing table
   headers and four split rows in a 45-row Markdown table. On macOS, the print
   pipeline now measures at WebKit's actual printable width and prepares
@@ -85,7 +112,7 @@ Dan's stated requirements, all met as of this handoff:
   has been verified. The previous preview is retained under a hidden build path;
   neither running app nor the installed release was replaced or restarted.
 
-- **Blur margins and stronger range (unreleased; Codex, 2026-09-18).** Dan's
+- **Blur margins and stronger range (1.9.0; Codex, 2026-09-18).** Dan's
   screenshot showed weak blur and vertically flipped/stretched background
   text at a margin. Clear glass's edge refraction is the suspected cause;
   isolated ScreenCaptureKit captures did not reproduce the exact flipping.
@@ -111,7 +138,7 @@ Dan's stated requirements, all met as of this handoff:
   `build/Glassine UI Preview.app` rebuilt and signature-verified. Quit/reopen
   to load it; the running app was not interrupted and the prior build is saved.
 
-- **Blur strength and tint choices (unreleased; Codex, 2026-09-18).** Window ▸
+- **Blur strength and tint choices (1.9.0; Codex, 2026-09-18).** Window ▸
   Blur Strength now runs from Off (0%) through the original effect (50%, the
   default) to Strong (100%). It changes the displayed blur radius using a
   scaled plain NSView parent around each glass view. Effect alpha stays at one;
@@ -143,7 +170,7 @@ Dan's stated requirements, all met as of this handoff:
   it to load the change. Older-macOS material fallback remains unverified on
   an older OS. No installed-app replacement or release was performed.
 
-- **Unified tinted chrome and independent toolbar transparency (unreleased;
+- **Unified tinted chrome and independent toolbar transparency (1.9.0;
   Codex, 2026-09-18).** Toolbar and tabs share a muted green-gray backing in
   both appearances, with the standard titlebar background and separator
   disabled even in opaque light mode. Dark Paper adjusts the tint's base
