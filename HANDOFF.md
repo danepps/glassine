@@ -34,6 +34,22 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Release/preview tab appearance fix (Codex, 2026-09-18).** The installed
+  1.9.1 executable matched the published archive, but its `LC_BUILD_VERSION`
+  recorded SDK 14.0 while the UI preview recorded SDK 27.0. This selected
+  AppKit's older squared tabs despite identical window code. The Command Line
+  Tools Swift driver's linker command passed `--sysroot` to Clang; with this
+  toolchain, Clang then recorded the deployment target as the SDK version.
+
+  `build.sh` now supplies the selected SDK to SwiftPM and also passes
+  `-isysroot` through `-Xclang-linker`. It verifies the executable's linked SDK
+  against the selected SDK before packaging, preventing a silent recurrence.
+  The rebuilt release reports SDK 27.0 and still has a macOS 14.0 minimum.
+  Ad-hoc signing and strict signature validation passed. Matched native tab
+  fixtures differing only in SDK metadata reproduced squared tabs with SDK
+  14.4 and rounded tabs with SDK 27.0. Both captured active/key windows, with
+  the current bold-title selection code. Evidence: `build/.tab-sdk-fix/`.
+
 - **Released 1.9.1 (Codex, 2026-09-18).** Build 17, release commit/tag
   `0f25206` / `v1.9.1`, includes the three appearance improvements below.
   Feature commit `126d4ce` was fast-forwarded to main from
@@ -2402,6 +2418,10 @@ dependency, currently 2.9.6).
 - `./build.sh` signs with **Developer ID Application: Daniel Epps
   (82H77TF7AH)**, hardened runtime, secure timestamp, and ends with
   `codesign --verify --deep --strict`.
+- The executable's linked SDK must match the SDK selected for compilation.
+  `build.sh` checks this before packaging: AppKit uses that metadata to choose
+  the native appearance, independently of the minimum supported macOS version.
+  A successful compile and valid signature alone do not verify this.
 - `./build.sh --adhoc` signs ad-hoc instead: no certificate, no network. This
   is the flag for day-to-day work; everything below is only needed to ship.
 - `./build.sh --notarize` additionally zips, submits with `xcrun notarytool

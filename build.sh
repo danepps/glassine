@@ -22,12 +22,28 @@ if [[ $NOTARIZE -eq 1 && ( $ADHOC -eq 1 || "$CONFIG" != release ) ]]; then
 fi
 echo "==> $CONFIG build, $([[ $ADHOC -eq 1 ]] && echo ad-hoc || echo 'Developer ID') signing$([[ $NOTARIZE -eq 1 ]] && echo ', notarize')"
 
-swift build -c "$CONFIG" --package-path "$ROOT"
+# AppKit chooses its native design from the executable's linked SDK version.
+# Some Swift drivers pass only --sysroot to Clang when linking; Clang then
+# records the deployment target as the SDK and enables the older tab design.
+# Give the linker driver an explicit -isysroot as well as SwiftPM's SDK.
+BUILD_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+BUILD_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+swift build -c "$CONFIG" --package-path "$ROOT" --sdk "$BUILD_SDK" \
+  -Xswiftc -Xclang-linker -Xswiftc -isysroot \
+  -Xswiftc -Xclang-linker -Xswiftc "$BUILD_SDK"
+
+BINARY="$ROOT/.build/$CONFIG/Glassine"
+LINKED_SDK="$(xcrun vtool -show-build "$BINARY" | awk '$1 == "sdk" { print $2 }')"
+if [[ "$LINKED_SDK" != "$BUILD_SDK_VERSION" ]]; then
+  echo "Linked SDK $LINKED_SDK differs from build SDK $BUILD_SDK_VERSION; refusing to package an app with a different native appearance." >&2
+  exit 1
+fi
+echo "Verified linked macOS SDK: $LINKED_SDK"
 
 APP="$ROOT/build/Glassine.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$ROOT/.build/$CONFIG/Glassine" "$APP/Contents/MacOS/Glassine"
+cp "$BINARY" "$APP/Contents/MacOS/Glassine"
 cp "$ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [[ -f "$ROOT/Support/Glassine.icns" ]]; then
