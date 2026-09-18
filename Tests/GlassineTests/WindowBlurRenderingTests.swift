@@ -117,11 +117,21 @@ import Testing
         #expect(Double(strongEdge) > Double(mediumEdge) * 1.5,
                 "Strong blur must spread colour transitions more than medium blur")
 
-        let blue = try pixel(captures[3], x: 0.2, y: 0.5)
-        let red = try pixel(captures[3], x: 0.8, y: 0.5)
+        // The stronger maximum intentionally merges nearby color bands. Use
+        // two uniform backdrops covering the oversized kernel instead: a
+        // real blur must still transmit their color, unlike an opaque sheet.
+        background.setFrame(frame.insetBy(dx: -1024, dy: -1024), display: true)
+        pattern.content = .solidBlue
+        configure(blur: true, strength: 1)
+        let blueBackdrop = try await capture(name: "\(appearance.rawValue)-solid-blue-strong")
+        pattern.content = .solidRed
+        let redBackdrop = try await capture(name: "\(appearance.rawValue)-solid-red-strong")
+        let blue = try pixel(blueBackdrop, x: 0.5, y: 0.5)
+        let red = try pixel(redBackdrop, x: 0.5, y: 0.5)
         #expect(red.redComponent - blue.redComponent > 0.15,
                 "Background colours must survive: a solid frosted sheet also erases stripes")
         #expect(blue.blueComponent - red.blueComponent > 0.15)
+        background.setFrame(frame, display: true)
 
         // The previous fixture checked only the center. Large text extending
         // across all margins also exposes sharp strips and edge-only failures.
@@ -183,12 +193,17 @@ private func colorTransitionWidth(in bitmap: NSBitmapImageRep) throws -> Int {
 }
 
 private final class BlurPatternView: NSView {
-    enum Content { case stripes, colorEdge, text }
+    enum Content { case stripes, colorEdge, text, solidBlue, solidRed }
     var content = Content.stripes {
         didSet { needsDisplay = true }
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if content == .solidBlue || content == .solidRed {
+            (content == .solidBlue ? NSColor.systemBlue : NSColor.systemRed).setFill()
+            bounds.fill()
+            return
+        }
         if content == .colorEdge {
             NSColor.systemBlue.setFill()
             bounds.fill()

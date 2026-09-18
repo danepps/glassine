@@ -10,6 +10,7 @@ final class WindowChromeContentController: NSViewController {
     let documentBlur = WindowBackdropView()
     let titlebarBlur = WindowBackdropView()
     let titlebarBacking = NSView()
+    private var tabSelection: WindowTabSelection?
 
     static func install(in window: NSWindow, body: NSViewController) {
         _ = WindowChromeContentController(window: window, body: body)
@@ -56,6 +57,7 @@ final class WindowChromeContentController: NSViewController {
             titlebarBacking.topAnchor.constraint(equalTo: root.topAnchor),
             titlebarBacking.bottomAnchor.constraint(equalTo: body.view.topAnchor)
         ])
+        tabSelection = WindowTabSelection(window: window)
     }
 
     @available(*, unavailable)
@@ -92,9 +94,12 @@ final class WindowBackdropView: NSView {
 
     override func layout() {
         super.layout()
-        // A wider radius range makes the upper half useful for hiding text.
-        // Bound the minimum scale to avoid enormous virtual backing sizes.
-        let scale = CGFloat(0.1 + 3.9 * strength)
+        // Preserve the lower half, then increase progressively to 16x at the
+        // maximum (previously 4x). Large background text and icons need a much
+        // wider kernel than fine detail, particularly while the window is key.
+        // The curve and its slope remain continuous at the midpoint.
+        let upperRange = max(0, (strength - 0.5) * 2)
+        let scale = CGFloat(0.1 + 3.9 * strength + 12 * upperRange * upperRange)
         // Clear glass bends background pixels near its physical edges. Keep
         // those edges well outside our clipped viewport, including the seam
         // between the document and toolbar. Padding scales with the effect.

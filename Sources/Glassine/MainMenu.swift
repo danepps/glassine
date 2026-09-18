@@ -18,7 +18,7 @@ enum MainMenu {
         main.addItem(submenu(markdownMenu(appDelegate: appDelegate)))
         main.addItem(submenu(goMenu()))
 
-        let windows = windowMenu(appDelegate: appDelegate)
+        let windows = windowMenu()
         main.addItem(submenu(windows))
         NSApp.windowsMenu = windows
 
@@ -169,31 +169,64 @@ enum MainMenu {
         add(menu, "Reader Mode Margins…", #selector(ReaderWindowController.showReaderModeMargins(_:)))
         menu.addItem(.separator())
 
-        let appearance = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
-        let appearanceMenu = NSMenu(title: "Appearance")
-        add(appearanceMenu, "System", #selector(AppDelegate.setAppearance(_:)),
-            target: appDelegate, tag: AppearanceMode.system.rawValue)
-        add(appearanceMenu, "Light", #selector(AppDelegate.setAppearance(_:)),
-            target: appDelegate, tag: AppearanceMode.light.rawValue)
-        add(appearanceMenu, "Dark", #selector(AppDelegate.setAppearance(_:)),
-            target: appDelegate, tag: AppearanceMode.dark.rawValue)
-        appearanceMenu.addItem(.separator())
-        for paper in [DarkPaper.black, .charcoal, .gray] {
-            add(appearanceMenu, paper.title, #selector(AppDelegate.setDarkPaper(_:)),
-                target: appDelegate, tag: paper.rawValue)
-        }
-        appearanceMenu.addItem(.separator())
-        appearanceMenu.addItem(DarkModeBrightnessMenu.makeMenuItem())
-        appearanceMenu.addItem(DarkModeBrightnessMenu.makeResetMenuItem())
-        appearance.submenu = appearanceMenu
-        menu.addItem(appearance)
-
-        add(menu, "Invert Page Colors in Dark Mode",
-            #selector(AppDelegate.toggleInvertInDarkMode(_:)), target: appDelegate)
+        menu.addItem(submenu(appearanceMenu(appDelegate: appDelegate)))
 
         menu.addItem(.separator())
         add(menu, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)),
             key: "f", modifiers: [.command, .control])
+        return menu
+    }
+
+    /// App-wide visual preferences live together, regardless of whether they
+    /// affect the page, the shared window background, or both.
+    private static func appearanceMenu(appDelegate: AppDelegate) -> NSMenu {
+        let menu = NSMenu(title: "Appearance")
+        add(menu, "System", #selector(AppDelegate.setAppearance(_:)),
+            target: appDelegate, tag: AppearanceMode.system.rawValue)
+        add(menu, "Light", #selector(AppDelegate.setAppearance(_:)),
+            target: appDelegate, tag: AppearanceMode.light.rawValue)
+        add(menu, "Dark", #selector(AppDelegate.setAppearance(_:)),
+            target: appDelegate, tag: AppearanceMode.dark.rawValue)
+        menu.addItem(.separator())
+        add(menu, "Invert Page Colors in Dark Mode",
+            #selector(AppDelegate.toggleInvertInDarkMode(_:)), target: appDelegate)
+        let paperMenu = NSMenu(title: "Dark Paper")
+        for paper in [DarkPaper.black, .charcoal, .gray] {
+            add(paperMenu, paper.title, #selector(AppDelegate.setDarkPaper(_:)),
+                target: appDelegate, tag: paper.rawValue)
+        }
+        menu.addItem(submenu(paperMenu))
+        menu.addItem(DarkModeBrightnessMenu.makeMenuItem())
+        menu.addItem(DarkModeBrightnessMenu.makeResetMenuItem())
+        menu.addItem(.separator())
+
+        let tintMenu = NSMenu(title: "Toolbar Tint")
+        for color in ToolbarTint.allCases {
+            let item = add(tintMenu, color.title, #selector(AppDelegate.setToolbarTint(_:)),
+                           target: appDelegate, tag: color.rawValue)
+            let swatch = WindowChrome.backgroundColor(dark: false, tint: color)
+            item.image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
+                swatch.setFill()
+                NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
+                return true
+            }
+        }
+        menu.addItem(submenu(tintMenu))
+        for target in [WindowAppearanceSliderView.Target.document, .interface] {
+            let opacity = NSMenuItem(title: target.title, action: nil, keyEquivalent: "")
+            opacity.view = WindowAppearanceSliderView(target: target)
+            menu.addItem(opacity)
+        }
+        add(menu, "Increase Document Opacity", #selector(AppDelegate.increaseOpacity(_:)),
+            key: upArrowKey, modifiers: [.command, .option], target: appDelegate)
+        add(menu, "Decrease Document Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
+            key: downArrowKey, modifiers: [.command, .option], target: appDelegate)
+        menu.addItem(.separator())
+        add(menu, "Blur Behind Window", #selector(AppDelegate.toggleWindowBlur(_:)),
+            target: appDelegate)
+        let blur = NSMenuItem(title: "Blur Strength", action: nil, keyEquivalent: "")
+        blur.view = WindowAppearanceSliderView(target: .blur)
+        menu.addItem(blur)
         return menu
     }
 
@@ -292,39 +325,9 @@ enum MainMenu {
     }
 
     /// Must stay titled "Window", and stay `NSApp.windowsMenu`: AppKit appends
-    /// the open-window list to it. The translucency controls live at the top,
-    /// above the standard items, because they are properties of the window.
-    private static func windowMenu(appDelegate: AppDelegate) -> NSMenu {
+    /// the open-window list to it. Appearance lives under View instead.
+    private static func windowMenu() -> NSMenu {
         let menu = NSMenu(title: "Window")
-        for target in [WindowAppearanceSliderView.Target.document, .interface] {
-            let opacity = NSMenuItem(title: target.title, action: nil, keyEquivalent: "")
-            opacity.view = WindowAppearanceSliderView(target: target)
-            menu.addItem(opacity)
-        }
-        let tint = NSMenuItem(title: "Toolbar Tint", action: nil, keyEquivalent: "")
-        let tintMenu = NSMenu(title: "Toolbar Tint")
-        for color in ToolbarTint.allCases {
-            let item = add(tintMenu, color.title, #selector(AppDelegate.setToolbarTint(_:)),
-                           target: appDelegate, tag: color.rawValue)
-            let swatch = WindowChrome.backgroundColor(dark: false, tint: color)
-            item.image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
-                swatch.setFill()
-                NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3).fill()
-                return true
-            }
-        }
-        tint.submenu = tintMenu
-        menu.addItem(tint)
-        add(menu, "Blur Behind Window", #selector(AppDelegate.toggleWindowBlur(_:)),
-            target: appDelegate)
-        let blur = NSMenuItem(title: "Blur Strength", action: nil, keyEquivalent: "")
-        blur.view = WindowAppearanceSliderView(target: .blur)
-        menu.addItem(blur)
-        add(menu, "Increase Document Opacity", #selector(AppDelegate.increaseOpacity(_:)),
-            key: upArrowKey, modifiers: [.command, .option], target: appDelegate)
-        add(menu, "Decrease Document Opacity", #selector(AppDelegate.decreaseOpacity(_:)),
-            key: downArrowKey, modifiers: [.command, .option], target: appDelegate)
-        menu.addItem(.separator())
         add(menu, "Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m")
         add(menu, "Zoom", #selector(NSWindow.performZoom(_:)))
         menu.addItem(.separator())

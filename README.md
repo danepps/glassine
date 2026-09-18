@@ -13,9 +13,8 @@ updated in place.
 
 - **Dark mode that inverts the page.** Follows the system appearance; in dark
   mode the PDF content itself renders light-on-dark, not just the window chrome.
-  Toggle with View ▸ Invert Page Colors in Dark Mode, or force Light/Dark under
-  View ▸ Appearance.
-  View ▸ Appearance also picks how dark the paper is — Black, Charcoal or Gray —
+  View ▸ Appearance contains the inversion toggle and System/Light/Dark choices.
+  Its Dark Paper submenu picks how dark the paper is — Black, Charcoal or Gray —
   and the tinted window chrome follows the level you choose.
   Dark Mode Brightness in the same menu dims page content from 100% to 35% for
   low-light reading while keeping the chosen background. It is independent of
@@ -31,13 +30,15 @@ updated in place.
   sheet while keeping its live changes. Selection and highlighting remain
   available; saved, exported and printed PDFs retain their original margins.
 - **Unified, tinted toolbar and tabs.** Both share one continuous background in
-  light and dark mode. Window ▸ Toolbar Tint offers Sea Glass, Blue, Lavender,
-  Rose, Sand and Graphite. Window ▸ Toolbar & Tabs Opacity makes that
-  background translucent while keeping controls and labels legible. Window ▸
-  Document Opacity independently fades the document area from 100% down to 30%;
+  light and dark mode. View ▸ Appearance groups the window and page controls.
+  Toolbar Tint offers Sea Glass, Blue, Lavender, Rose, Sand and Graphite.
+  Toolbar & Tabs Opacity makes the background translucent while keeping
+  controls and labels legible. Document Opacity independently fades the
+  document area from 100% down to 30%;
   ⌥⌘↑ / ⌥⌘↓ step it. Blur Behind Window softens whatever shows through either
   area; turn it off for a sharp backdrop. The Blur Strength slider runs from
-  Off at 0% to Strong at 100%, independently of opacity. Turning blur off
+  Off at 0% to Strong at 100%, independently of opacity; the upper half ramps
+  up more quickly to obscure larger background text and shapes. Turning blur off
   remembers its strength. macOS 26 and later use the interior of a clear-glass
   backdrop, with its refractive edges outside the visible area and the tint
   and document opacity controlled separately; earlier
@@ -72,7 +73,8 @@ updated in place.
   A row taller than a whole page can still flow across pages rather than lose
   content.
 - **One window, native tabs.** Every PDF opens as a tab (⇧⌘[ / ⇧⌘] switch, drag
-  tabs out to split). ⌘T and the tab bar's "+" open a start tab: the new tab
+  tabs out to split). A bold title identifies the selected tab,
+  including in background windows. ⌘T and the tab bar's "+" open a start tab: the new tab
   itself shows your recent files, and picking one fills that tab in place.
   ⌘T also opens a usable start tab when only the standalone Recents window is open.
 - **Opens to your recent files, not a file dialog.** With nothing on screen

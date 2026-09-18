@@ -49,6 +49,9 @@ func chromeBackingSurvivesTabAndAppearanceChanges() throws {
                 for window in windows {
                     window.appearance = NSAppearance(named: appearance)
                     group.selectedWindow = window
+                    // The selected tab stays identifiable even when the group
+                    // is not key and its backing is almost transparent.
+                    #expect(group.windows.filter { $0.tab.attributedTitle != nil } == [window])
                     window.setContentSize(NSSize(width: 700 + opacity * 100, height: 500))
                     WindowChrome.apply(to: window)
                     window.contentView?.layoutSubtreeIfNeeded()
@@ -100,11 +103,29 @@ func chromeBackingSurvivesTabAndAppearanceChanges() throws {
             }
         }
     }
+    group.selectedWindow = windows[0]
+    windows[0].title = "Renamed fixture.pdf"
+    #expect(windows[0].tab.attributedTitle?.string == "Renamed fixture.pdf")
     // Detaching a tab must keep its own backing and restore the content guide.
     group.removeWindow(windows[1])
+    #expect(group.windows.filter { $0.tab.attributedTitle != nil } == [windows[0]])
+    windows[1].makeKeyAndOrderFront(nil)
+    windows[1].update()
     windows[1].contentView?.layoutSubtreeIfNeeded()
     let detached = try #require(windows[1].contentViewController as? WindowChromeContentController)
     #expect(detached.titlebarBacking.superview === windows[1].contentView)
     let body = detached.body.view.convert(detached.body.view.bounds, to: nil)
     #expect(abs(body.maxY - windows[1].contentLayoutRect.maxY) < 1)
+    windows[1].addTabbedWindow(windows[2], ordered: .above)
+    let detachedGroup = try #require(windows[1].tabGroup)
+    for selected in [windows[1], windows[2]] {
+        detachedGroup.selectedWindow = selected
+        #expect(detachedGroup.windows.filter { $0.tab.attributedTitle != nil } == [selected])
+    }
+    group.addWindow(windows[2])
+    group.addWindow(windows[1])
+    group.selectedWindow = windows[1]
+    #expect(group.windows.filter { $0.tab.attributedTitle != nil } == [windows[1]])
+    windows[1].close()
+    #expect(group.windows.filter { $0.tab.attributedTitle != nil } == [group.selectedWindow].compactMap { $0 })
 }

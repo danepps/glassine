@@ -34,6 +34,88 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Stronger maximum blur (unreleased; Codex, 2026-09-18).** Dan's screenshot
+  showed recognizable background icons at 100%. The backdrop scale now keeps
+  the original 0–50% behavior, then adds a smooth quadratic increase above the
+  midpoint, reaching 16x instead of 4x at 100%. The curve and its slope are
+  continuous at 50%; approximately 66.5% now matches the previous maximum.
+  Overscan still scales with the effect, keeping refractive edges outside the
+  visible window. Foreground opacity and the native focus-dependent glass
+  behavior are unchanged.
+
+  A normally launched fixture compared the previous and new maximum using
+  260-point icons and 66-point background text. All three captures confirmed
+  the app and window were active; large lettering became diffuse at the new
+  maximum while foreground document text stayed sharp. Captures and the
+  recorded focus flags are under `build/.stronger-blur/`.
+
+  Validation: native chrome geometry and slider regressions pass, as does the
+  rendered blur regression in both appearances, including all four margins,
+  Off/zero behavior and background-color transmission. The color-transmission
+  check now compares uniform blue/red backdrops covering the larger kernel;
+  nearby color bands are intentionally blended by the stronger maximum.
+  Logs: `/tmp/glassine-stronger-blur-tests.log` and
+  `/tmp/glassine-stronger-blur-render-tests.log`. The UI preview is rebuilt and
+  signature-verified; quit/reopen it to load this change. The prior preview
+  remains under a hidden build path, and the running/installed apps were not
+  restarted or replaced.
+
+- **Appearance menu consolidation (unreleased; Codex, 2026-09-18).** All
+  app-wide visual settings now live under View ▸ Appearance: System/Light/Dark,
+  page inversion, Dark Paper, dark-mode brightness, Toolbar Tint, both opacity
+  sliders and their existing keyboard shortcuts, Blur Behind Window and Blur
+  Strength. Window retains window-management commands and AppKit's open-window
+  list. Dan preferred the bold selected-tab title alone, so the colored marker
+  and its reserved accessory space were removed. Saved preferences are unchanged.
+
+  Validation: the seven targeted native chrome, appearance-control and
+  brightness tests pass, including the real menu's Reset command; the opt-in
+  open-menu slider click/drag also passes. Logs:
+  `/tmp/glassine-appearance-menu-tests.log` and
+  `/tmp/glassine-appearance-menu-slider.log`. The updated
+  `build/Glassine UI Preview.app` is rebuilt and signature-verified, with its
+  separate bundle identifier and automatic update checks disabled. Quit/reopen
+  the preview to load the menu cleanup and bold-only tabs. The previous preview
+  is preserved; the installed app and published release remain untouched.
+
+  Inactive-window investigation: Dan reports the entire window looks opaque
+  after losing focus. A normally launched fixture using the actual chrome host
+  reproduced a large change in glass blur when the app deactivated: background
+  text visible while active was completely blurred while inactive. Foreground
+  opacity stayed at 0.45 and window alpha at 1 in both captures; background
+  colors still showed through. With blur disabled, background detail remained
+  visible while inactive. A masked NSVisualEffectView ancestor with explicit
+  active state did not change inactive glass rendering and was not adopted.
+  This macOS focus-dependent blur behavior remains unchanged. Diagnostic app,
+  captures and logs: `build/.inactive-transparency/`. The direct command-line
+  fixture never activated; rely on the launch log's actual key/main/active
+  flags rather than its requested-state filenames. Only the first light/blur
+  frame in `app.log` captured a confirmed active state.
+
+- **Clear active-tab title (unreleased; Codex, 2026-09-18).** Dan's
+  screenshot showed that the native text-color difference was too subtle after
+  the chrome changes. The selected tab now has a bold title. A colored marker
+  was tried initially and removed at Dan's request. AppKit retains native tab
+  selection, accessibility, reordering and closing.
+
+  `WindowTabSelection.swift` uses public `NSWindowTab.attributedTitle`,
+  follows the group's `selectedWindow` and membership, and
+  keeps titles synchronized after renames. The shared chrome host installs it
+  for reader and Recents tabs. Group changes are observed independently of key
+  window state; window updates also check for lazily created replacement groups.
+  No private titlebar views are modified.
+
+  Validation: the expanded native chrome regression covers switching through
+  opacity/appearance combinations, renaming, detaching, forming a second tab
+  group, rejoining, and closing the selected tab. The full macOS suite (82
+  tests) passes; log `/tmp/glassine-active-tab-full-tests.log`. Native fixture
+  captures were visually checked in light/dark and background-window states;
+  files are under `build/.active-tab-preview/`. The rebuilt
+  `build/Glassine UI Preview.app` is signature-verified, retains its separate
+  bundle identifier and disabled automatic checks, and needs reopening to load
+  this change. The previous preview is preserved under a hidden build path.
+  The installed app and published 1.9.0 release were not replaced.
+
 - **Released 1.9.0 (Codex, 2026-09-18).** Build 16, release commit/tag
   `707467b` / `v1.9.0`, includes the four feature/fix sections immediately below.
   Dan approved the final preview and requested publication. The changes were
@@ -1675,7 +1757,7 @@ swift scripts/make-doc-icon.swift --pdf   # regenerate the matching PDF icon
 |---|---|
 | `main.swift` | NSApplication bootstrap, sets `AppDelegate`. |
 | `AppDelegate.swift` | Installs the menu, applies saved appearance override, shows the Recents window on launch/no windows (and hides it when a reader window becomes key), appearance & invert menu actions. Owns the Sparkle `SPUStandardUpdaterController` (started eagerly, so the scheduled background check runs). |
-| `MainMenu.swift` | Entire menu bar in code: Glassine, File, Edit, View, Markdown, Go, Window, Help. Nil-target actions ride the responder chain (`zoomIn:`, `goToNextPage:` etc. are PDFView's) and disable themselves when nothing implements them. View is display only (panes, zoom, Appearance ▸, invert, full screen) and must keep its title — AppKit appends the tab-bar items to the menu called "View". **Markdown** is its own top-level menu (2026-09-06): layout, the Style submenu (rebuilt on every open via `markdownStyleMenuIdentifier` + the app delegate's `menuNeedsUpdate`, so a `.css` dropped into the Styles folder shows up without a relaunch), Text Size ▸ plus ⌥⌘=/⌥⌘− Larger/Smaller Text, a second Export as PDF… and the LaunchServices default-app item. **Window** carries the translucency block at the top — the `OpacityMenuItemView` slider row, Blur, ⌥⌘↑/⌥⌘↓ — above the standard items, and is still `NSApp.windowsMenu`, so AppKit fills in the window list below. "Open Recent" is just a submenu with a `clearRecentDocuments:` item; AppKit fills it. "Check for Updates…" is passed the Sparkle updater as an explicit target — it isn't in the responder chain — and the app-delegate items (appearance, opacity, Markdown preferences) are targeted explicitly for the same reason. |
+| `MainMenu.swift` | Entire menu bar in code: Glassine, File, Edit, View, Markdown, Go, Window, Help. Nil-target actions ride the responder chain (`zoomIn:`, `goToNextPage:` etc. are PDFView's) and disable themselves when nothing implements them. View is display only (panes, zoom, Appearance ▸, full screen) and must keep its title — AppKit appends the tab-bar items to the menu called "View". **Markdown** is its own top-level menu (2026-09-06): layout, the Style submenu (rebuilt on every open via `markdownStyleMenuIdentifier` + the app delegate's `menuNeedsUpdate`, so a `.css` dropped into the Styles folder shows up without a relaunch), Text Size ▸ plus ⌥⌘=/⌥⌘− Larger/Smaller Text, a second Export as PDF… and the LaunchServices default-app item. **Appearance** groups System/Light/Dark, inversion, Dark Paper, brightness, Toolbar Tint, document/interface opacity, ⌥⌘↑/⌥⌘↓ and blur controls. **Window** contains window-management commands and remains `NSApp.windowsMenu`, so AppKit fills in the window list below. "Open Recent" is just a submenu with a `clearRecentDocuments:` item; AppKit fills it. "Check for Updates…" is passed the Sparkle updater as an explicit target — it isn't in the responder chain — and the app-delegate items (appearance, opacity, Markdown preferences) are targeted explicitly for the same reason. |
 | `GlassineDocument.swift` | `NSDocument` (ObjC name `GlassineDocument`, referenced from Info.plist) wrapping a `PDFDocument`. Two `Kind`s: a PDF is opened directly; a Markdown file is decoded and converted by `GlassineCore.MarkdownDocumentModel.content(of:url:)` in `read`, then typeset asynchronously and installed through `.glassineDocumentDidReplacePDF` (declared here). Owns the `FileWatcher`, the re-render on a style/size/layout change, the word count, `isContinuousMarkdown`, and `exportAsPDF` (which typesets a second, paginated render when the reader is showing a continuous one). The outline comes from `MarkdownDocumentModel.applyOutline`. `PDFDocumentDelegate`: returns `ReaderPage` for pages, forwards find callbacks to the window's `FindController` via `FindSink`. |
 | `MarkdownRenderer.swift` | The Mac's `HTMLPrinter`. `WebKitHTMLPrinter` holds one offscreen `WKWebView` in a never-shown borderless window, measures a continuous job with `scrollHeight`, and prints through `NSPrintOperation.runModal(for:delegate:didRun:)` with `canSpawnSeparateThread` — every identity check and the `nonisolated` didRun hop intact. `MarkdownRenderer.shared` is a shell that hands it to `GlassineCore.RenderQueue`, which owns the queue, superseding, the watchdog, the retry and the idle teardown. |
 | `RecentsViewController.swift` | The recents picker itself, hosted by the launch window and by every start tab. Rows, the filename filter and the two secondary labels come from `GlassineCore.RecentsModel`; this file keeps the `NSTableView`, the filter field (⌘F, via the same `focusSearch:` selector the reader uses), Return/double-click to open, Delete or "Remove from List" to forget a row, file URLs dropped anywhere on it, `drawsListBackground: false` for a start tab, and `RecentsTableView` (Return/Delete/Escape), `RecentsDropView` and `RecentRowView`. It opens nothing itself: `onOpen`, `onOpenOther` and `onCancel` leave that to the host. |
