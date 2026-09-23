@@ -50,6 +50,8 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     /// paginated job, and also when the measurement failed and the job has to
     /// fall back to Letter pages.
     private var continuousHeight: CGFloat?
+    private var generation = 0
+    private var activity: NSObjectProtocol?
 
     private var layoutWidth: CGFloat {
         (Self.paperSize.width - (wantsContinuous ? 0 : 2 * Self.margin)) * Self.printShrinkFactor
@@ -63,6 +65,8 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
                baseURL: URL?,
                layout: MarkdownLayout,
                completion: @escaping (Swift.Result<Data, Error>) -> Void) {
+        generation &+= 1
+        beginActivity()
         pendingCompletion = completion
         pendingHTML = html
         pendingBaseURL = baseURL
@@ -77,18 +81,35 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     }
 
     func reprint(completion: @escaping (Swift.Result<Data, Error>) -> Void) {
+        beginActivity()
         pendingCompletion = completion
         printLoadedPage()
     }
 
     func teardown() {
-        dropWebView()
+        generation &+= 1
         activeOperation = nil
         activeNavigation = nil
         pendingCompletion = nil
         pendingHTML = nil
         pendingBaseURL = nil
+        dropWebView()
         discardOutput()
+        endActivity()
+    }
+
+    private func beginActivity() {
+        endActivity()
+        // The invisible typesetter must not be App Napped mid-job. This does
+        // not keep the display or Mac awake; sleep is handled by the queue.
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Typesetting Markdown")
+    }
+
+    private func endActivity() {
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
     }
 
     // MARK: Web view
@@ -121,6 +142,7 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
 
     private func dropWebView() {
         webView?.navigationDelegate = nil
+        webView?.stopLoading()
         hostWindow?.contentView = nil
         webView = nil
         hostWindow = nil
@@ -138,6 +160,7 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
         pendingCompletion = nil
         activeOperation = nil
         activeNavigation = nil
+        endActivity()
         completion(result)
     }
 
@@ -151,8 +174,9 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
             prepareTablePagination()
             return
         }
+        let stamp = generation
         measureContentHeight { [weak self] height in
-            guard let self, self.pendingCompletion != nil else { return }
+            guard let self, stamp == self.generation, self.pendingCompletion != nil else { return }
             self.continuousHeight = height
             self.printLoadedPage()
         }
@@ -161,11 +185,12 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     private func prepareTablePagination() {
         guard let webView else { return }
         let navigation = activeNavigation
+        let stamp = generation
         let height = (Self.paperSize.height - 2 * Self.margin) * Self.printShrinkFactor
         webView.callAsyncJavaScript(MarkdownTablePagination.script,
             arguments: ["printableHeight": height], in: nil, in: .defaultClient) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.pendingCompletion != nil,
+                guard let self, stamp == self.generation, self.pendingCompletion != nil,
                       self.activeNavigation === navigation else { return }
                 self.printLoadedPage()
             }
@@ -282,26 +307,36 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
 extension WebKitHTMLPrinter: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
+        let stamp = generation
         // Give WebKit one run-loop turn to settle its layout before printing.
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.printWhenMeasured() }
+            MainActor.assumeIsolated {
+                guard let self, stamp == self.generation else { return }
+                self.printWhenMeasured()
+            }
         }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
         deliver(.failure(error))
     }
 
     func webView(_ webView: WKWebView,
                  didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
         deliver(.failure(error))
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === self.webView else { return }
+        generation &+= 1
+        activeOperation = nil
+        activeNavigation = nil
+        continuousHeight = nil
+        discardOutput()
         dropWebView()
         guard let html = pendingHTML, pendingCompletion != nil, !didRestartWebProcess else {
             deliver(.failure(MarkdownRenderError.printFailed))
@@ -320,9 +355,42 @@ final class MarkdownRenderer: MarkdownTypesetter {
 
     static let shared = MarkdownRenderer()
 
-    private let queue = RenderQueue(printer: WebKitHTMLPrinter())
+    private let queue: RenderQueue
+    private let workspaceNotifications: NotificationCenter
+    private var observers: [NSObjectProtocol] = []
+    private enum SuspensionReason { case system, displays, session }
+    private var suspensionReasons: Set<SuspensionReason> = []
 
-    private init() {}
+    private convenience init() {
+        self.init(printer: WebKitHTMLPrinter(), workspaceNotifications: NSWorkspace.shared.notificationCenter)
+    }
+
+    init(printer: HTMLPrinter, workspaceNotifications: NotificationCenter) {
+        queue = RenderQueue(printer: printer)
+        self.workspaceNotifications = workspaceNotifications
+        observe(NSWorkspace.willSleepNotification, reason: .system, suspended: true)
+        observe(NSWorkspace.didWakeNotification, reason: .system, suspended: false)
+        observe(NSWorkspace.screensDidSleepNotification, reason: .displays, suspended: true)
+        observe(NSWorkspace.screensDidWakeNotification, reason: .displays, suspended: false)
+        observe(NSWorkspace.sessionDidResignActiveNotification, reason: .session, suspended: true)
+        observe(NSWorkspace.sessionDidBecomeActiveNotification, reason: .session, suspended: false)
+    }
+
+    deinit {
+        for observer in observers { workspaceNotifications.removeObserver(observer) }
+    }
+
+    private func observe(_ name: Notification.Name, reason: SuspensionReason, suspended: Bool) {
+        observers.append(workspaceNotifications.addObserver(forName: name, object: nil, queue: .main) {
+            [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if suspended { self.suspensionReasons.insert(reason) }
+                else { self.suspensionReasons.remove(reason) }
+                self.queue.setSuspended(!self.suspensionReasons.isEmpty)
+            }
+        })
+    }
 
     /// Render `html` into a PDF. `key` identifies the document: queuing a second
     /// job with the same key drops the first (its completion gets `.superseded`).

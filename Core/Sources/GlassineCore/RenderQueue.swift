@@ -49,12 +49,13 @@ public protocol HTMLPrinter: AnyObject {
     func teardown()
 }
 
-/// Serial render queue with supersede-by-key, a watchdog, one retry, and an
-/// idle teardown.
+/// Serial render queue with supersede-by-key, a watchdog, bounded recovery,
+/// sleep suspension, and an idle teardown.
 ///
 /// Jobs run one at a time; a newer job for the same document supersedes one
-/// still waiting in the queue (the loser's completion gets `.superseded`). The
-/// watchdog abandons a stuck load rather than letting the next job inherit it.
+/// still waiting in the queue (the loser's completion gets `.superseded`).
+/// A stuck load gets one retry with a fresh printer before reporting a timeout.
+/// Suspending abandons the printer but keeps its job for a fresh start on wake.
 /// The printer is torn down 30 s after the last job, because a WebContent
 /// process costs 60-120 MB and a Markdown-free session should not pay for it.
 @MainActor
@@ -78,6 +79,17 @@ public final class RenderQueue: MarkdownTypesetter {
     private var watchdog: DispatchWorkItem?
     private var idleTeardown: DispatchWorkItem?
     private var didRetryPrint = false
+    private var didRetryTimeout = false
+    private var isSuspended = false
+    /// Every asynchronous callback belongs to one attempt, including callbacks
+    /// a printer delivers after teardown and delayed empty-document retries.
+    private var attempt = 0
+    private var idleGeneration = 0
+
+    /// Tests advance the same watchdog/retry work without waiting on real time.
+    package var schedule: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
     public init(printer: HTMLPrinter) {
         self.printer = printer
@@ -90,8 +102,7 @@ public final class RenderQueue: MarkdownTypesetter {
                        key: String,
                        layout: MarkdownLayout,
                        completion: @escaping (Result<RenderedMarkdown, Error>) -> Void) {
-        idleTeardown?.cancel()
-        idleTeardown = nil
+        cancelIdleTeardown()
 
         if let index = queue.firstIndex(where: { $0.key == key }) {
             let dropped = queue.remove(at: index)
@@ -102,49 +113,98 @@ public final class RenderQueue: MarkdownTypesetter {
         pump()
     }
 
+    /// The platform calls this while the system, displays, or login session
+    /// cannot render. No deadline or WebKit work is left running during sleep.
+    public func setSuspended(_ suspended: Bool) {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+        if suspended {
+            cancelIdleTeardown()
+            invalidateAttempt()
+            let interrupted = current
+            current = nil
+            printer.teardown()
+            if let interrupted {
+                // Prefer a save/style change already waiting for this file.
+                if queue.contains(where: { $0.key == interrupted.key }) {
+                    interrupted.completion(.failure(MarkdownRenderError.superseded))
+                } else {
+                    queue.insert(interrupted, at: 0)
+                }
+            }
+        } else {
+            pump()
+        }
+    }
+
     public func releaseIfIdle() {
-        idleTeardown?.cancel()
+        cancelIdleTeardown()
+        let stamp = idleGeneration
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.current == nil, self.queue.isEmpty else { return }
+                guard let self, stamp == self.idleGeneration,
+                      self.current == nil, self.queue.isEmpty else { return }
                 self.printer.teardown()
                 self.idleTeardown = nil
             }
         }
         idleTeardown = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleTeardownDelay, execute: work)
+        schedule(Self.idleTeardownDelay, work)
     }
 
     // MARK: Queue
 
     private func pump() {
-        guard current == nil, !queue.isEmpty else { return }
-        let job = queue.removeFirst()
-        current = job
+        guard !isSuspended, current == nil, !queue.isEmpty else { return }
+        current = queue.removeFirst()
+        didRetryTimeout = false
+        startCurrent()
+    }
+
+    private func startCurrent() {
+        guard let job = current else { return }
+        invalidateAttempt()
+        let stamp = attempt
         didRetryPrint = false
-        startWatchdog()
+        startWatchdog(for: stamp)
         printer.print(html: job.html, baseURL: job.baseURL, layout: job.layout) {
             [weak self] result in
-            self?.handlePrinted(result)
+            self?.handlePrinted(result, attempt: stamp)
         }
     }
 
-    private func startWatchdog() {
+    private func invalidateAttempt() {
+        attempt &+= 1
         watchdog?.cancel()
+        watchdog = nil
+    }
+
+    private func cancelIdleTeardown() {
+        idleGeneration &+= 1
+        idleTeardown?.cancel()
+        idleTeardown = nil
+    }
+
+    private func startWatchdog(for stamp: Int) {
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                // Abandon the stuck load rather than let the next job inherit it.
+                guard let self, self.current != nil, stamp == self.attempt else { return }
+                self.invalidateAttempt()
                 self.printer.teardown()
-                self.finish(.failure(MarkdownRenderError.timedOut))
+                if !self.didRetryTimeout {
+                    self.didRetryTimeout = true
+                    self.startCurrent()
+                } else {
+                    self.finish(.failure(MarkdownRenderError.timedOut))
+                }
             }
         }
         watchdog = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout, execute: work)
+        schedule(Self.timeout, work)
     }
 
-    private func handlePrinted(_ result: Result<Data, Error>) {
-        guard current != nil else { return }
+    private func handlePrinted(_ result: Result<Data, Error>, attempt stamp: Int) {
+        guard current != nil, stamp == attempt else { return }
         switch result {
         case .failure(let error):
             finish(.failure(error))
@@ -154,15 +214,16 @@ public final class RenderQueue: MarkdownTypesetter {
                 // freshly created web view; one retry a beat later fixes it.
                 if !didRetryPrint {
                     didRetryPrint = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryDelay) {
+                    let retry = DispatchWorkItem {
                         [weak self] in
                         MainActor.assumeIsolated {
-                            guard let self, self.current != nil else { return }
+                            guard let self, self.current != nil, stamp == self.attempt else { return }
                             self.printer.reprint { [weak self] retry in
-                                self?.handlePrinted(retry)
+                                self?.handlePrinted(retry, attempt: stamp)
                             }
                         }
                     }
+                    schedule(Self.retryDelay, retry)
                     return
                 }
                 finish(.failure(MarkdownRenderError.emptyDocument))
@@ -173,8 +234,7 @@ public final class RenderQueue: MarkdownTypesetter {
     }
 
     private func finish(_ result: Result<RenderedMarkdown, Error>) {
-        watchdog?.cancel()
-        watchdog = nil
+        invalidateAttempt()
         guard let job = current else { return }
         current = nil
         job.completion(result)

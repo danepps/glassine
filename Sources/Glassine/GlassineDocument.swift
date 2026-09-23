@@ -346,6 +346,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     }
 
     override func close() {
+        // A render suspended at sleep may complete much later. A closed tab
+        // must not install its result or present a delayed typesetting alert.
+        renderGeneration += 1
         // close() is also NSDocument's explicit discard path after Don't Save.
         pendingHighlightSave?.cancel()
         pendingHighlightSave = nil

@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-18. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-23. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,34 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Markdown sleep/wake recovery (Codex, 2026-09-23).** The render
+  queue now suspends during system/display sleep or an inactive login session,
+  tears down the interrupted printer, and starts the newest queued revision
+  with a fresh deadline after all suspension reasons clear. The app registers
+  these observers at startup, before its first Markdown file. A normal stalled
+  render gets one fresh-printer retry before the existing timeout error.
+
+  A scoped activity prevents App Nap while typesetting without preventing
+  display or system sleep. Queue callbacks, empty-print retries, WebKit layout
+  callbacks and terminated-process notifications reject abandoned attempts.
+  Closing a tab invalidates its render so it cannot install pages or present a
+  delayed error after wake.
+
+  The new stalled-printer regression failed against the original code with the
+  ten-second timeout and passes with recovery. All 157 Core tests pass. The
+  macOS suite completes successfully with 86 reported tests, including four
+  new recovery tests (one with both layout cases); its two opt-in appearance/UI
+  checks remain skipped.
+  Native WebKit produces readable paginated and continuous PDFs after simulated
+  sleep/wake, using the latest revision. Overlapping sleep reasons, closed tabs,
+  bounded failures and stale callbacks are covered. An actual unattended
+  sleep/wake cycle has not been reproduced or observed after the fix.
+
+  Developed in an isolated checkout based on 1.9.2, preserving the older
+  checkout's existing edits. The local development build was installed and its
+  running process and reopened reading PDF verified. Validation logs and the
+  original installed-app backup are under `build/markdown-wake-fix/`.
 
 - **Released 1.9.2 (Codex, 2026-09-18).** Build 18, release commit/tag
   `b365ce6` / `v1.9.2`, delivers the SDK-metadata correction below (fix commit
@@ -1845,7 +1873,7 @@ arithmetic, the recents model, and both paths through `applyOutline`.
 | `ReadingPosition.swift` | What is saved and when: the position read once at init, the `restoreStarted`/`restoreFinished` gates, the two-pass `go(to:)` with its single retry, `targetForInstall(initial:)` and `lastInstallTarget`. |
 | `ReadingProgress.swift` | The continuous-Markdown fraction and its inverse, as pure geometry. |
 | `MarkdownDocumentModel.swift` | `MarkdownContent` (html, headings, stats, hash) and the two functions that make it — one synchronous for a concurrent `read`, one off-main for a reload — plus `applyOutline`, which builds the bookmark tree either by scanning and removing the `glassine-outline://` link annotations (macOS) or from a pre-located heading map (iOS). Also `RenderedMarkdown` and the `MarkdownTypesetter` protocol. |
-| `RenderQueue.swift` | `MarkdownRenderError`, the `HTMLPrinter` primitive, and the platform-independent render pipeline: one job at a time, supersede by key, a 10 s watchdog that abandons a stuck load, one retry of an empty document after 0.2 s, and a 30 s idle teardown. |
+| `RenderQueue.swift` | `MarkdownRenderError`, the `HTMLPrinter` primitive, and the platform-independent render pipeline: one job at a time, supersede by key, a 10 s watchdog with one fresh-printer retry, suspension and restart across sleep, one retry of an empty document after 0.2 s, and a 30 s idle teardown. Attempt identities reject abandoned callbacks. |
 | `RecentsModel.swift` | `RecentRow`, the rows built from `Prefs.recentDocuments` through `Prefs.resolvedURL`, the filename filter, and the folder/page and relative-date strings. |
 
 Support/: `Info.plist`, `Glassine.icon` (Icon Composer package, light+dark),

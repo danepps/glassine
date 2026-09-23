@@ -47,6 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // Instantiating the shared controller early makes Finder opens and the
         // Open Recent menu work from the first event loop pass.
         _ = NSDocumentController.shared
+        // Observe sleep even before the first Markdown file is opened. The
+        // offscreen WebKit view itself is still created only for a render.
+        _ = MarkdownRenderer.shared
     }
 
     /// Set once the app is on its way out, so a window closing during quit does
