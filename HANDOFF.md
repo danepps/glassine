@@ -34,7 +34,26 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Markdown sleep/wake recovery (Codex, 2026-09-23).** The render
+- **Released 1.9.3 (Codex, 2026-09-23).** Build 19, release commit/tag
+  `685095d` / `v1.9.3`, includes the Markdown recovery fix below (source commit
+  `17e4272`). All 157 Core tests passed and the serial macOS suite completed
+  successfully with 86 reported tests; two opt-in appearance/UI checks were
+  skipped. The release build retains SDK 27.0 and minimum macOS 14.0.
+
+  Apple accepted notarization submission
+  `95af2ebe-d56b-49f1-b879-614f678d16a0`. Independent unauthenticated downloads
+  of the public versioned and stable archives match the local release. The
+  downloaded app's metadata, Developer ID signature, stapled ticket and
+  Gatekeeper acceptance passed, as did the Sparkle Ed25519 signature against
+  the existing update key. The public feed offers 1.9.3/build 19, the tag and
+  release are public, and Folio's frozen feed is unchanged.
+  Archive SHA-256:
+  `f52e8b631bd7e916edd719b78611df7e8925e4c74a005c62cabe929d3caab4eb`.
+  Logs and verification files: `build/.release-1.9.3/` in the isolated release
+  checkout at `build/markdown-wake-fix/source`.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.3
+
+- **Markdown sleep/wake recovery (1.9.3; Codex, 2026-09-23).** The render
   queue now suspends during system/display sleep or an inactive login session,
   tears down the interrupted printer, and starts the newest queued revision
   with a fresh deadline after all suspension reasons clear. The app registers
