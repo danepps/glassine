@@ -34,7 +34,26 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Post-review fixes (unreleased; Codex, 2026-09-23).** Branch
+- **Released 1.9.4 (Codex, 2026-09-23).** Build 20, release commit/tag
+  `f68afbc` / `v1.9.4`, includes the three review fixes in `d6f97fa` below.
+  All 160 Core tests and 87 macOS tests passed; three opt-in table/menu/blur
+  checks were skipped. The release build retains SDK 27.0 and minimum macOS
+  14.0, using Command Line Tools and the native SwiftPM build engine.
+
+  Apple accepted notarization submission
+  `9fc65763-83e5-4dc7-8251-2ab166118ab8`. Independent unauthenticated downloads
+  of both the versioned and stable archives match the local release. Bundle
+  metadata, Developer ID signature, stapled notarization, Gatekeeper and the
+  Sparkle Ed25519 signature all verified. The public feed offers 1.9.4/build 20;
+  main and the release tag are pushed, and Folio's frozen feed is unchanged.
+  Archive SHA-256:
+  `c0ff18a9545b6b3ba67dec0640820859aac3734ef2d18a56795085eae3235d18`.
+  Logs, notes, downloads and verification scripts: `build/.release-1.9.4/` in
+  the checkout at `build/markdown-wake-fix/source`. The installed app was not
+  replaced manually; the update is available through Sparkle.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.4
+
+- **Post-review fixes (1.9.4; Codex, 2026-09-23).** Branch
   `codex/review-race-fixes`, based on 1.9.3. A failed Markdown refresh now
   permits an identical later save to retry, while duplicate saves during an
   active render still coalesce. Export and Print decide whether to paginate
@@ -52,7 +71,7 @@ Dan's stated requirements, all met as of this handoff:
   the native build engine with explicit Command Line Tools Testing framework,
   plugin and runtime paths. Reproduction command and logs are under
   `build/.review-race-fixes/` (`run-tests.sh core` / `run-tests.sh mac`).
-  These changes have not been released or installed over the running app.
+  Released in 1.9.4 as recorded above.
 
 - **Released 1.9.3 (Codex, 2026-09-23).** Build 19, release commit/tag
   `685095d` / `v1.9.3`, includes the Markdown recovery fix below (source commit
