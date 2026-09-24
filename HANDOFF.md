@@ -34,6 +34,26 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Post-review fixes (unreleased; Codex, 2026-09-23).** Branch
+  `codex/review-race-fixes`, based on 1.9.3. A failed Markdown refresh now
+  permits an identical later save to retry, while duplicate saves during an
+  active render still coalesce. Export and Print decide whether to paginate
+  from the installed PDF's layout, so switching Continuous → Pages cannot
+  send the old tall page to output. Recent-file opens, removals, bookmark
+  relocations and initial seeding now update the list atomically; bookmark
+  creation stays outside the lock and off the main thread for opens.
+
+  Validation: all 160 Core tests passed. The serial macOS suite reports 90
+  tests: 87 passed and three opt-in table/menu/blur checks were skipped. New
+  tests cover failed content/style refreshes, duplicate saves, reverting text
+  during a pending render, overlapping recents mutations, and real WebKit
+  export/print while a Pages render is held pending. The default Swift build
+  engine failed to load Testing macros during the full run; final suites used
+  the native build engine with explicit Command Line Tools Testing framework,
+  plugin and runtime paths. Reproduction command and logs are under
+  `build/.review-race-fixes/` (`run-tests.sh core` / `run-tests.sh mac`).
+  These changes have not been released or installed over the running app.
+
 - **Released 1.9.3 (Codex, 2026-09-23).** Build 19, release commit/tag
   `685095d` / `v1.9.3`, includes the Markdown recovery fix below (source commit
   `17e4272`). All 157 Core tests passed and the serial macOS suite completed

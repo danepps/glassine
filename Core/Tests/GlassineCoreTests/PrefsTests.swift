@@ -241,6 +241,86 @@ struct PrefsTests {
         }
     }
 
+    /// Pause an open after its list read, then attempt a second mutation. An
+    /// unprotected writer would publish the stale snapshot after that mutation;
+    /// a protected writer makes the second mutation wait for its transaction.
+    private func overlappingRecentUpdate(
+        initial: [RecentDocument], opening url: URL,
+        mutation: @escaping @Sendable () -> Void
+    ) throws -> [RecentDocument] {
+        Prefs.flushRecentDocumentWrites()
+        let name = "com.epps.Glassine.tests.\(UUID())"
+        let suite = try #require(HeldRecentReadDefaults(suiteName: name))
+        let previous = Prefs.defaults
+        Prefs.defaults = suite
+        let finished = DispatchGroup()
+        defer {
+            suite.releaseRead.signal()
+            finished.wait()
+            Prefs.flushRecentDocumentWrites()
+            Prefs.defaults = previous
+            suite.removePersistentDomain(forName: name)
+        }
+        Prefs.recentDocuments = initial
+        suite.arm()
+        Prefs.noteRecentDocument(url, pageCount: 7)
+        try #require(suite.capturedRead.wait(timeout: .now() + 5) == .success)
+        finished.enter()
+        DispatchQueue.global().async {
+            mutation()
+            finished.leave()
+        }
+        // Give an unprotected mutation time to finish before the stale open
+        // writes. With the lock it cannot finish until releaseRead is signaled.
+        _ = finished.wait(timeout: .now() + 0.2)
+        suite.releaseRead.signal()
+        try #require(finished.wait(timeout: .now() + 5) == .success)
+        Prefs.flushRecentDocumentWrites()
+        return Prefs.recentDocuments
+    }
+
+    @Test("An overlapping open cannot resurrect a removed recent file")
+    func concurrentRecentRemoval() throws {
+        let directory = TempDirectory()
+        let old = directory.write(Data("old".utf8), to: "old.pdf")
+        let new = directory.write(Data("new".utf8), to: "new.pdf")
+        let entries = try overlappingRecentUpdate(initial: [
+            RecentDocument(path: old.path, bookmark: nil, lastOpened: Date(), pageCount: 1)
+        ], opening: new) {
+            Prefs.removeRecentDocument(path: old.path)
+        }
+        #expect(entries.map(\.path) == [new.standardizedFileURL.path])
+        #expect(entries.first?.pageCount == 7)
+    }
+
+    @Test("An overlapping open and bookmark relocation both survive")
+    func concurrentRecentRelocation() throws {
+        let directory = TempDirectory()
+        let old = directory.write(Data("old".utf8), to: "before.pdf")
+        let entry = RecentDocument(path: old.path, bookmark: try old.bookmarkData(),
+                                   lastOpened: Date(), pageCount: 3)
+        let moved = directory.url.appendingPathComponent("after.pdf")
+        try FileManager.default.moveItem(at: old, to: moved)
+        let new = directory.write(Data("new".utf8), to: "new.pdf")
+        let entries = try overlappingRecentUpdate(initial: [entry], opening: new) {
+            _ = Prefs.resolvedURL(for: entry)
+        }
+        #expect(entries.map(\.path) == [new.standardizedFileURL.path, moved.standardizedFileURL.path])
+        #expect(entries.map(\.pageCount) == [7, 3])
+    }
+
+    @Test("Seeding cannot overwrite a document opened while legacy entries were collected")
+    func seedAfterConcurrentOpen() throws {
+        let directory = TempDirectory()
+        let new = directory.write(Data("new".utf8), to: "new.pdf")
+        let legacy = RecentDocument(path: "/tmp/legacy.pdf", bookmark: nil,
+                                    lastOpened: .distantPast, pageCount: nil)
+        let entries = try overlappingRecentUpdate(initial: [], opening: new) {
+            Prefs.seedRecentDocuments([legacy])
+        }
+        #expect(entries.map(\.path) == [new.standardizedFileURL.path])
+    }
+
     @Test("resolvedURL finds a moved file through its bookmark and rewrites the entry")
     func resolvedURLFollowsAMove() throws {
         try withIsolatedDefaults {
@@ -344,5 +424,28 @@ struct PrefsTests {
             #expect(rows[0].pageCount == 5)
             #expect(rows[1].isMissing == true)
         }
+    }
+}
+
+private final class HeldRecentReadDefaults: UserDefaults, @unchecked Sendable {
+    let capturedRead = DispatchSemaphore(value: 0)
+    let releaseRead = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var holdNextRead = false
+
+    func arm() { lock.withLock { holdNextRead = true } }
+
+    override func array(forKey key: String) -> [Any]? {
+        let snapshot = super.array(forKey: key)
+        let shouldHold = lock.withLock {
+            guard holdNextRead, key == "recentDocuments" else { return false }
+            holdNextRead = false
+            return true
+        }
+        if shouldHold {
+            capturedRead.signal()
+            _ = releaseRead.wait(timeout: .now() + 10)
+        }
+        return snapshot
     }
 }

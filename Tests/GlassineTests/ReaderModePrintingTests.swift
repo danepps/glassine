@@ -269,9 +269,19 @@ struct ReaderModePrintingTests {
         #expect(capture.errors.first?.localizedDescription.contains("could not prepare") == true)
     }
 
-    @Test("Printing continuous Markdown typesets regular pages before opening the print operation")
-    func continuousMarkdownCommand() async throws {
+    @Test("Printing continuous Markdown typesets regular pages, including during a layout change", arguments: [false, true])
+    func continuousMarkdownCommand(switchToPages: Bool) async throws {
         _ = NSApplication.shared
+        Prefs.flushRecentDocumentWrites()
+        let name = "com.epps.Glassine.print-tests.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        let previous = Prefs.defaults
+        Prefs.defaults = defaults
+        defer {
+            Prefs.flushRecentDocumentWrites()
+            Prefs.defaults = previous
+            defaults.removePersistentDomain(forName: name)
+        }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("glassine-markdown-print-\(UUID())")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -295,6 +305,14 @@ struct ReaderModePrintingTests {
         let source = try #require(document.pdf)
         #expect(document.needsPaginatedOutput && controller.validateMenuItem(item))
         #expect(try #require(source.page(at: 0)).bounds(for: .mediaBox).height > 792)
+        let pending = ControlledMarkdownTypesetter()
+        if switchToPages {
+            document.markdownTypesetter = pending
+            Prefs.markdownLayout = .pages
+            document.markdownTypesetter = nil
+            #expect(pending.requests.count == 1 && document.pdf === source)
+            #expect(document.needsPaginatedOutput)
+        }
         let capture = PrintCapture()
         defer { capture.restore() }
         try capture.install()

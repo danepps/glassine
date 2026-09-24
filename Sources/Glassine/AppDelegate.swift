@@ -382,7 +382,7 @@ extension Prefs {
         }
 
         // The two sources are each in their own order, so sort the whole thing.
-        recentDocuments = seeded.sorted { $0.lastOpened > $1.lastOpened }
+        seedRecentDocuments(seeded.sorted { $0.lastOpened > $1.lastOpened })
     }
 
     /// Deliberately no bookmark: making one reads the file, and doing that for

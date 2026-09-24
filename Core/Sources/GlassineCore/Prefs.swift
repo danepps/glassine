@@ -357,6 +357,9 @@ public enum Prefs {
     // MARK: Recent documents
 
     public static let maxRecentDocuments = 30
+    /// Protect whole read-modify-write operations, including main-thread
+    /// removals and bookmark relocations that overlap background opens.
+    private static let recentsLock = NSLock()
 
     /// Most recent first, capped. Glassine's own list rather than
     /// NSDocumentController's, because that one is ten items long, carries no
@@ -367,28 +370,48 @@ public enum Prefs {
             return stored.compactMap(RecentDocument.init(stored:))
         }
         set {
-            defaults.set(newValue.prefix(maxRecentDocuments).map(\.stored),
-                         forKey: Key.recentDocuments)
+            recentsLock.withLock { storeRecentDocuments(newValue) }
         }
     }
 
-    /// Documents can be read concurrently, and this is a read-modify-write of
-    /// one defaults key that also makes a bookmark, which reads the file. One
-    /// serial queue, off the main thread, settles both.
+    /// Call only while holding recentsLock. Readers get one complete defaults
+    /// snapshot; writers must keep the lock from the read through this write.
+    private static func storeRecentDocuments(_ documents: [RecentDocument]) {
+        defaults.set(documents.prefix(maxRecentDocuments).map(\.stored),
+                     forKey: Key.recentDocuments)
+    }
+
+    private static func updateRecentDocuments(_ update: (inout [RecentDocument]) -> Void) {
+        recentsLock.withLock {
+            var list = recentDocuments
+            update(&list)
+            storeRecentDocuments(list)
+        }
+    }
+
+    /// Gathering legacy entries can overlap the first open at launch. Recheck
+    /// emptiness in the same transaction so seeding cannot erase that open.
+    public static func seedRecentDocuments(_ documents: [RecentDocument]) {
+        updateRecentDocuments { list in
+            if list.isEmpty { list = documents }
+        }
+    }
+
+    /// Bookmark creation reads the file, so keep it off the main thread and
+    /// outside recentsLock. The queue also preserves the order of opens.
     private static let recentsQueue = DispatchQueue(label: "com.epps.Glassine.recents")
 
     /// Record an open: the file moves to the front and takes today's date.
     public static func noteRecentDocument(_ url: URL, pageCount: Int?) {
         let file = url.standardizedFileURL
         recentsQueue.async {
-            var list = recentDocuments
-            list.removeAll { $0.path == file.path }
-            list.insert(RecentDocument(path: file.path,
+            let entry = RecentDocument(path: file.path,
                                        bookmark: try? file.bookmarkData(),
-                                       lastOpened: Date(),
-                                       pageCount: pageCount),
-                        at: 0)
-            recentDocuments = list
+                                       lastOpened: Date(), pageCount: pageCount)
+            updateRecentDocuments { list in
+                list.removeAll { $0.path == file.path }
+                list.insert(entry, at: 0)
+            }
         }
     }
 
@@ -400,9 +423,7 @@ public enum Prefs {
     }
 
     public static func removeRecentDocument(path: String) {
-        var list = recentDocuments
-        list.removeAll { $0.path == path }
-        recentDocuments = list
+        updateRecentDocuments { list in list.removeAll { $0.path == path } }
     }
 
     /// Where the entry's file is now: its stored path if that still exists,
@@ -424,11 +445,12 @@ public enum Prefs {
         // Standardized, so the returned URL and the rewritten entry agree on the
         // path -- which is what the Recents list keys a row by.
         let moved = url.standardizedFileURL
-        var list = recentDocuments
-        if let index = list.firstIndex(where: { $0.path == entry.path }) {
-            list[index].path = moved.path
-            if stale { list[index].bookmark = try? moved.bookmarkData() }
-            recentDocuments = list
+        let refreshedBookmark = stale ? (try? moved.bookmarkData()) : nil
+        updateRecentDocuments { list in
+            if let index = list.firstIndex(where: { $0.path == entry.path }) {
+                list[index].path = moved.path
+                if stale { list[index].bookmark = refreshedBookmark }
+            }
         }
         return moved
     }

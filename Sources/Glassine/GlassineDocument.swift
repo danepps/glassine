@@ -47,6 +47,12 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // Core; this class keeps the NSDocument shell around it.
     private var content: MarkdownContent?
     private var styling = MarkdownStyling.current
+    /// A failed refresh leaves the last good PDF on screen. Identical bytes
+    /// from a later save still need a retry until a new render succeeds.
+    private var renderNeedsRetry = false
+    /// Injectable for document lifecycle tests; normal rendering uses the
+    /// app-wide typesetter, created only when a Markdown document needs it.
+    var markdownTypesetter: MarkdownTypesetter?
     /// Word count of the Markdown behind the current render; nil for a PDF.
     /// The window shows it as its subtitle.
     var markdownStats: MarkdownStats? { content?.stats }
@@ -228,16 +234,18 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     private func startRender() {
         guard kind == .markdown, let bodyHTML = content?.html else { return }
+        // Repeated saves of the same bytes must not duplicate an in-flight
+        // render. Only a completed failure makes those bytes retryable.
+        renderNeedsRetry = false
         renderGeneration += 1
         let generation = renderGeneration
         let html = MarkdownHTML.page(body: bodyHTML,
                                      title: displayName ?? "",
                                      styling: styling)
         let layout = styling.layout
-        MarkdownRenderer.shared.render(html: html,
-                                       baseURL: fileURL,
-                                       key: renderKey,
-                                       layout: layout) { [weak self] result in
+        let typesetter = markdownTypesetter ?? MarkdownRenderer.shared
+        typesetter.render(html: html, baseURL: fileURL, key: renderKey,
+                          layout: layout) { [weak self] result in
             guard let self, generation == self.renderGeneration else { return }
             // "First" is a fact about the document, not about which event asked
             // for this render: a save or a style change that lands before the
@@ -249,8 +257,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             case .success(let rendered):
                 self.install(rendered, initial: initial, layout: layout)
             case .failure(let error):
-                // A reload that fails almost always means a half-written file;
-                // keep showing the last good render and wait for the next save.
+                // Preserve the last good PDF, but allow the next save to retry
+                // even when its bytes match the revision that just failed.
+                self.renderNeedsRetry = true
                 guard initial else { return }
                 self.presentError(error)
                 self.close()
@@ -303,9 +312,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private func makeReloader() -> MarkdownReloader {
         let made = MarkdownReloader()
         made.onContent = { [weak self] fresh in
-            // The hash gate stays here: the reloader guarantees order, not that
-            // the newest bytes differ from the ones already on screen.
-            guard let self, self.content?.hash != fresh.hash else { return }
+            // Cached source can be newer than the PDF on screen after a
+            // failure. A matching hash only rules out work if its last render
+            // succeeded or is still running.
+            guard let self, self.content?.hash != fresh.hash || self.renderNeedsRetry else { return }
             self.content = fresh
             self.captureAnchor()
             self.startRender()
@@ -473,7 +483,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     /// True when what is on screen is not what should leave the app: a
     /// continuous Markdown render is one 40-inch page, which is a way to read
     /// and not a thing to hand someone or feed a printer.
-    var needsPaginatedOutput: Bool { kind == .markdown && styling.layout == .continuous }
+    /// Use the installed layout: the Pages preference can change before its
+    /// asynchronous render has replaced the continuous PDF.
+    var needsPaginatedOutput: Bool { kind == .markdown && isContinuousMarkdown }
 
     /// The document an export or a print should use. Output is always
     /// paginated, so a continuous render is typeset a second time under its own
@@ -494,10 +506,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
                                      title: displayName ?? "",
                                      styling: styling.paginated)
         let outline = content?.headings ?? []
-        MarkdownRenderer.shared.render(html: html,
-                                       baseURL: fileURL,
-                                       key: renderKey + ".export",
-                                       layout: .pages) { result in
+        let typesetter = markdownTypesetter ?? MarkdownRenderer.shared
+        typesetter.render(html: html, baseURL: fileURL, key: renderKey + ".export",
+                          layout: .pages) { result in
             switch result {
             case .success(let rendered):
                 MarkdownDocumentModel.applyOutline(outline, to: rendered.document)
