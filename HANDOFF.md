@@ -34,7 +34,29 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Finder rename crash fix (unreleased; Codex, 2026-09-26).** Developed on
+- **Released 1.9.5 (Codex, 2026-09-26).** Build 21, release commit/tag
+  `3e46ed6` / `v1.9.5`, includes the Finder rename crash fix in `0f6a925`
+  below. All 160 Core tests and 90 macOS tests passed before packaging;
+  three existing opt-in table/menu/blur checks were skipped.
+
+  Apple accepted notarization submission
+  `5c760d88-9d13-4c10-9ea8-e190f82eb727`. Independent unauthenticated downloads
+  of the versioned and latest archives match the local release. Bundle
+  metadata, Developer ID signature, stapled ticket, Gatekeeper acceptance,
+  and the Sparkle Ed25519 signature all verified. The downloaded executable
+  retains SDK 27.0 and minimum macOS 14.0. The public feed offers 1.9.5/build
+  21; main, the fix branch, and the release tag are pushed. Folio's frozen
+  feed is unchanged. Archive SHA-256:
+  `b717c04242532c9bb9c40ff1e854a6eeabcad94c3d4e4abae7f5d6dfd38bd24b`.
+  Logs, notes, public downloads, and verification scripts are in
+  `build/.release-1.9.5/` in the checkout at `build/markdown-wake-fix/source`.
+  The installed app was not replaced manually; the update is available
+  through Sparkle. The manual Finder UI check remains unverified as noted
+  below; the automated tests exercise NSDocument's background callback and
+  real file-coordination delivery.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.5
+
+- **Finder rename crash fix (1.9.5; Codex, 2026-09-26).** Developed on
   `codex/finder-rename-crash` in `build/finder-rename-fix`, from current GitHub
   main `a80992a` / release 1.9.4. The original checkout's local edits are
   preserved. Both September 26 installed-app crash reports stop in
