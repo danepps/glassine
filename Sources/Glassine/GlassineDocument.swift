@@ -351,8 +351,13 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func presentedItemDidMove(to newURL: URL) {
         super.presentedItemDidMove(to: newURL)
-        MainActor.assumeIsolated { invalidateReloads() }
-        watcher?.retarget(to: newURL)
+        // NSDocument delivers Finder moves on its file-presenter queue.
+        // Reload state and watcher ownership belong to the main actor. Enqueue
+        // both together, without blocking file coordination on the main thread.
+        DispatchQueue.main.async { [weak self] in
+            self?.invalidateReloads()
+            self?.watcher?.retarget(to: newURL)
+        }
     }
 
     override func close() {

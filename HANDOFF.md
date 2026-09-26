@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-23. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-09-26. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -33,6 +33,35 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Finder rename crash fix (unreleased; Codex, 2026-09-26).** Developed on
+  `codex/finder-rename-crash` in `build/finder-rename-fix`, from current GitHub
+  main `a80992a` / release 1.9.4. The original checkout's local edits are
+  preserved. Both September 26 installed-app crash reports stop in
+  `GlassineDocument.presentedItemDidMove(to:)`: NSDocument invokes it on its
+  file-presenter queue, but `MainActor.assumeIsolated` asserted main-thread
+  execution. The override now queues reload invalidation and watcher
+  retargeting together on the main queue, after the normal superclass call,
+  without synchronously blocking file coordination.
+
+  The new PDF regression reproduced the same SIGTRAP and stack before the
+  fix. Three regressions now pass: background-queue PDF rename with a save to
+  the new path, real NSFileCoordinator Markdown renames and cross-folder
+  moves followed by uncoordinated atomic saves, and closing before the queued
+  move handler runs. All 160 Core tests pass; the serial macOS run reports
+  93 tests, with 90 passed and three existing opt-in checks skipped. Tests
+  used the documented Command Line Tools/native-build workaround. PDFKit
+  rendering required running the macOS tests outside the execution sandbox.
+
+  The ad-hoc release build and deep/strict signatures pass, with SDK 27.0.
+  `build/Glassine Finder Rename Test.app` inside the fix worktree has a separate
+  bundle ID, disabled updates, and document-handler rank None. Its executable
+  matches the release build after removing signatures from comparison copies.
+  The additional Finder UI check remains unverified: computer use stalled
+  launching the test app, then stopped because the Finder state was changing.
+  Logs and test fixtures are in `/private/tmp/glassine-finder-rename-20260926/`.
+  This development validation did not replace the installed app or publish
+  a release.
 
 - **Released 1.9.4 (Codex, 2026-09-23).** Build 20, release commit/tag
   `f68afbc` / `v1.9.4`, includes the three review fixes in `d6f97fa` below.
