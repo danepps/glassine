@@ -157,6 +157,30 @@ struct FindControllerTests {
         #expect(delegate.counts.contains { $0.hasSuffix(" found…") })
     }
 
+    @Test("A query matches accented and unaccented spellings alike")
+    func findIgnoresDiacritics() async {
+        let document = makeTextPDF(pages: [
+            "Café cafe CAFÉ résumé resume naïve",
+        ])
+        let forwarder = FindForwarder()
+        document.delegate = forwarder
+        let controller = FindController(document: document)
+        controller.delegate = FakeFindDelegate()
+        forwarder.sink = controller
+
+        controller.startFind("cafe")
+        await settle(controller)
+        #expect(controller.matches.count == 3)
+
+        controller.startFind("résumé")
+        await settle(controller)
+        #expect(controller.matches.count == 2)
+
+        controller.startFind("naive")
+        await settle(controller)
+        #expect(controller.matches.count == 1)
+    }
+
     @Test("The field's action with an unchanged query does not restart the search")
     func unchangedQueryIsANoOp() async {
         let document = makeDocument()

@@ -182,8 +182,12 @@ public final class FindController: FindSink {
     private func beginFind(_ trimmed: String) {
         findInProgress = !trimmed.isEmpty
         guard !trimmed.isEmpty, let pdf = document else { return }
-        pdf.beginFindString(trimmed, withOptions: [.caseInsensitive])
+        pdf.beginFindString(trimmed, withOptions: Self.searchOptions)
     }
+
+    /// Case- and accent-blind, so "cafe" finds "Café" and "Cafe" alike, and
+    /// "café" finds the plain spelling too.
+    static let searchOptions: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
 
     private func startPendingFind() {
         guard let query = pendingQuery else { return }
