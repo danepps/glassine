@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-09-26. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-10-11. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -29,10 +29,42 @@ Dan's stated requirements, all met as of this handoff:
   a subtle, customizable tint, with independent background transparency.
 - Arrow keys always move by page (↑/← prev, ↓/→ next; ⌘↑/⌘↓ first/last).
 - Search shows a hit count; matches are bright green (#5CF25C-ish), current
-  match underlined.
+  match underlined. Search ignores case and accent marks ("cafe" finds
+  "Café").
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Released 1.9.6 (Claude, 2026-10-11).** Build 22, release commit/tag
+  `0fbcf97` / `v1.9.6`. Single change: accent-insensitive search
+  (`5a32614`, branch `accent-insensitive-search`, cut from `main` at
+  `f7fba3f` in the worktree `build/accent-search`, so the uncommitted Quick
+  Look/chrome-tint work in the main checkout was left alone).
+  `FindController.searchOptions` is now `[.caseInsensitive,
+  .diacriticInsensitive]`; the one find path is shared, so iOS picks it up in
+  its next build (no TestFlight build was pushed). New Core test "A query
+  matches accented and unaccented spellings alike". All 161 Core tests pass.
+
+  **macOS test suite has 5 pre-existing failures** (93 tests): Reader Mode
+  "Unlocking restores saved Reader Mode and reading position" (both cases) and
+  "Automatic trimming keeps position…" (`ReaderModeSettings.load(...).enabled`
+  false), "Coordinated Markdown renames and folder moves keep automatic refresh
+  working" (FilePresenterTests.swift:153), and "Export remains paginated while
+  switching away from Continuous" (MarkdownDocumentRefreshTests.swift:159).
+  The identical failures reproduce on untouched `f7fba3f` (1.9.5 source), so
+  they are not from this change; they are new since 1.9.5's all-green run,
+  probably environmental (OS/toolchain or shared defaults). Not investigated.
+  `release.sh` does not run tests, so they did not block the release.
+
+  Apple accepted notarization submission
+  `a9f296ec-f1a6-4b7d-828c-023174a7a8c0`; staple validated and Gatekeeper
+  reports Notarized Developer ID. The public feed offers 1.9.6/build 22, and
+  an unauthenticated download of the versioned archive matches the local one.
+  Archive SHA-256:
+  `064f2dab4d9ae7baa00f12c2c2651522945873726310bc47199f32236ea1315e`.
+  Not done: a manual in-app check of accented search. The release log lived
+  only in the session scratchpad and was not kept.
+  Release: https://github.com/danepps/glassine/releases/tag/v1.9.6
 
 - **Released 1.9.5 (Codex, 2026-09-26).** Build 21, release commit/tag
   `3e46ed6` / `v1.9.5`, includes the Finder rename crash fix in `0f6a925`
