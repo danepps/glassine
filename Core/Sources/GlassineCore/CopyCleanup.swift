@@ -69,7 +69,7 @@ public enum CopyCleanup {
             if breaksParagraph(from: index - 1, to: index, in: prepared, columns: columns) {
                 out += paragraphSeparator + prepared[index].text
             } else {
-                out = joined(out, with: prepared[index].text, isWord: isWord)
+                join(&out, with: prepared[index].text, isWord: isWord)
             }
         }
         return out
@@ -98,7 +98,7 @@ public enum CopyCleanup {
                 out += paragraphSeparator + line
                 pendingBreak = false
             } else {
-                out = joined(out, with: line, isWord: isWord)
+                join(&out, with: line, isWord: isWord)
             }
         }
         return out
@@ -476,28 +476,44 @@ public enum CopyCleanup {
     private static let softHyphen: Character = "\u{00AD}"
 
     /// Append `next` to what has been built so far, deciding what to do about a
-    /// hyphen at the end of it.
-    private static func joined(_ accumulated: String, with next: String,
-                               isWord: ((String) -> Bool)?) -> String {
-        guard let last = accumulated.last else { return next }
+    /// hyphen at the end of it. In place: a Select All → Copy on a long document
+    /// joins thousands of lines, and rebuilding the accumulated text for each
+    /// one was quadratic.
+    private static func join(_ out: inout String, with next: String,
+                             isWord: ((String) -> Bool)?) {
+        guard let last = out.last else {
+            out = next
+            return
+        }
 
         // A soft hyphen is by definition the typesetter's line-break hyphen, so
         // its presence is the answer: drop it and close the word up. It is also
         // invisible, so keeping one would paste a character nobody can see.
-        if last == softHyphen { return String(accumulated.dropLast()) + next }
+        if last == softHyphen {
+            out.removeLast()
+            out.append(next)
+            return
+        }
 
-        guard hyphens.contains(last) else { return accumulated + " " + next }
+        guard hyphens.contains(last) else {
+            out.append(" ")
+            out.append(next)
+            return
+        }
 
-        let stem = accumulated.dropLast()
-        let left = trailingFragment(of: stem)
+        let left = trailingFragment(of: out.dropLast())
         let right = leadingFragment(of: next)
         // Nothing that reads as a word on one side of it: an em dash written as
         // "--", a hyphen carrying a closing quote or a footnote digit after it.
         // Not a broken word, so it is left alone and spaced like any other join.
-        guard !left.isEmpty, !right.isEmpty else { return accumulated + " " + next }
-        return keepsHyphen(left: left, right: right, isWord: isWord)
-            ? accumulated + next
-            : String(stem) + next
+        guard !left.isEmpty, !right.isEmpty else {
+            out.append(" ")
+            out.append(next)
+            return
+        }
+        let keep = keepsHyphen(left: left, right: right, isWord: isWord)
+        if !keep { out.removeLast() }
+        out.append(next)
     }
 
     /// Was the hyphen the word's own, or the line's?

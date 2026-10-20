@@ -64,4 +64,15 @@ struct RecentsModelTests {
         // A seeded entry can carry no date at all.
         #expect(RecentsModel.dateText(.distantPast, now: now) == "")
     }
+
+    @Test("detailText abbreviates only a leading home directory")
+    func homeAbbreviation() {
+        let home = "/Users/dan"
+        #expect(RecentsModel.detailText(row("/Users/dan/Papers/a.pdf"), home: home) == "~/Papers")
+        #expect(RecentsModel.detailText(row("/Users/dan/a.pdf"), home: home) == "~")
+        #expect(RecentsModel.detailText(row("/Users/daniel/Papers/a.pdf"), home: home)
+                == "/Users/daniel/Papers")
+        #expect(RecentsModel.detailText(row("/Volumes/Backup/Users/dan/x/a.pdf"), home: home)
+                == "/Volumes/Backup/Users/dan/x")
+    }
 }

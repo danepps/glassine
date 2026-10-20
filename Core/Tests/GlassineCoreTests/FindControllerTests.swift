@@ -547,4 +547,24 @@ struct FindControllerTests {
         controller.findDidEnd(in: document)
         #expect(document.started == ["alpha", "beta"])
     }
+
+    @Test("Stepping while the search is still running leaves it alone")
+    func steppingDuringASearchDoesNotRestartIt() async {
+        let document = makeDocument()
+        let forwarder = FindForwarder()
+        document.delegate = forwarder
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        forwarder.sink = controller
+
+        controller.startFind("alpha")
+        let clearsAfterStart = delegate.clears
+        // ⌘G straight away: either a match is already in and it steps, or the
+        // search is still running and it waits. Never a restart.
+        #expect(controller.step(by: 1, query: "alpha"))
+        #expect(delegate.clears == clearsAfterStart)
+        await settle(controller)
+        #expect(controller.matches.count == 24)
+    }
 }

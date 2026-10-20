@@ -208,7 +208,15 @@ enum MarkdownFootnotes {
                     ? character : "-"
             })
             if slug.isEmpty { slug = "n" }
-            if taken.contains(slug) { slug += "-\(position + 1)" }
+            // The suffixed form can itself be a label somebody used, so keep
+            // going until the slug is really unclaimed.
+            var candidate = slug
+            var attempt = position + 1
+            while taken.contains(candidate) {
+                candidate = "\(slug)-\(attempt)"
+                attempt += 1
+            }
+            slug = candidate
             taken.insert(slug)
             slugs[label] = slug
         }
@@ -350,9 +358,9 @@ enum MarkdownFootnotes {
     private static func withBackLink(_ html: String, slug: String) -> String {
         let link = "<a class=\"fnback\" href=\"#fnref-\(slug)\">\u{21A9}</a>"
         let content = html.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let closing = content.range(of: "</p>", options: .backwards) else {
-            return content + link + "\n"
-        }
-        return content.replacingCharacters(in: closing, with: link + "</p>") + "\n"
+        // Only a paragraph that *ends* the note: the last "</p>" anywhere would
+        // put the arrow ahead of a list or code block that follows it.
+        guard content.hasSuffix("</p>") else { return content + link + "\n" }
+        return String(content.dropLast("</p>".count)) + link + "</p>\n"
     }
 }

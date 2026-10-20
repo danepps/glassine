@@ -225,10 +225,19 @@ public enum HeadingLocator {
                                geometry: Geometry) -> [Int: (page: Int, top: CGFloat)] {
         var snapped: [CGFloat?] = []
         var predicted: [CGFloat] = []
+        // `findString` scans the whole document, so repeated titles ("Notes",
+        // "Discussion") are looked up once and shared.
+        var hitsByTitle: [String: [Place]] = [:]
         for heading in headings {
             let prediction = predict(heading, in: geometry)
             predicted.append(offset(of: prediction, in: geometry))
-            let hits = candidates(for: heading.title, in: document)
+            let hits: [Place]
+            if let cached = hitsByTitle[heading.title] {
+                hits = cached
+            } else {
+                hits = candidates(for: heading.title, in: document)
+                hitsByTitle[heading.title] = hits
+            }
             snapped.append(snap(prediction, to: hits, in: geometry)
                 .map { offset(of: $0, in: geometry) })
         }

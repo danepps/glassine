@@ -53,8 +53,13 @@ public enum RecentsModel {
     /// so it shows just the page it was left on.
     public static func detailText(_ row: RecentRow,
                                   home: String = NSHomeDirectory()) -> String {
-        let folder = row.url.deletingLastPathComponent().path
-            .replacingOccurrences(of: home, with: "~")
+        var folder = row.url.deletingLastPathComponent().path
+        // Only a leading home path: "/Volumes/Backup/Users/dan/x" is not "~/x".
+        if folder == home {
+            folder = "~"
+        } else if folder.hasPrefix(home + "/") {
+            folder = "~" + folder.dropFirst(home.count)
+        }
         guard let position = Prefs.lastPosition(for: row.url) else { return folder }
         let page = position.pageIndex + 1
         if let count = row.pageCount, count > 0 {
