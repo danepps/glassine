@@ -160,6 +160,33 @@ extension MacAppTests {
             }
         }
 
+        @Test("A revision saved just before a move is shown after it")
+        func moveAfterUnseenSave() async throws {
+            try await withFixture { folder in
+                let originalURL = folder.appendingPathComponent("Draft.md")
+                let renamedURL = folder.appendingPathComponent("Draft v2.md")
+                try "# Draft\n\nFirst.".write(to: originalURL, atomically: true, encoding: .utf8)
+                let document = try GlassineDocument(contentsOf: originalURL,
+                                                    ofType: GlassineDocument.markdownType.identifier)
+                let typesetter = ControlledMarkdownTypesetter()
+                document.markdownTypesetter = typesetter
+                document.makeWindowControllers()
+                defer { document.close() }
+                try #require(typesetter.requests.count == 1)
+                typesetter.succeed(0)
+
+                // Save and move within the watcher's debounce window, so the
+                // move's retarget would otherwise take the new bytes as its
+                // baseline and the saved revision would never be rendered.
+                try "# Draft\n\nSecond, saved just before the move.".write(
+                    to: originalURL, atomically: true, encoding: .utf8)
+                try FileManager.default.moveItem(at: originalURL, to: renamedURL)
+                await deliverMove(document, to: renamedURL)
+                try await waitUntil { typesetter.requests.count == 2 }
+                #expect(typesetter.requests[1].html.contains("Second, saved just before the move."))
+            }
+        }
+
         @Test("Closing before queued move handling does not restart Markdown refresh")
         func closeBeforeMoveHandling() async throws {
             try await withFixture { folder in

@@ -144,7 +144,12 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
         document?.removeHighlights(selected.map(\.annotation))
         refresh()
         if !highlights.isEmpty {
+            // Keep a row selected for the next Delete, but without `onSelect`
+            // scrolling the reader to whichever highlight took the row.
+            syncing = true
             table.selectRowIndexes(IndexSet(integer: min(row, highlights.count - 1)), byExtendingSelection: false)
+            syncing = false
+            updateActions()
         }
     }
 

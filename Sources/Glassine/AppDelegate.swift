@@ -75,6 +75,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         isTerminating = true
     }
 
+    /// Quit review starts before any document closes, and a document with
+    /// pending highlight edits closes asynchronously -- after its window has
+    /// gone, which is exactly when `windowWillClose` would otherwise bring the
+    /// Recents window up in the middle of the quit. `GlassineDocumentController`
+    /// flips this on when the review begins and off again if it is cancelled.
+    var isQuitting: Bool {
+        get { isTerminating }
+        set { isTerminating = newValue }
+    }
+
     // Launching or reopening with nothing on screen shows the Recents window,
     // not an Open panel: the reader's own files are more use than the file tree.
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
