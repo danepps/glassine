@@ -143,6 +143,108 @@ struct MarkdownHTMLTests {
         #expect(!continuous.contains("margin-bottom: -72pt;"))
     }
 
+
+    @Test("Raw HTML that could navigate or load is cut out; the rest passes through")
+    func hostileRawHTML() {
+        let markdown = """
+        <meta http-equiv="refresh" content="0;url=https://attacker.example/beacon">
+        <base href="https://attacker.example/">
+        <link rel="prefetch" href="https://attacker.example/p">
+
+        <div class="note">Kept</div>
+
+        <script>
+        window.location = "https://attacker.example/";
+        </script>
+
+        Inline <script>alert(1)</script>text with <b>bold</b> and <iframe src="https://x"></iframe> after.
+        """
+        let html = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil).html
+        #expect(!html.contains("<meta"))
+        #expect(!html.contains("<base"))
+        #expect(!html.contains("<link"))
+        #expect(!html.contains("<script"))
+        // A block-level script goes with its contents. (Inline tags arrive as
+        // separate nodes with the text between them as plain text, which is
+        // exactly what it then is: text.)
+        #expect(!html.contains("window.location"))
+        #expect(!html.contains("<iframe"))
+        #expect(!html.contains("attacker.example"))
+        // Ordinary raw HTML is still what CommonMark promises.
+        #expect(html.contains("<div class=\"note\">Kept</div>"))
+        #expect(html.contains("<b>bold</b>"))
+        #expect(html.contains("text with"))
+        #expect(html.contains("after."))
+    }
+
+    @Test("Private outline links become text, and quotes in destinations cannot break the attribute")
+    func linkSanitising() {
+        let markdown = """
+        # Real heading
+
+        A [forged link](glassine-outline://0) and a [quoted one](http://x.example/?q="y").
+
+        ![pic](file"name.png "say \\"hi\\"")
+
+        ```c"x
+        code
+        ```
+        """
+        let html = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil).html
+        // The one genuine anchor is the heading's own.
+        #expect(html.components(separatedBy: "glassine-outline://").count - 1 == 1)
+        #expect(html.contains("forged link"))
+        #expect(!html.contains("href=\"glassine-outline://0\">forged"))
+        #expect(html.contains("href=\"http://x.example/?q=%22y%22\""))
+        #expect(html.contains("src=\"file%22name.png\""))
+        #expect(html.contains("title=\"say &quot;hi&quot;\""))
+        #expect(html.contains("class=\"language-cx\""))
+    }
+
+    @Test("A symlink pointing outside the document's folder is not inlined")
+    func imageSymlinkEscape() throws {
+        let root = TempDirectory()
+        let documents = root.url.appendingPathComponent("docs", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let secret = root.url.appendingPathComponent("secret.png")
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x00, 0x03]).write(to: secret)
+        let legit = documents.appendingPathComponent("logo.png")
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x00, 0x04]).write(to: legit)
+        // A file link out of the folder, and a directory link out of it.
+        try FileManager.default.createSymbolicLink(at: documents.appendingPathComponent("link.png"),
+                                                   withDestinationURL: secret)
+        try FileManager.default.createSymbolicLink(at: documents.appendingPathComponent("up"),
+                                                   withDestinationURL: root.url)
+
+        let markdown = """
+        ![a](link.png)
+
+        ![b](up/secret.png)
+
+        ![c](logo.png)
+        """
+        let html = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: documents).html
+        #expect(html.components(separatedBy: "data:image/png;base64,").count - 1 == 1)
+        #expect(html.contains("link.png"))
+        #expect(html.contains("up/secret.png"))
+        #expect(!html.contains("logo.png"))
+    }
+
+    @Test("Windows line endings do not break front matter or footnotes")
+    func carriageReturns() {
+        let markdown = "---\r\ntitle: Memo\r\n---\r\n# Heading\r\n\r\nSee note.[^a]\r\n\r\n"
+            + "[^a]: The note.\r\n\r\nA body paragraph after the note.\r\n\r\n"
+            + "```\r\ncode\r\n```\r\n\r\n[^b]: Unused.\r\n"
+        let html = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil).html
+        #expect(!html.contains("title: Memo"))
+        #expect(html.contains("The note."))
+        // The paragraph after the definition is body text, ahead of the notes.
+        let paragraph = html.range(of: "A body paragraph after the note.")
+        let section = html.range(of: "<section class=\"footnotes\">")
+        #expect(paragraph != nil && section != nil)
+        if let paragraph, let section { #expect(paragraph.lowerBound < section.lowerBound) }
+        #expect(!html.contains("Unused."))
+    }
     @Test("Every built-in style id resolves, and an unknown one falls back")
     func builtInStyles() {
         for style in MarkdownStyle.builtIns {
@@ -381,6 +483,39 @@ struct MarkdownFootnoteTests {
         """).html
         #expect(punctuated.contains("id=\"fn-note-1\""))
         #expect(punctuated.contains("href=\"#fn-note-1\""))
+    }
+
+    @Test("A note that ends in a code block gets its back-link appended, not spliced earlier")
+    func backLinkAfterCodeBlock() {
+        let html = convert("""
+        Text.[^code]
+
+        [^code]: A paragraph first.
+
+            ```
+            then code
+            ```
+        """).html
+        #expect(html.contains("<p>A paragraph first.</p>"))
+        let arrow = html.range(of: "<a class=\"fnback\" href=\"#fnref-code\">")
+        let code = html.range(of: "then code")
+        #expect(arrow != nil && code != nil)
+        if let arrow, let code { #expect(code.lowerBound < arrow.lowerBound) }
+    }
+
+    @Test("Slugs that collide with a later label still come out unique")
+    func slugCollisions() {
+        let html = convert("""
+        One.[^a-b-3] Two.[^a.b] Three.[^a-b]
+
+        [^a-b-3]: First.
+        [^a.b]: Second.
+        [^a-b]: Third.
+        """).html
+        let ids = html.components(separatedBy: "<li id=\"fn-").dropFirst()
+            .compactMap { $0.split(separator: "\"").first.map(String.init) }
+        #expect(ids.count == 3)
+        #expect(Set(ids).count == 3)
     }
 }
 

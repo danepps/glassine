@@ -43,7 +43,7 @@ KEY_PATH="$HOME/.private_keys/AuthKey_$KEY_ID.p8"
 
 SPEC="$ROOT/iOS/project.yml"
 PROJ="$ROOT/iOS/Glassine.xcodeproj"
-XCODEGEN=/opt/homebrew/bin/xcodegen
+XCODEGEN="$(command -v xcodegen || echo /opt/homebrew/bin/xcodegen)"
 OUT="$ROOT/build/ios"          # gitignored: .gitignore already has `build/`
 
 # --- Arguments -----------------------------------------------------------
@@ -114,7 +114,7 @@ if (( ! NO_UPLOAD )); then
   # release commit.
   DIRTY="$(git -C "$ROOT" status --porcelain)"
   require $([[ -z "$DIRTY" ]] && echo 1 || echo 0) \
-    "working tree is clean" "$(printf '%s' "$DIRTY" | wc -l | tr -d ' ') changed path(s)"
+    "working tree is clean" "$(printf '%s\n' "$DIRTY" | grep -c '') changed path(s)"
 
   git -C "$ROOT" fetch -q origin || true
   LOCAL="$(git -C "$ROOT" rev-parse HEAD)"
@@ -215,12 +215,14 @@ fi
 # as it found it.
 BUILD_NUMBER=$(( $(awk -F'"' '/^ *CURRENT_PROJECT_VERSION:/ { print $2; exit }' "$SPEC") + 1 ))
 
-if (( NO_UPLOAD )); then
-  SPEC_BACKUP="$(mktemp -t glassine-project-yml)"
-  cp "$SPEC" "$SPEC_BACKUP"
-  restore_spec() { cp "$SPEC_BACKUP" "$SPEC"; rm -f "$SPEC_BACKUP"; }
-  trap restore_spec EXIT INT TERM
-fi
+# Reverted on the way out under --no-upload, and on *failure* in every mode:
+# an archive or export that dies must not leave project.yml edited, or the
+# next run's clean-tree preflight refuses to start. The trap is disarmed only
+# once the upload -- the step that spends the build number -- has succeeded.
+SPEC_BACKUP="$(mktemp -t glassine-project-yml)"
+cp "$SPEC" "$SPEC_BACKUP"
+restore_spec() { cp "$SPEC_BACKUP" "$SPEC"; rm -f "$SPEC_BACKUP"; }
+trap restore_spec EXIT INT TERM
 
 /usr/bin/sed -i '' \
   -e "s/^\( *MARKETING_VERSION: \).*/\1\"$VERSION\"/" \
@@ -300,13 +302,18 @@ fi
 # then rerun with the *next* version, not this one: the build number is spent
 # either way, and App Store Connect will not take it twice. The uploaded build
 # stays in TestFlight; expire it there if it should not go out.
+trap - EXIT INT TERM
+rm -f "$SPEC_BACKUP"
 git -C "$ROOT" add "$SPEC"
 git -C "$ROOT" commit -m "Release iOS $VERSION (build $BUILD_NUMBER)"
 git -C "$ROOT" tag "$TAG"
 git -C "$ROOT" push origin "$TAG"
 
+# Never "Latest": .../releases/latest/download/Glassine.zip is the Mac app's
+# stable download URL (release.sh), and an iOS release carries no zip.
 gh release create "$TAG" \
   --repo "$REPO" \
+  --latest=false \
   --title "Glassine for iOS $VERSION" \
   --notes "Glassine $VERSION for iPad and iPhone, build $BUILD_NUMBER, on TestFlight."
 

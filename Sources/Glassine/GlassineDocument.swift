@@ -323,9 +323,11 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         return made
     }
 
+    /// `location` overrides `fileURL` for the one caller that knows the file
+    /// has moved before NSDocument has finished saying so.
     @MainActor
-    private func reloadFromDisk() {
-        guard kind == .markdown, let url = fileURL else { return }
+    private func reloadFromDisk(from location: URL? = nil) {
+        guard kind == .markdown, let url = location ?? fileURL else { return }
         if reloader == nil { reloader = makeReloader() }
         reloader?.reload(url: url)
     }
@@ -343,7 +345,11 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // signature gate then keep the two paths from rendering twice.
     override func presentedItemDidChange() {
         if kind == .markdown {
-            watcher?.poke()
+            // Delivered on the presenter queue; `watcher` is owned by the main
+            // actor (set in startWatching, cleared in close), so read it there.
+            DispatchQueue.main.async { [weak self] in
+                self?.watcher?.poke()
+            }
         } else {
             super.presentedItemDidChange()
         }
@@ -355,8 +361,18 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         // Reload state and watcher ownership belong to the main actor. Enqueue
         // both together, without blocking file coordination on the main thread.
         DispatchQueue.main.async { [weak self] in
-            self?.invalidateReloads()
-            self?.watcher?.retarget(to: newURL)
+            guard let self else { return }
+            self.invalidateReloads()
+            // A closed document has no watcher, and must not start reloading.
+            guard let watcher = self.watcher else { return }
+            watcher.retarget(to: newURL)
+            // The retarget takes the file's current signature as its baseline,
+            // and the invalidation above dropped any conversion in flight -- so
+            // a revision saved just before the move would never be shown.
+            // Re-read once; the content hash gate makes an unchanged file free.
+            // From `newURL` directly: NSDocument updates `fileURL` on its own
+            // schedule and may not have done so yet.
+            self.reloadFromDisk(from: newURL)
         }
     }
 

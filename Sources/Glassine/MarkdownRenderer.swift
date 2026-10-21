@@ -44,6 +44,12 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
     /// must not be charged to the job that displaced it.
     private var activeNavigation: WKNavigation?
     private var didRestartWebProcess = false
+    /// Set just before each `loadHTMLString`, consumed by the navigation
+    /// policy: that load is the only navigation the web view may ever make.
+    /// A `<meta http-equiv="refresh">` in the document, which neither the CSP
+    /// nor the disabled script engine stops, is refused before any request
+    /// goes out.
+    private var expectsOwnNavigation = false
     /// True while the job in flight wants one very tall page.
     private var wantsContinuous = false
     /// The measured height of a continuous job's content, in points; nil for a
@@ -77,6 +83,7 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
         // Match WebKit's print width before measuring continuous content or
         // dividing paginated tables into sections with repeating headers.
         view.frame.size.width = layoutWidth
+        expectsOwnNavigation = true
         activeNavigation = view.loadHTMLString(html, baseURL: baseURL)
     }
 
@@ -88,6 +95,7 @@ final class WebKitHTMLPrinter: NSObject, HTMLPrinter {
 
     func teardown() {
         generation &+= 1
+        expectsOwnNavigation = false
         activeOperation = nil
         activeNavigation = nil
         pendingCompletion = nil
@@ -343,7 +351,24 @@ extension WebKitHTMLPrinter: WKNavigationDelegate {
             return
         }
         didRestartWebProcess = true
+        expectsOwnNavigation = true
         activeNavigation = makeWebView().loadHTMLString(html, baseURL: pendingBaseURL)
+    }
+
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // The string load we just started is the one navigation allowed. Anything
+        // else -- a meta refresh, a <base>-rewritten link -- is the document's
+        // doing, and this view never fetches on a document's behalf.
+        guard webView === self.webView, expectsOwnNavigation,
+              navigationAction.navigationType == .other,
+              navigationAction.targetFrame?.isMainFrame ?? true else {
+            decisionHandler(.cancel)
+            return
+        }
+        expectsOwnNavigation = false
+        decisionHandler(.allow)
     }
 }
 

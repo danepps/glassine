@@ -158,7 +158,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             changes()
             self.position.aim(in: pdf, target: target) { [weak self, weak pdf] in
                 guard let self, self.pdfView.document === pdf else { return }
-                self.finishInstall()
+                // Same document, new geometry: the matches are still valid, so
+                // they are re-applied rather than searched for again (which
+                // would also drop the reader's text selection).
+                self.finishInstall(rerunFind: false)
             }
         }
         readerMode.onPreparationChanged = { [weak reader] in reader?.setReaderModePreparing($0) }
@@ -972,9 +975,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
                 synchronizeSearchQuery(control.stringValue)
-                if findController.matches.isEmpty {
-                    findController.startFind(control.stringValue)
-                } else if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                // Through `step`, which starts a search only when the query is
+                // new: Return on a search still running waits for it, and on one
+                // that found nothing beeps instead of scanning the file again.
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                     findPrevious(nil)
                 } else {
                     findNext(nil)
@@ -1047,6 +1051,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc private func documentDidUnlock(_ notification: Notification) {
         guard let pdf = notification.object as? PDFDocument, pdf === pdfView.document else { return }
         sidebarVC.documentDidChange(isContinuousMarkdown: showsProgress)
+        // The capsule was sized for a page count of 0 while the PDF was locked.
+        updateIndicatorMode()
+        updatePageField()
         observeScrollGeometry()
         restorePositionIfNeeded()
         readerMode.documentDidChange()
@@ -1245,11 +1252,15 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
 
         let aimed = anchor?.position(in: replacement) ?? target
         position.aim(in: replacement, target: aimed) { [weak self] in
-            self?.finishInstall()
+            self?.finishInstall(rerunFind: true)
         }
     }
 
-    private func finishInstall() {
+    /// `rerunFind` is true when a *new* document has just been installed and
+    /// every held `PDFSelection` points into the old one; false when only the
+    /// page geometry changed (Reader Mode, a live resize) and the matches are
+    /// still good.
+    private func finishInstall(rerunFind: Bool) {
         position.finishInstall()
         // The document view only exists once PDFView has laid the new document
         // out, which the install's jump has just forced.
@@ -1260,6 +1271,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         // finds -- which is in the toolbar, not the page.
         if let window, window.firstResponder === window || window.firstResponder == nil {
             window.makeFirstResponder(pdfView)
+        }
+        guard rerunFind else {
+            if !findController.matches.isEmpty { applyHighlights() }
+            return
         }
         // Re-run the search against the new document, without letting match 1
         // pull the view away from where the reader was.

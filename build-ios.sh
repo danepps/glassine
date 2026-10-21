@@ -39,7 +39,7 @@ while (( $# )); do
   shift
 done
 
-XCODEGEN=/opt/homebrew/bin/xcodegen
+XCODEGEN="$(command -v xcodegen || echo /opt/homebrew/bin/xcodegen)"
 [[ -x "$XCODEGEN" ]] || { echo "xcodegen not found at $XCODEGEN" >&2; exit 1; }
 
 PROJ="$ROOT/iOS/Glassine.xcodeproj"

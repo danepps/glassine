@@ -283,9 +283,11 @@ public final class FindController: FindSink {
 
     // MARK: Stepping
 
-    /// Move `delta` matches, wrapping. With no matches it restarts the search
-    /// for `query`; returns false when the query has already been searched for
-    /// and came up empty, which is the caller's cue to beep.
+    /// Move `delta` matches, wrapping. With no matches it starts the search
+    /// for `query`, unless that very search is still running -- ⌘G pressed
+    /// before the first hit of a large document arrives must wait for it, not
+    /// cancel it and start over. Returns false when the query has already been
+    /// searched for and came up empty, which is the caller's cue to beep.
     @discardableResult
     public func step(by delta: Int, query: String) -> Bool {
         guard matches.isEmpty else {
@@ -293,9 +295,9 @@ public final class FindController: FindSink {
             return true
         }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !findInProgress, !trimmed.isEmpty, trimmed == lastQuery {
-            // Already searched for exactly this and came up empty.
-            return false
+        if !trimmed.isEmpty, trimmed == lastQuery {
+            // Running: nothing to do yet. Finished: it came up empty.
+            return findInProgress
         }
         startFind(trimmed)
         return true

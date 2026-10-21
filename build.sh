@@ -110,8 +110,20 @@ if [[ $NOTARIZE -eq 1 ]]; then
   ZIP="$ROOT/build/Glassine-notarize.zip"
   rm -f "$ZIP"
   ditto -c -k --keepParent "$APP" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile notary --wait
+  # The verdict is checked here, not left for stapler to trip over: a
+  # rejection then names its submission and prints Apple's log instead of an
+  # opaque "no ticket" from stapler after the zip has been deleted.
+  NOTARY_OUT="$(xcrun notarytool submit "$ZIP" --keychain-profile notary --wait 2>&1 | tee /dev/stderr)"
   rm -f "$ZIP"
+  NOTARY_STATUS="$(printf '%s\n' "$NOTARY_OUT" | awk '/^ *status:/ { s = $2 } END { print s }')"
+  if [[ "$NOTARY_STATUS" != Accepted ]]; then
+    NOTARY_ID="$(printf '%s\n' "$NOTARY_OUT" | awk '/^ *id:/ { print $2; exit }')"
+    echo "notarization status: ${NOTARY_STATUS:-unknown}" >&2
+    if [[ -n "$NOTARY_ID" ]]; then
+      xcrun notarytool log "$NOTARY_ID" --keychain-profile notary >&2 || true
+    fi
+    exit 1
+  fi
   xcrun stapler staple "$APP"
   spctl -a -t exec -vv "$APP"
 fi

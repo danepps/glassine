@@ -176,9 +176,17 @@ public enum MarkdownHTML {
                                               headings: [MarkdownHeading],
                                               stats: MarkdownStats) {
         let base = baseDirectory?.standardizedFileURL
+        // cmark normalises CRLF itself, but the two passes that run *before*
+        // the parse (front matter, footnote definitions) split on "\n" and would
+        // see a stray "\r" at the end of every line of a Windows-saved file: a
+        // "---\r" fence that is not a fence, a "\r" line that is not blank, and
+        // a footnote definition that swallows every paragraph after it.
+        let markdown = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
         document = inliningImages(document, baseDirectory: base)
+        document = sanitised(document)
 
         // A document with no definitions cannot have a reference, so it is not
         // worth rebuilding its whole tree to find out.
@@ -196,6 +204,7 @@ public enum MarkdownHTML {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
             note = inliningImages(note, baseDirectory: base)
+            note = sanitised(note)
             noteWords += statistics(of: note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
         }
@@ -215,6 +224,11 @@ public enum MarkdownHTML {
         guard let baseDirectory else { return document }
         var inliner = ImageInliner(baseDirectory: baseDirectory)
         return (inliner.visit(document) as? Document) ?? document
+    }
+
+    private static func sanitised(_ document: Document) -> Document {
+        var sanitiser = Sanitiser()
+        return (sanitiser.visit(document) as? Document) ?? document
     }
 
     /// Wrap a formatted body in the full page: charset, CSP, and the stylesheet
@@ -390,11 +404,13 @@ public enum MarkdownHTML {
             if let url = URL(string: source), url.scheme != nil { return image }
 
             let relative = source.removingPercentEncoding ?? source
-            let resolved = URL(fileURLWithPath: relative,
-                               relativeTo: baseDirectory).standardizedFileURL
-            // Stay inside the document's folder; "../../secret.png" is not ours
-            // to inline.
-            guard resolved.path.hasPrefix(baseDirectory.path + "/") else { return image }
+            // Symlinks resolved on both sides: "../../secret.png" is not ours to
+            // inline, and neither is "link.png" when the link points out of the
+            // folder. (Resolving both also keeps /tmp and /private/tmp agreeing.)
+            let folder = baseDirectory.resolvingSymlinksInPath()
+            let resolved = URL(fileURLWithPath: relative, relativeTo: baseDirectory)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.path.hasPrefix(folder.path + "/") else { return image }
 
             guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey]),
                   let size = values.fileSize, size <= Self.sizeCap,
@@ -405,6 +421,83 @@ public enum MarkdownHTML {
 
             var copy = image
             copy.source = "data:\(mime);base64,\(data.base64EncodedString())"
+            return copy
+        }
+    }
+
+    // MARK: Sanitising
+
+    /// What the Markdown is not allowed to do to the renderer.
+    ///
+    /// Raw HTML passes through the formatter verbatim, which is what CommonMark
+    /// promises, and the page's CSP plus the disabled script engine make almost
+    /// all of it harmless. Three things slip past a CSP because they are not
+    /// subresource loads: `<meta http-equiv="refresh">` (a navigation, so a
+    /// network request to wherever the file says, with the reader's IP), `<base>`
+    /// (rewrites every relative link) and `<link>` (prefetch hints). None has a
+    /// rendering purpose in a Markdown body, so they are cut out of every raw
+    /// HTML node; `<script>`, `<iframe>`, `<object>` and `<embed>` go with them
+    /// as belt and braces. The printers also refuse every navigation but their
+    /// own load, so this is the second of two locks.
+    ///
+    /// Two smaller things, for correctness rather than safety: a link to the
+    /// renderer's private `glassine-outline://` scheme would move a bookmark
+    /// (`applyOutline` reads those annotations back), so it becomes plain text;
+    /// and the formatter writes link and image attributes unescaped, so a `"`
+    /// in a destination, source, title or code-fence language is neutralised
+    /// here, where the tree still knows which string is which.
+    private struct Sanitiser: MarkupRewriter {
+
+        private static let forbiddenElements: NSRegularExpression = {
+            // Void elements: the tag alone. Container elements: through their
+            // closing tag, or to the end of the node if it never closes.
+            let pattern = #"<\s*(meta|link|base)\b[^>]*>"#
+                + #"|<\s*(script|iframe|object|embed)\b[^>]*>(?:.*?<\s*/\s*\2\s*>|.*)"#
+            return try! NSRegularExpression(
+                pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        }()
+
+        private static func stripped(_ raw: String) -> String? {
+            let range = NSRange(raw.startIndex..., in: raw)
+            guard Self.forbiddenElements.firstMatch(in: raw, range: range) != nil else { return raw }
+            let cleaned = Self.forbiddenElements.stringByReplacingMatches(
+                in: raw, range: range, withTemplate: "")
+            return cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cleaned
+        }
+
+        mutating func visitHTMLBlock(_ html: HTMLBlock) -> Markup? {
+            Self.stripped(html.rawHTML).map { HTMLBlock($0) }
+        }
+
+        mutating func visitInlineHTML(_ inlineHTML: InlineHTML) -> Markup? {
+            Self.stripped(inlineHTML.rawHTML).map { InlineHTML($0) }
+        }
+
+        mutating func visitLink(_ link: Link) -> Markup? {
+            if let destination = link.destination,
+               destination.lowercased().hasPrefix("glassine-outline:") {
+                return Text(link.plainText)
+            }
+            var copy = link
+            copy.destination = link.destination?.replacingOccurrences(of: "\"", with: "%22")
+            return defaultVisit(copy)
+        }
+
+        mutating func visitImage(_ image: Image) -> Markup? {
+            var copy = image
+            copy.source = image.source?.replacingOccurrences(of: "\"", with: "%22")
+            copy.title = image.title?.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "\"", with: "&quot;")
+            return copy
+        }
+
+        mutating func visitCodeBlock(_ codeBlock: CodeBlock) -> Markup? {
+            guard let language = codeBlock.language else { return codeBlock }
+            var copy = codeBlock
+            copy.language = String(language.filter {
+                $0.isASCII && ($0.isLetter || $0.isNumber || "_+#.-".contains($0))
+            })
+            if copy.language?.isEmpty == true { copy.language = nil }
             return copy
         }
     }

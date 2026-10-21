@@ -12,6 +12,7 @@ struct RootView: View {
 
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     private let prefs = PrefsModel.shared
 
@@ -47,6 +48,12 @@ struct RootView: View {
                 // Light/Dark override is applied from here rather than at launch.
                 AppearanceBridge.apply()
                 openLaunchArgumentIfNeeded()
+            }
+            // Per scene, unlike the app-wide background notification: closing
+            // one of several iPad windows backgrounds only that scene, and a
+            // continuous Markdown document saves its position nowhere else.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { session?.saveNow() }
             }
     }
 
