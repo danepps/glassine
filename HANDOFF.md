@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-10-11. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-10-20. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -34,6 +34,56 @@ Dan's stated requirements, all met as of this handoff:
 - Dark-mode variant of the app icon.
 
 ## State
+
+- **Full code review, unreleased (Claude, 2026-10-20).** Branch
+  `code-review-2026-10-20`, opened as a PR for Dan to review; nothing released.
+  Four independent reviews (Claude plus three parallel review agents over the
+  macOS shell, Core and iOS + scripts, and a headless Codex gpt-6-astra pass)
+  consolidated and every finding re-verified against the code before a fix.
+  Write-up with every finding, fixed or not: `reviews/2026-10-20-code-review.md`.
+  Headlines:
+  - The "environmental" macOS test failures noted under 1.9.6 were a real
+    race: Swift Testing runs suites concurrently, and the suites swap the
+    process-global `Prefs.defaults` and post `glassinePrefsChanged` across
+    each other. Every macOS suite is now nested in one `@Suite(.serialized)
+    enum MacAppTests` (`Tests/GlassineTests/MacAppTests.swift`). 94/94 pass
+    in ~28 s. **New rule: a new macOS test file must put its suite inside
+    `extension MacAppTests { … }`.**
+  - A `.md` file could navigate the offscreen renderer to a remote URL with a
+    raw `<meta http-equiv="refresh">` (CSP governs subresources, not
+    navigations). Two locks now: Core's `MarkdownHTML.Sanitiser` strips
+    meta/link/base/script/iframe/object/embed from raw HTML and neutralises
+    forged `glassine-outline://` links; both printers implement
+    `decidePolicyFor` and allow only their own `loadHTMLString`.
+  - Image inliner resolves symlinks before the folder check; CRLF files
+    normalised before the front-matter/footnote passes; footnote back-link and
+    slug fixes; `CopyCleanup` joins in place; `FindController.step` no longer
+    restarts a running search.
+  - macOS: Reader Mode layout transactions no longer re-run the find (and
+    drop the selection); unlock re-sizes the page capsule; Return in search
+    steps instead of re-scanning; deleting a highlight no longer navigates;
+    `presentedItemDidChange` hops to main; a move re-reads the file from the
+    new URL (a revision saved just before the move was being lost); quit
+    review sets the delegate's flag before the first close.
+  - iOS: `UIKitHTMLPrinter` has the Mac's generation stamps and navigation
+    policy; `DocumentSession.close()` retires the render and drops the view;
+    scene-background saves the position; `attach` saves before swapping views;
+    the presenter follows Files-app moves; `Prefs.resolvedURL` resolves the
+    bookmark inside its scope on iOS; unlock restores the position and enables
+    saves; `renderNeedsRetry` ported; export uses the installed layout; the
+    page-class delegate is installed before the outline; background suspends
+    the render queue; KVC setters are guarded. **Compiled for a generic iOS
+    device only; no simulator is installed on the Studio and no TestFlight
+    build was made.** Worth a device pass before the next iOS release.
+  - Scripts: `release.sh` and `release-ios.sh` restore their version edits on
+    failure; `build.sh --notarize` checks the verdict and prints Apple's log;
+    iOS releases are created with `--latest=false` so the Mac's
+    `releases/latest/download/Glassine.zip` keeps working; `make-icon.sh`
+    prints actool's log before dying.
+  - Not fixed, recommended (in the write-up): progressive Reader Mode
+    analysis, lazy `savedHighlights`, cached sidebar outline sync, iOS
+    tall-page crop by ink bounds, ghost headings in iOS exports, off-main
+    recents resolution, an image-inlining budget.
 
 - **Released 1.9.6 (Claude, 2026-10-11).** Build 22, release commit/tag
   `0fbcf97` / `v1.9.6`. Single change: accent-insensitive search
