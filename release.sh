@@ -107,6 +107,13 @@ fi
 # Sparkle compares, so it only ever goes up.
 PLIST="$ROOT/Support/Info.plist"
 BUILD_NUMBER=$(( $(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST") + 1 ))
+# Until the release commit exists, a failure (build, notarization, appcast)
+# must leave the tree clean, or the next run's preflight refuses to start and
+# the version bump has to be reverted by hand.
+PLIST_BACKUP="$(mktemp -t glassine-info-plist)"
+cp "$PLIST" "$PLIST_BACKUP"
+restore_plist() { cp "$PLIST_BACKUP" "$PLIST"; rm -f "$PLIST_BACKUP"; }
+trap restore_plist EXIT INT TERM
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PLIST"
 echo "==> Glassine $VERSION (build $BUILD_NUMBER)"
@@ -151,6 +158,9 @@ echo "==> $FEED updated"
 # Order matters: the feed goes live the moment main is pushed (raw
 # githubusercontent), so the release asset must already be downloadable.
 # Push only the tag first, publish the release against it, then push main.
+# From here on the edits are meant to stay.
+trap - EXIT INT TERM
+rm -f "$PLIST_BACKUP"
 git -C "$ROOT" add "$ROOT/Support/Info.plist" "$ROOT/$FEED"
 git -C "$ROOT" commit -m "Release v$VERSION"
 git -C "$ROOT" tag "v$VERSION"

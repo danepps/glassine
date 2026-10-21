@@ -128,6 +128,7 @@ JSON
 # we compile into $WORK and copy only what we want back into Support/.
 echo "==> compiling Assets.car"
 mkdir -p "$WORK/car"
+ACTOOL_STATUS=0
 ACTOOL_LOG="$(xcrun actool "$ICONPKG" \
   --compile "$WORK/car" \
   --app-icon "$ICON_NAME" \
@@ -138,8 +139,14 @@ ACTOOL_LOG="$(xcrun actool "$ICONPKG" \
   --skip-app-store-deployment \
   --output-partial-info-plist "$WORK/car/partial-Info.plist" \
   --errors --warnings \
-  --output-format human-readable-text 2>&1)"
+  --output-format human-readable-text 2>&1)" || ACTOOL_STATUS=$?
 print -r -- "$ACTOOL_LOG"
+# A hard failure used to exit inside the assignment, under set -e, with the
+# log swallowed into the variable; now it is printed first.
+if (( ACTOOL_STATUS != 0 )); then
+  echo "actool exited with status $ACTOOL_STATUS" >&2
+  exit 1
+fi
 # actool still writes Assets.car for some errors (the four-group limit, say),
 # so a zero exit status alone does not mean the icon compiled correctly.
 if print -r -- "$ACTOOL_LOG" | grep -qi "error:"; then
