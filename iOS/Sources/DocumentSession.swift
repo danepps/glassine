@@ -88,9 +88,14 @@ final class DocumentSession {
         case failed(String)
     }
 
-    let url: URL
+    /// Follows the file when the Files app renames or moves it (see
+    /// `fileDidMove`), as the Mac's `fileURL` does.
+    private(set) var url: URL
     let kind: Kind
-    let title: String
+    private(set) var title: String
+    /// The URL the security scope was started on; it has to be stopped on the
+    /// same one even after the file has moved.
+    @ObservationIgnored private let scopedURL: URL
 
     private(set) var phase: Phase = .opening
     private(set) var document: PDFDocument?
@@ -122,6 +127,9 @@ final class DocumentSession {
     /// dropped, which is also what keeps a superseded render from reporting an
     /// error.
     @ObservationIgnored private var renderGeneration = 0
+    /// A failed refresh leaves the last good PDF on screen. Identical bytes
+    /// from a later save still need a retry until a new render succeeds.
+    @ObservationIgnored private var renderNeedsRetry = false
     /// Where the reader is, as an outline entry, recorded just before a
     /// re-render and applied once the replacement is installed. A page index and
     /// a point mean nothing across a re-typesetting that moved every page break.
@@ -133,7 +141,9 @@ final class DocumentSession {
     /// clipped ghost copy of every carried-over heading below the printable
     /// band: invisible on the page, but real to `findString`.
     @ObservationIgnored private var ghostBand: (pageHeight: CGFloat, margin: CGFloat)?
-    @ObservationIgnored private var prefsObserver: NSObjectProtocol?
+    /// Boxed so the registration dies with the session: a deinit cannot read a
+    /// non-Sendable token, but it can drop the box that removes it.
+    @ObservationIgnored private var prefsObserver: NotificationToken?
     #if DEBUG
     @ObservationIgnored private var didApplyDebugArguments = false
     #endif
@@ -183,6 +193,7 @@ final class DocumentSession {
 
     init(url: URL) {
         self.url = url
+        self.scopedURL = url
         self.kind = DocumentTypes.kind(of: url)
         self.title = url.deletingPathExtension().lastPathComponent
         // Held for the life of the session, not just the read: PDFKit reads
@@ -198,8 +209,14 @@ final class DocumentSession {
     deinit {
         // Not `close()`: a deinit cannot hop to the main actor, and a Timer is
         // not Sendable so it cannot even be read here. The download timer stops
-        // itself when its weak reference to the session has gone.
-        if accessingScope { url.stopAccessingSecurityScopedResource() }
+        // itself when its weak reference to the session has gone. A scene that
+        // disconnects (an iPad window closed) never calls `close()`, so the two
+        // registrations that would otherwise outlive the session -- the file
+        // coordinator retains its presenters -- are undone here; both calls are
+        // thread-safe.
+        if accessingScope { scopedURL.stopAccessingSecurityScopedResource() }
+        if let presenter { NSFileCoordinator.removeFilePresenter(presenter) }
+        // `prefsObserver` removes itself when its box goes.
     }
 
     // MARK: Opening
@@ -320,13 +337,17 @@ final class DocumentSession {
     func close() {
         find.cancelIfFinding()
         savePosition()
+        // A render still in flight must not install into a view this session no
+        // longer owns: the next session is handed the same PDFView.
+        renderGeneration += 1
+        pendingAnchor = nil
+        position = nil
+        pdfView = nil
+        bridge.findSink = nil
         scrollObservation = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
-        if let prefsObserver {
-            NotificationCenter.default.removeObserver(prefsObserver)
-            self.prefsObserver = nil
-        }
+        prefsObserver = nil
         watcher?.stop()
         watcher = nil
         if let presenter {
@@ -336,9 +357,17 @@ final class DocumentSession {
         reloader?.invalidate()
         if kind == .markdown { MarkdownRendererIOS.shared.releaseIfIdle() }
         if accessingScope {
-            url.stopAccessingSecurityScopedResource()
+            scopedURL.stopAccessingSecurityScopedResource()
             accessingScope = false
         }
+    }
+
+    /// The reading position, written now rather than at the next page turn:
+    /// the scene is going to the background, or SwiftUI is about to replace the
+    /// view. A continuous Markdown document never changes page, so without this
+    /// its position would date from the last background.
+    func saveNow() {
+        savePosition()
     }
 
     // MARK: Markdown
@@ -375,17 +404,25 @@ final class DocumentSession {
 
     private func startRender() {
         guard kind == .markdown, let bodyHTML = content?.html else { return }
+        // Repeated saves of the same bytes must not duplicate an in-flight
+        // render. Only a completed failure makes those bytes retryable.
+        renderNeedsRetry = false
         renderGeneration += 1
         let generation = renderGeneration
         let html = MarkdownHTML.page(body: bodyHTML, title: title, styling: styling,
                                      platformCSS: ReaderTheme.markdownPlatformCSS)
         let layout = styling.layout
         let started = CFAbsoluteTimeGetCurrent()
+        // The bridge goes on before the outline is applied: locating headings
+        // touches pages, and a page vended before the delegate is in place is a
+        // plain PDFPage forever, which can never draw a dark-mode find highlight.
+        let bridge = self.bridge
         MarkdownRendererIOS.shared.render(html: html,
                                           baseURL: url,
                                           key: renderKey,
                                           layout: layout,
-                                          headings: content?.headings ?? []) {
+                                          headings: content?.headings ?? [],
+                                          prepare: { $0.delegate = bridge }) {
             [weak self] result in
             guard let self, generation == self.renderGeneration else { return }
             // "First" is a fact about the document, not about which event asked
@@ -405,7 +442,9 @@ final class DocumentSession {
                 self.installRender(rendered, layout: layout, initial: initial)
             case .failure(let error):
                 // A reload that fails almost always means a half-written file;
-                // keep showing the last good render and wait for the next save.
+                // keep showing the last good render and wait for the next save
+                // -- which must render even if it writes the same bytes again.
+                self.renderNeedsRetry = true
                 guard initial else { return }
                 self.phase = .failed(error.localizedDescription)
             }
@@ -509,13 +548,35 @@ final class DocumentSession {
         watcher = FileWatcher(url: url) { [weak self] in
             self?.reloadFromDisk()
         }
-        let presenter = MarkdownFilePresenter(url: url) { [weak self] in
+        let presenter = MarkdownFilePresenter(url: url, onChange: { [weak self] in
             // Straight into the watcher, so the coordinated and uncoordinated
             // paths share one debounce and one signature gate.
             self?.watcher?.poke()
-        }
+        }, onMove: { [weak self] newURL in
+            self?.fileDidMove(to: newURL)
+        })
         NSFileCoordinator.addFilePresenter(presenter)
         self.presenter = presenter
+    }
+
+    /// The Files app renamed or moved the open file (delivered through the
+    /// presenter, on the main queue). Everything keyed by the location follows:
+    /// the watcher, the title, the Recents row, the reading position -- and the
+    /// file is re-read once from where it is now, because a revision saved just
+    /// before the move may have been in flight from the old path.
+    private func fileDidMove(to newURL: URL) {
+        guard newURL != url else { return }
+        let previous = url
+        url = newURL
+        title = newURL.deletingPathExtension().lastPathComponent
+        reloader?.invalidate()
+        watcher?.retarget(to: newURL)
+        Prefs.removeRecentDocument(path: previous.standardizedFileURL.path)
+        Prefs.noteRecentDocument(newURL, pageCount: nil)
+        // ReadingPosition reads the URL through a closure, so saving now writes
+        // the position under the new path.
+        savePosition()
+        reloadFromDisk()
     }
 
     private func reloadFromDisk() {
@@ -525,7 +586,10 @@ final class DocumentSession {
             made.onContent = { [weak self] fresh in
                 // The hash gate stays here: the reloader guarantees order, not
                 // that the newest bytes differ from what is already on screen.
-                guard let self, self.content?.hash != fresh.hash else { return }
+                // Cached source can be newer than the PDF on screen after a
+                // failure, so a matching hash only rules out work if its last
+                // render succeeded or is still running.
+                guard let self, self.content?.hash != fresh.hash || self.renderNeedsRetry else { return }
                 self.content = fresh
                 self.subtitle = Self.subtitle(for: fresh.stats)
                 self.captureAnchor()
@@ -544,11 +608,11 @@ final class DocumentSession {
     private func observePrefs() {
         guard prefsObserver == nil else { return }
         let box = MainBox(self)
-        prefsObserver = NotificationCenter.default.addObserver(
+        prefsObserver = NotificationToken(NotificationCenter.default.addObserver(
             forName: .glassinePrefsChanged, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated { box.value?.stylingChanged() }
-        }
+        })
     }
 
     private func stylingChanged() {
@@ -567,8 +631,11 @@ final class DocumentSession {
     /// True when what is on screen is not what should leave the app: a
     /// continuous render is one 40-inch page, which is a way to read and not a
     /// thing to hand someone or feed a printer.
+    /// The *installed* layout: the Pages preference can change before its
+    /// asynchronous render has replaced the continuous PDF (and a failed render
+    /// never replaces it), and the tall page on screen is what must not go out.
     private var needsPaginatedOutput: Bool {
-        kind == .markdown && styling.layout == .continuous
+        kind == .markdown && isContinuousMarkdown
     }
 
     /// The document an export or a print should use. Output is always paginated,
@@ -656,7 +723,10 @@ final class DocumentSession {
     func attach(_ view: ReaderPDFView) {
         guard pdfView !== view else { return }
         // SwiftUI can hand over a second view (a scene rebuild, a size-class
-        // change); the old one's observers would otherwise pile up.
+        // change); the old one's observers would otherwise pile up -- and the
+        // new one restores the *saved* position, so the old one's is saved first
+        // or a continuous document jumps back to wherever the last save was.
+        if pdfView != nil { savePosition() }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         pdfView = view
@@ -680,8 +750,37 @@ final class DocumentSession {
         ) { _ in
             MainActor.assumeIsolated { box.value?.savePosition() }
         })
+        // A locked PDF reports no pages and no outline, and its position
+        // restore waits (ReadingPosition leaves `restoreStarted` false) until
+        // the reader has typed the password into PDFKit's own prompt.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .PDFDocumentDidUnlock, object: nil, queue: .main
+        ) { notification in
+            // Compared by identity, which is Sendable where the document is not.
+            let unlocked = (notification.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let session = box.value, let unlocked,
+                      session.document.map(ObjectIdentifier.init) == unlocked else { return }
+                session.documentDidUnlock()
+            }
+        })
 
         installInView()
+    }
+
+    /// The Mac's `documentDidUnlock`: everything the locked document could not
+    /// supply -- page count, outline, scroll geometry, the saved position --
+    /// and with it the position saves that `restoreFinished` was gating.
+    private func documentDidUnlock() {
+        guard let document else { return }
+        pageCount = document.pageCount
+        outlineEntries = OutlineSync.entries(of: document.outlineRoot, in: document)
+        observeScrolling()
+        position?.restoreIfNeeded { [weak self] in
+            guard let self else { return }
+            self.updatePageReadout()
+            self.syncOutlineSelection()
+        }
     }
 
     private func installInView() {
@@ -929,6 +1028,15 @@ final class DocumentSession {
     }
 }
 
+/// A NotificationCenter registration that is removed when the token is
+/// released. `@unchecked Sendable` because the wrapped token is only ever
+/// handed back to NotificationCenter, which is thread-safe.
+final class NotificationToken: @unchecked Sendable {
+    private let token: NSObjectProtocol
+    init(_ token: NSObjectProtocol) { self.token = token }
+    deinit { NotificationCenter.default.removeObserver(token) }
+}
+
 // MARK: - FindSink
 
 /// PDFKit's find results, filtered before the state machine sees them.
@@ -968,23 +1076,33 @@ extension DocumentSession: FindSink {
 /// pokes the watcher's debounce rather than doing anything itself, so one save
 /// seen twice still costs one render.
 ///
-/// `@unchecked Sendable` because it is: the URL is immutable and the one
-/// callback is delivered on the main queue, which is where the closure it holds
-/// belongs.
+/// `@unchecked Sendable` because it is: every callback is delivered on the main
+/// queue, which is where the closures it holds belong and the only place the
+/// URL is rewritten (a move must update `presentedItemURL`, or the coordinator
+/// keeps delivering events for the old location).
 final class MarkdownFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
 
-    let presentedItemURL: URL?
+    private(set) var presentedItemURL: URL?
     let presentedItemOperationQueue = OperationQueue.main
     private let onChange: @MainActor () -> Void
+    private let onMove: @MainActor (URL) -> Void
 
-    init(url: URL, onChange: @escaping @MainActor () -> Void) {
+    init(url: URL,
+         onChange: @escaping @MainActor () -> Void,
+         onMove: @escaping @MainActor (URL) -> Void) {
         self.presentedItemURL = url
         self.onChange = onChange
+        self.onMove = onMove
         super.init()
     }
 
     func presentedItemDidChange() {
         MainActor.assumeIsolated { onChange() }
+    }
+
+    func presentedItemDidMove(to newURL: URL) {
+        presentedItemURL = newURL
+        MainActor.assumeIsolated { onMove(newURL) }
     }
 }
 

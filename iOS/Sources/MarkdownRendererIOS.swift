@@ -75,6 +75,17 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
     /// cancels this one's navigation, whose failure callback then arrives and
     /// must not be charged to the job that displaced it.
     private var activeNavigation: WKNavigation?
+    /// Every asynchronous hop -- the settle turn after a load, each measurement,
+    /// the resize-and-remeasure chain, `createPDF` -- belongs to one attempt.
+    /// `print`, `teardown`, `reprint` and a WebContent restart each start a new
+    /// one, so a callback from an attempt the queue has already abandoned (its
+    /// watchdog tore the view down and started over) cannot press the new
+    /// attempt's half-loaded page, or hand its data to the new job's completion.
+    /// The Mac printer has the same stamp for the same reason.
+    private var generation = 0
+    /// Set just before each `loadHTMLString`, consumed by the navigation
+    /// policy: that load is the only navigation the web view may ever make.
+    private var expectsOwnNavigation = false
     private var didRestartWebProcess = false
     private var wantsContinuous = false
     /// How the page that is currently loaded was pressed, so `reprint` can press
@@ -95,6 +106,7 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
                baseURL: URL?,
                layout: MarkdownLayout,
                completion: @escaping (Result<Data, Error>) -> Void) {
+        generation &+= 1
         pendingCompletion = completion
         pendingHTML = html
         pendingBaseURL = baseURL
@@ -113,10 +125,12 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
             : CGRect(x: 0, y: 0,
                      width: Self.printableWidth * Self.printShrinkFactor,
                      height: Self.printableHeight)
+        expectsOwnNavigation = true
         activeNavigation = view.loadHTMLString(html, baseURL: baseURL)
     }
 
     func reprint(completion: @escaping (Result<Data, Error>) -> Void) {
+        generation &+= 1
         pendingCompletion = completion
         guard let lastPress else {
             deliver(.failure(MarkdownRenderError.printFailed))
@@ -126,6 +140,8 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
     }
 
     func teardown() {
+        generation &+= 1
+        expectsOwnNavigation = false
         dropWebView()
         activeNavigation = nil
         pendingCompletion = nil
@@ -140,7 +156,12 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
     /// there a borderless window that is never ordered in, here the scene's own
     /// key window with the view at alpha 0 behind everything else.
     private func makeWebView() -> WKWebView {
-        if let webView { return webView }
+        if let webView {
+            // The host scene can close between jobs; a view with no window prints
+            // unreliably, so it is remade in a live one.
+            if webView.window != nil || Self.host == nil { return webView }
+            dropWebView()
+        }
 
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
@@ -246,10 +267,16 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
 
     // MARK: Printing
 
+    /// True while `stamp` is still the attempt in flight.
+    private func isCurrent(_ stamp: Int) -> Bool {
+        stamp == generation && pendingCompletion != nil
+    }
+
     private func printLoadedPage() {
         guard pendingCompletion != nil else { return }
+        let stamp = generation
         measure { [weak self] measurement in
-            guard let self, self.pendingCompletion != nil else { return }
+            guard let self, self.isCurrent(stamp) else { return }
             guard let measurement else {
                 self.deliver(.failure(MarkdownRenderError.printFailed))
                 return
@@ -271,17 +298,20 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
                                width: Self.paperSize.width, height: ceil(firstHeight))
         webView.setNeedsLayout()
         webView.layoutIfNeeded()
+        let stamp = generation
         afterOneTurn { [weak self] in
-            guard let self, self.pendingCompletion != nil else { return }
+            guard let self, self.isCurrent(stamp) else { return }
             self.measure { [weak self] measurement in
-                guard let self, self.pendingCompletion != nil,
-                      let measurement else { return }
+                guard let self, self.isCurrent(stamp), let measurement else { return }
                 self.measured = measurement.headings
                 let height = ceil(measurement.height)
                 guard height > Self.maxPageHeight else {
                     self.webView?.frame = CGRect(x: 0, y: 0,
                                                  width: Self.paperSize.width, height: height)
-                    self.afterOneTurn { [weak self] in self?.press(.wholePage(height: height)) }
+                    self.afterOneTurn { [weak self] in
+                        guard let self, self.isCurrent(stamp) else { return }
+                        self.press(.wholePage(height: height))
+                    }
                     return
                 }
                 self.paginateTallPages()
@@ -300,10 +330,11 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
                                height: Self.maxPageHeight)
         webView.setNeedsLayout()
         webView.layoutIfNeeded()
+        let stamp = generation
         afterOneTurn { [weak self] in
-            guard let self, self.pendingCompletion != nil else { return }
+            guard let self, self.isCurrent(stamp) else { return }
             self.measure { [weak self] measurement in
-                guard let self, self.pendingCompletion != nil else { return }
+                guard let self, self.isCurrent(stamp) else { return }
                 if let measurement { self.measured = measurement.headings }
                 self.press(.paginated(
                     paper: CGSize(width: Self.paperSize.width, height: Self.maxPageHeight),
@@ -341,9 +372,18 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
 
         let paper = CGRect(origin: .zero, size: size)
         let printable = margin > 0 ? paper.insetBy(dx: margin, dy: margin) : paper
-        // No public setter for either; KVC is the only route.
-        renderer.setValue(NSValue(cgRect: paper), forKey: "paperRect")
-        renderer.setValue(NSValue(cgRect: printable), forKey: "printableRect")
+        // No public setter for either; KVC is the only route. Checked first,
+        // because an unknown key is an uncatchable ObjC exception: should an SDK
+        // ever drop these setters, the margins come from the formatter instead
+        // of every Markdown render crashing.
+        if renderer.responds(to: NSSelectorFromString("setPaperRect:")),
+           renderer.responds(to: NSSelectorFromString("setPrintableRect:")) {
+            renderer.setValue(NSValue(cgRect: paper), forKey: "paperRect")
+            renderer.setValue(NSValue(cgRect: printable), forKey: "printableRect")
+        } else {
+            formatter.perPageContentInsets = UIEdgeInsets(top: margin, left: margin,
+                                                          bottom: margin, right: margin)
+        }
 
         let pages = renderer.numberOfPages
         let output = NSMutableData()
@@ -366,9 +406,10 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
         }
         let configuration = WKPDFConfiguration()
         configuration.rect = CGRect(x: 0, y: 0, width: Self.paperSize.width, height: height)
+        let stamp = generation
         webView.createPDF(configuration: configuration) { [weak self] result in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.isCurrent(stamp) else { return }
                 switch result {
                 case .success(let data): self.deliver(.success(data))
                 case .failure(let error): self.deliver(.failure(error))
@@ -383,24 +424,49 @@ final class UIKitHTMLPrinter: NSObject, HTMLPrinter {
 extension UIKitHTMLPrinter: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
+        let stamp = generation
         // One run-loop turn for WebKit to settle its layout before measuring.
-        afterOneTurn { [weak self] in self?.printLoadedPage() }
+        afterOneTurn { [weak self] in
+            guard let self, self.isCurrent(stamp) else { return }
+            self.printLoadedPage()
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
         deliver(.failure(error))
     }
 
     func webView(_ webView: WKWebView,
                  didFailProvisionalNavigation navigation: WKNavigation!,
                  withError error: Error) {
-        guard navigation === activeNavigation else { return }
+        guard webView === self.webView, navigation === activeNavigation else { return }
         deliver(.failure(error))
     }
 
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // The string load we just started is the one navigation allowed. Anything
+        // else -- a <meta http-equiv="refresh">, a <base>-rewritten link -- is
+        // the document's doing, and this view never fetches on a document's
+        // behalf. (The CSP governs subresources, not navigations.)
+        guard webView === self.webView, expectsOwnNavigation,
+              navigationAction.navigationType == .other,
+              navigationAction.targetFrame?.isMainFrame ?? true else {
+            decisionHandler(.cancel)
+            return
+        }
+        expectsOwnNavigation = false
+        decisionHandler(.allow)
+    }
+
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === self.webView else { return }
+        // Whatever the old process was in the middle of is void.
+        generation &+= 1
+        activeNavigation = nil
         dropWebView()
         guard let html = pendingHTML, pendingCompletion != nil, !didRestartWebProcess else {
             deliver(.failure(MarkdownRenderError.printFailed))
@@ -413,6 +479,7 @@ extension UIKitHTMLPrinter: WKNavigationDelegate {
             : CGRect(x: 0, y: 0,
                      width: Self.printableWidth * Self.printShrinkFactor,
                      height: Self.printableHeight)
+        expectsOwnNavigation = true
         activeNavigation = view.loadHTMLString(html, baseURL: pendingBaseURL)
     }
 }
@@ -431,17 +498,39 @@ final class MarkdownRendererIOS {
 
     private let printer = UIKitHTMLPrinter()
     private lazy var queue = RenderQueue(printer: printer)
+    private var observers: [NSObjectProtocol] = []
 
-    private init() {}
+    private init() {
+        // In the background WebKit may not render at all, and a job left running
+        // there would only come back as a watchdog timeout and a wasted retry.
+        // Suspend the queue as the Mac does for sleep; it resumes on return.
+        observe(UIApplication.didEnterBackgroundNotification, suspended: true)
+        observe(UIApplication.willEnterForegroundNotification, suspended: false)
+    }
+
+    private func observe(_ name: Notification.Name, suspended: Bool) {
+        observers.append(NotificationCenter.default.addObserver(
+            forName: name, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.queue.setSuspended(suspended) }
+        })
+    }
 
     /// Render `html` and give the result its outline. `key` identifies the
     /// document: queuing a second job with the same key drops the first (its
     /// completion gets `.superseded`).
+    ///
+    /// `prepare` runs on the finished document *before* the outline is applied:
+    /// locating headings touches pages, and PDFKit asks its delegate for the
+    /// page class lazily, so the delegate has to be in place first or those
+    /// pages come back as plain `PDFPage`s that can never draw a dark-mode find
+    /// highlight. The session installs its bridge there.
     func render(html: String,
                 baseURL: URL?,
                 key: String,
                 layout: MarkdownLayout,
                 headings: [MarkdownHeading],
+                prepare: @escaping @MainActor (PDFDocument) -> Void = { _ in },
                 completion: @escaping (Result<RenderedMarkdown, Error>) -> Void) {
         queue.render(html: html, baseURL: baseURL, key: key, layout: layout) {
             [weak self] result in
@@ -450,6 +539,7 @@ final class MarkdownRendererIOS {
                 return
             }
             if case .success(let rendered) = result {
+                prepare(rendered.document)
                 self.applyOutline(headings, to: rendered.document)
             }
             completion(result)

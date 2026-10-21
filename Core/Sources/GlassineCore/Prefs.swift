@@ -432,6 +432,29 @@ public enum Prefs {
     /// file is really gone.
     public static func resolvedURL(for entry: RecentDocument) -> URL? {
         let fm = FileManager.default
+        #if os(iOS)
+        // In the sandbox a file outside the app's own container is reachable
+        // only through the scope its bookmark carries: `fileExists` on the bare
+        // path says "no" for a perfectly good file in iCloud Drive or another
+        // provider. So the bookmark comes first, the existence check runs inside
+        // its scope, and the *resolved* URL is what goes back -- a standardized
+        // copy would not carry the scope `DocumentSession` has to start.
+        if let bookmark = entry.bookmark {
+            var stale = false
+            if let url = try? URL(resolvingBookmarkData: bookmark,
+                                  options: [.withoutUI, .withoutMounting],
+                                  relativeTo: nil,
+                                  bookmarkDataIsStale: &stale) {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                if fm.fileExists(atPath: url.path) {
+                    recordLocation(url, for: entry, stale: stale)
+                    return url
+                }
+            }
+        }
+        return fm.fileExists(atPath: entry.path) ? entry.url : nil
+        #else
         if fm.fileExists(atPath: entry.path) { return entry.url }
         guard let bookmark = entry.bookmark else { return nil }
         var stale = false
@@ -441,17 +464,25 @@ public enum Prefs {
                                  bookmarkDataIsStale: &stale),
               fm.fileExists(atPath: url.path)
         else { return nil }
-
+        recordLocation(url, for: entry, stale: stale)
         // Standardized, so the returned URL and the rewritten entry agree on the
         // path -- which is what the Recents list keys a row by.
+        return url.standardizedFileURL
+        #endif
+    }
+
+    /// A bookmark that led somewhere other than the stored path (or that the
+    /// system calls stale) is written back, so the row shows the file's new
+    /// location instead of "Not found" and the next resolution is direct.
+    private static func recordLocation(_ url: URL, for entry: RecentDocument, stale: Bool) {
         let moved = url.standardizedFileURL
-        let refreshedBookmark = stale ? (try? moved.bookmarkData()) : nil
+        guard moved.path != entry.path || stale else { return }
+        let refreshedBookmark = stale ? (try? url.bookmarkData()) : nil
         updateRecentDocuments { list in
             if let index = list.firstIndex(where: { $0.path == entry.path }) {
                 list[index].path = moved.path
                 if stale { list[index].bookmark = refreshedBookmark }
             }
         }
-        return moved
     }
 }
