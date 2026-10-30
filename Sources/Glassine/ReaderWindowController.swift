@@ -164,6 +164,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
                 self.finishInstall(rerunFind: false)
             }
         }
+        // A long document trims the reader's own pages first. At open that is
+        // the saved position, which PDFView has not scrolled to yet.
+        readerMode.readingPageIndex = { [weak self] in
+            guard let self else { return nil }
+            return self.position.targetForInstall(initial: !self.position.restoreStarted)?.pageIndex
+        }
         readerMode.onPreparationChanged = { [weak reader] in reader?.setReaderModePreparing($0) }
         reader.onViewportSizeChange = { [weak self] in self?.readerMode.viewportDidChange() }
         reader.pdfView.onReaderModeZoomToFit = { [weak self] in self?.readerMode.zoomToFit() }

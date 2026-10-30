@@ -144,6 +144,117 @@ extension MacAppTests {
             #expect(scans == 1 && !mode.isPreparing)
         }
 
+        @Test("A short document installs every page's trim in one transaction")
+        func shortDocumentSingleInstall() async throws {
+            let (document, folder) = try fixture(pages: 12)
+            defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+            let pdf = try #require(document.pdf)
+            let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 800))
+            view.document = pdf
+            let mode = ReaderModeController(document: document, pdfView: view)
+            var trimmedPerTransaction: [Int] = []
+            mode.preservePosition = { changes in
+                changes()
+                trimmedPerTransaction.append((0..<pdf.pageCount).filter { index in
+                    guard let page = pdf.page(at: index) as? ReaderPage,
+                          let bounds = page.readerContentBounds else { return false }
+                    return bounds != page.bounds(for: .cropBox)
+                }.count)
+            }
+            mode.toggle()
+            try await waitUntil { !mode.isPreparing }
+            #expect(trimmedPerTransaction == [12])
+        }
+
+        @Test("A long document trims the reader's pages first, then the rest in a few batches")
+        func progressiveInstall() async throws {
+            let pageCount = ReaderModeController.progressivePageThreshold + 30
+            let (document, folder) = try fixture(pages: pageCount)
+            defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+            let pdf = try #require(document.pdf)
+            let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 800))
+            view.document = pdf
+            let mode = ReaderModeController(document: document, pdfView: view)
+            let target = 100
+            mode.readingPageIndex = { target }
+            func trimmed() -> Set<Int> {
+                Set((0..<pdf.pageCount).filter { index in
+                    guard let page = pdf.page(at: index) as? ReaderPage,
+                          let bounds = page.readerContentBounds else { return false }
+                    return bounds != page.bounds(for: .cropBox)
+                })
+            }
+            var transactions: [(trimmed: Set<Int>, preparing: Bool)] = []
+            mode.preservePosition = { changes in
+                changes()
+                transactions.append((trimmed(), mode.isPreparing))
+            }
+            var scans = 0
+            mode.onPreparationChanged = { if $0 { scans += 1 } }
+            mode.toggle()
+            // The reader's page is still being analysed, so nothing installs yet.
+            #expect(transactions.isEmpty && !view.readerModeActive)
+            try await waitUntil { !mode.isPreparing }
+
+            let first = try #require(transactions.first)
+            let neighbours = ReaderModeController.neighbourPages
+            #expect(first.trimmed.isSuperset(of: Set(target - neighbours...target + neighbours)))
+            #expect(first.trimmed.count < pageCount && first.preparing)
+            #expect(!first.trimmed.contains(0))
+            #expect(transactions.count > 1 && transactions.count <= 8)
+            // Each transaction only adds pages; none is re-measured differently.
+            for (earlier, later) in zip(transactions, transactions.dropFirst()) {
+                #expect(later.trimmed.isSuperset(of: earlier.trimmed))
+            }
+            #expect(transactions.last?.trimmed.count == pageCount)
+            #expect(transactions.last?.preparing == false && scans == 1)
+            #expect(view.readerModeActive && view.displayBox == .artBox)
+        }
+
+        @Test("A progressive scan stopped midway never installs stale batches and resumes from its known pages")
+        func progressiveCancellation() async throws {
+            let pageCount = ReaderModeController.progressivePageThreshold + 30
+            let (document, folder) = try fixture(pages: pageCount)
+            defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+            let pdf = try #require(document.pdf)
+            let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 800))
+            view.document = pdf
+            let mode = ReaderModeController(document: document, pdfView: view)
+            mode.readingPageIndex = { 0 }
+            var transactions = 0
+            var afterStopping: Int?
+            mode.preservePosition = { changes in
+                changes()
+                transactions += 1
+                // Switch off right after the first install, while later
+                // batches are still being detected.
+                if transactions == 1 {
+                    DispatchQueue.main.async {
+                        mode.toggle()
+                        afterStopping = transactions
+                    }
+                }
+            }
+            mode.toggle()
+            try await waitUntil { afterStopping != nil }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(!mode.isPreparing && !view.readerModeActive)
+            #expect((pdf.page(at: pageCount - 1) as? ReaderPage)?.readerContentBounds == nil)
+            #expect(transactions == afterStopping, "No batch installed after switching off")
+
+            // Switching back on installs what is already known at once, then
+            // the remaining pages; removing the document mid-scan discards them.
+            mode.toggle()
+            #expect(view.readerModeActive && mode.isPreparing)
+            view.document = nil
+            mode.documentDidChange()
+            let settled = transactions
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(transactions == settled)
+            #expect((0..<pdf.pageCount).allSatisfy { (pdf.page(at: $0) as? ReaderPage)?.readerContentBounds == nil })
+            #expect(!mode.isPreparing && !view.readerModeActive)
+        }
+
         @Test("Margin slider updates share a layout transaction and cannot reapply after disabling")
         func coalescedMargins() async throws {
             let (document, folder) = try fixture()

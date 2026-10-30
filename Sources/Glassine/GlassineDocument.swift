@@ -85,6 +85,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private var pdfSourceByteCount = 0
     private(set) var hasSignatureFields = false
     var highlightPageCache: [ObjectIdentifier: [SavedHighlight]] = [:]
+    /// Whether any page holds a highlight, once someone has asked. Menu
+    /// validation runs every time a menu opens and must not walk every page's
+    /// annotations; adding, removing and rereading highlights reset it.
+    var cachedHasHighlights: Bool?
 
     override class var autosavesInPlace: Bool { false }
     override class var preservesVersions: Bool { false }
@@ -137,6 +141,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             pdfSourceByteCount = bytes.count
             pdf = document
             highlightPageCache.removeAll()
+            cachedHasHighlights = nil
             hasSignatureFields = Self.containsSignatureFields(in: document)
         case .markdown:
             // Only text work here; `pdf` stays nil until the renderer finishes.
@@ -587,7 +592,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(exportAsPDF(_:)) { return pdf != nil }
-        if item.action == #selector(exportHighlightsAsMarkdown(_:)) { return !savedHighlights.isEmpty }
+        if item.action == #selector(exportHighlightsAsMarkdown(_:)) { return hasHighlights }
         if item.action == #selector(save(_:)) || item.action == #selector(saveAs(_:)) {
             return canEditHighlights
         }

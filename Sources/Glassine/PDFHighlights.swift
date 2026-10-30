@@ -102,6 +102,21 @@ extension GlassineDocument {
         }
     }
 
+    /// Same answer as `!savedHighlights.isEmpty`, without extracting any text,
+    /// stopping at the first highlight, and computed once until highlights
+    /// change. A locked PDF is not cached: its pages appear only on unlock.
+    var hasHighlights: Bool {
+        if let cachedHasHighlights { return cachedHasHighlights }
+        guard kind == .pdf, let pdf, !pdf.isLocked else { return false }
+        let found = (0..<pdf.pageCount).contains { index in
+            guard let page = pdf.page(at: index) else { return false }
+            if let cached = highlightPageCache[ObjectIdentifier(page)] { return !cached.isEmpty }
+            return page.annotations.contains { $0.type == "Highlight" }
+        }
+        cachedHasHighlights = found
+        return found
+    }
+
     func canEdit(_ annotation: PDFAnnotation) -> Bool {
         guard canEditHighlights, annotation.page?.document === pdf,
               annotation.type == "Highlight" else { return false }
@@ -189,6 +204,7 @@ extension GlassineDocument {
             document.setHighlights(items, present: !present, action: action)
         }
         undoManager?.setActionName(action)
+        cachedHasHighlights = nil
         for item in items {
             highlightPageCache.removeValue(forKey: ObjectIdentifier(item.page))
             if present { item.page.addAnnotation(item.annotation) }

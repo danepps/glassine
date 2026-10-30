@@ -62,6 +62,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         self.pdfView = pdfView
         self.isContinuousMarkdown = isContinuousMarkdown
         super.init(nibName: nil, bundle: nil)
+        // The Highlights pane starts hidden; `showHighlights()` reads it.
+        highlights.defersFirstRefresh = true
     }
 
     @available(*, unavailable)
@@ -290,7 +292,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         outlineView.expandItem(nil, expandChildren: true)
         updateModeControl()
         storedMode = resolvedMode(Prefs.sidebarMode)
-        highlights.refresh()
+        // A list that was never read has nothing stale to replace; it is
+        // read when the pane is first shown.
+        if showsHighlights || highlights.isPopulated { highlights.refresh() }
         applyMode()
     }
 
