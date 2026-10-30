@@ -43,6 +43,46 @@ final class ReaderPDFView: PDFView {
         NSPasteboard.general.setString(owner.highlightsMarkdown([SavedHighlight(page: page, annotation: annotation)]), forType: .string)
     }
 
+    /// A plain-text address under a click, which Glassine opens itself rather
+    /// than leaving to PDFKit, whose detection stops at the end of the line
+    /// and so opens only the first half of an address the PDF wrapped.
+    private var pendingTextLink: URL?
+
+    private func textLink(at event: NSEvent) -> URL? {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let page = page(for: point, nearest: false), let text = page.string else { return nil }
+        let pagePoint = convert(point, to: page)
+        // A real link annotation wins; PDFKit handles those correctly.
+        if page.annotation(at: pagePoint)?.type == "Link" { return nil }
+        return TextLinks.url(in: text, at: page.characterIndex(at: pagePoint))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        pendingTextLink = nil
+        if event.clickCount == 1,
+           event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
+           let url = textLink(at: event) {
+            pendingTextLink = url
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        // Dragging from an address does nothing; PDFKit never saw the press.
+        if pendingTextLink != nil { return }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let url = pendingTextLink {
+            pendingTextLink = nil
+            if textLink(at: event) == url { NSWorkspace.shared.open(url) }
+            return
+        }
+        super.mouseUp(with: event)
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         var clickedHighlight: PDFAnnotation?
