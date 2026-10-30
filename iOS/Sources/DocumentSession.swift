@@ -628,24 +628,22 @@ final class DocumentSession {
 
     // MARK: Output
 
-    /// True when what is on screen is not what should leave the app: a
-    /// continuous render is one 40-inch page, which is a way to read and not a
-    /// thing to hand someone or feed a printer.
-    /// The *installed* layout: the Pages preference can change before its
-    /// asynchronous render has replaced the continuous PDF (and a failed render
-    /// never replaces it), and the tall page on screen is what must not go out.
-    private var needsPaginatedOutput: Bool {
-        kind == .markdown && isContinuousMarkdown
-    }
-
-    /// The document an export or a print should use. Output is always paginated,
-    /// so a continuous render is typeset a second time under its own renderer
-    /// key -- the document's own render is not superseded -- and given the same
-    /// outline. Anything else is what is already on screen.
+    /// The document an export or a print should use. A PDF is what is already
+    /// on screen. Markdown is always typeset a second time, under its own
+    /// renderer key -- the document's own render is not superseded -- and given
+    /// the same outline, because what is on screen is never what should leave
+    /// the app: a continuous render is one 40-inch page, which is a way to read
+    /// and not a thing to hand someone or feed a printer, and even a Pages
+    /// render carries the keep-with-next hack's ghost headings below the
+    /// printable band, which a recipient's search would find twice. The output
+    /// render is paginated and drops the hack (`paginatedWithoutCarryOver`),
+    /// accepting an occasional heading orphaned at the foot of a page instead.
+    /// The cost is one more typesetting, a few hundred milliseconds, for each
+    /// export or print of a Pages document.
     func paginatedDocumentForOutput(
         _ completion: @escaping @MainActor (Result<PDFDocument, Error>) -> Void
     ) {
-        guard needsPaginatedOutput, let bodyHTML = content?.html else {
+        guard kind == .markdown, let bodyHTML = content?.html else {
             guard let document else {
                 completion(.failure(Self.nothingToExport))
                 return
@@ -657,7 +655,7 @@ final class DocumentSession {
         // that looked one way on screen and printed another would be a bug
         // report, and the darker panels print better than the near-whites did.
         let html = MarkdownHTML.page(body: bodyHTML, title: title,
-                                     styling: styling.paginated,
+                                     styling: styling.paginatedWithoutCarryOver,
                                      platformCSS: ReaderTheme.markdownPlatformCSS)
         MarkdownRendererIOS.shared.render(html: html,
                                           baseURL: url,

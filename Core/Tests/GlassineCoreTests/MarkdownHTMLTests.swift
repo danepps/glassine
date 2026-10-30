@@ -143,6 +143,34 @@ struct MarkdownHTMLTests {
         #expect(!continuous.contains("margin-bottom: -72pt;"))
     }
 
+    @Test("The output variant is paginated and drops only the heading carry-over")
+    func outputVariantDropsCarryOver() {
+        let continuous = MarkdownStyling(styleID: "manuscript", css: "", size: 11,
+                                         layout: .continuous)
+        let output = continuous.paginatedWithoutCarryOver
+        #expect(output.layout == .pages)
+        #expect(!output.carriesHeadings)
+        // The variant hook every other caller uses is untouched.
+        #expect(continuous.paginated.carriesHeadings)
+
+        let withHack = MarkdownHTML.page(body: "", title: "", styling: continuous.paginated)
+        let without = MarkdownHTML.page(body: "", title: "", styling: output)
+        #expect(withHack.contains("margin-bottom: -72pt;"))
+        #expect(!without.contains("margin-bottom: -72pt;"))
+        #expect(!without.contains("h1::after"))
+        // Every other keep-together rule survives, and nothing else moves: the
+        // two pages differ by exactly the carry-over block.
+        #expect(without.contains("break-after: avoid;"))
+        #expect(without.contains("pre, tr { break-inside: avoid; page-break-inside: avoid; }"))
+        #expect(!without.contains("body { padding: 72pt; }"))
+        #expect(withHack.count > without.count)
+        let carryOverStart = withHack.range(of: "/* WebKit ignores break-after")!.lowerBound
+        let carryOverEnd = withHack.range(of: "margin-bottom: -72pt;\n}\n")!.upperBound
+        var stripped = withHack
+        stripped.removeSubrange(carryOverStart..<carryOverEnd)
+        #expect(stripped == without)
+    }
+
 
     @Test("Raw HTML that could navigate or load is cut out; the rest passes through")
     func hostileRawHTML() {
