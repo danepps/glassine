@@ -186,6 +186,8 @@ final class DocumentSession {
     private(set) var pdfViewToken = 0
     @ObservationIgnored private var position: ReadingPosition?
     @ObservationIgnored private var accessingScope = false
+    /// When the iCloud download wait gives up. Nil when nothing is waiting.
+    @ObservationIgnored private var downloadDeadline: Date?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var scrollObservation: NSKeyValueObservation?
     @ObservationIgnored private var outlineSyncPending = false
@@ -232,12 +234,24 @@ final class DocumentSession {
             // watch the same key until it lands; NSMetadataQuery would tell us
             // sooner but wants a scope and a predicate for one known file.
             phase = .downloading
-            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            do {
+                try FileManager.default.startDownloadingUbiquitousItem(at: url)
+            } catch {
+                downloadFailed(error)
+                return
+            }
+            downloadDeadline = Date().addingTimeInterval(Self.downloadTimeout)
             schedulePoll()
             return
         }
         load()
     }
+
+    /// How long the reader waits at "Downloading…" before saying so. Generous,
+    /// because a large scanned PDF on a slow connection is a legitimate wait;
+    /// the point is only that the wait ends. iCloud keeps downloading after the
+    /// reader gives up, so opening the file again later usually just works.
+    private static let downloadTimeout: TimeInterval = 180
 
     /// A self-terminating poll rather than a `Timer`: the closure holds only a
     /// weak reference, so it stops the moment the scene lets the session go --
@@ -250,15 +264,39 @@ final class DocumentSession {
         }
     }
 
+    /// Three ways out of the wait: the file lands, iCloud reports why it
+    /// cannot deliver it (no connection, no space, the item gone from the
+    /// server), or the deadline passes. Without the last two a failed download
+    /// spins at "Downloading…" for as long as the scene is open.
     private func pollDownload() {
         guard phase == .downloading else { return }
-        let status = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-            .ubiquitousItemDownloadingStatus
-        guard status == .current || status == nil else {
-            schedulePoll()
+        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey,
+                                                       .ubiquitousItemDownloadingErrorKey])
+        if let error = values?.ubiquitousItemDownloadingError {
+            downloadFailed(error)
             return
         }
+        let status = values?.ubiquitousItemDownloadingStatus
+        guard status == .current || status == nil else {
+            if let deadline = downloadDeadline, Date() >= deadline {
+                downloadDeadline = nil
+                phase = .failed("\(url.lastPathComponent) did not finish downloading from "
+                    + "iCloud. It may still be on its way; try opening it again in a moment.")
+            } else {
+                schedulePoll()
+            }
+            return
+        }
+        downloadDeadline = nil
         load()
+    }
+
+    /// Ends the wait with iCloud's own explanation, which the alert shows under
+    /// the reader's usual "Cannot Open Document".
+    private func downloadFailed(_ error: Error) {
+        downloadDeadline = nil
+        phase = .failed("\(url.lastPathComponent) could not be downloaded from iCloud. "
+            + error.localizedDescription)
     }
 
     private func load() {
