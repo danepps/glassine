@@ -247,7 +247,8 @@ resolve symlinks. New test with a file link and a directory link.
 
 ## Verified but not changed (recommendations)
 
-Ordered by how much they are likely to matter.
+Ordered by how much they are likely to matter. Each is expanded, with options,
+cost and a recommendation, in `2026-10-20-decisions.md`.
 
 1. **Automatic Reader Mode analysis is sequential over every page** before
    anything is applied (`ReaderModeController.swift:190-203`, `:222`;
@@ -285,7 +286,7 @@ Ordered by how much they are likely to matter.
    (`ReaderWindowController.swift:927-943`); coalesce onto the 150 ms batch.
 9. **iOS has no file presenter for PDFs** and `pollDownload` never times out
    or reads the iCloud error key (`DocumentSession.swift:234-243`).
-10. **`release-ios.sh` profile check matches by name only** (`:472-477`); an
+10. **`release-ios.sh` profile check matches by name only** (`:176-177`); an
     expired profile passes preflight and fails after the multi-minute archive.
 11. **`KEY_ID` / `ISSUER_ID` are committed** to a public repo
     (`release-ios.sh:40-41`). Not secrets without the `.p8`, but they are its
