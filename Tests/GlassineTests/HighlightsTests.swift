@@ -179,6 +179,72 @@ extension MacAppTests {
             #expect(pdfView.validateMenuItem(item))
         }
 
+        @Test("The window's hidden Highlights pane reads nothing until it is shown or a highlight changes")
+        func deferredSidebarRefresh() throws {
+            let (doc, folder) = try fixture()
+            defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+            edit(doc) { doc.addHighlight(selection: doc.pdf!.selectionForEntireDocument!, color: .blue) }
+            doc.highlightPageCache.removeAll()
+            doc.makeWindowControllers()
+            let window = try #require(doc.windowControllers.first?.window)
+            let split = try #require(window.contentViewController?.children.first as? NSSplitViewController)
+            let sidebar = try #require(split.splitViewItems.first?.viewController as? SidebarViewController)
+            _ = sidebar.highlights.view
+            #expect(!sidebar.highlights.isPopulated && sidebar.highlights.table.numberOfRows == 0)
+            #expect(doc.highlightPageCache.isEmpty, "Building the window read no page's annotations")
+            sidebar.documentDidChange(isContinuousMarkdown: false)
+            #expect(!sidebar.highlights.isPopulated)
+
+            sidebar.showHighlights()
+            #expect(sidebar.highlights.isPopulated && sidebar.highlights.table.numberOfRows == 2)
+            sidebar.mode = .thumbnails
+            let first = try #require(sidebar.highlights.highlights.first?.annotation)
+            edit(doc) { doc.removeHighlight(first) }
+            // A change refreshes the list even while the pane is hidden.
+            #expect(sidebar.highlights.table.numberOfRows == 1)
+
+            let (fresh, freshFolder) = try fixture()
+            defer { fresh.close(); try? FileManager.default.removeItem(at: freshFolder) }
+            edit(fresh) { fresh.addHighlight(selection: fresh.pdf!.selectionForEntireDocument!, color: .green) }
+            fresh.makeWindowControllers()
+            let freshWindow = try #require(fresh.windowControllers.first?.window)
+            let freshSplit = try #require(freshWindow.contentViewController?.children.first as? NSSplitViewController)
+            let freshSidebar = try #require(freshSplit.splitViewItems.first?.viewController as? SidebarViewController)
+            _ = freshSidebar.highlights.view
+            let page = try #require(fresh.pdf?.page(at: 1))
+            let annotation = try #require(page.annotations.first { $0.type == "Highlight" })
+            edit(fresh) { fresh.recolorHighlight(annotation, color: HighlightColor.pink.color) }
+            #expect(freshSidebar.highlights.isPopulated && freshSidebar.highlights.table.numberOfRows == 2)
+        }
+
+        @Test("Export validation uses a cached flag that follows additions, removals, undo and revert")
+        func cachedHighlightPresence() throws {
+            let (doc, folder) = try fixture()
+            defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+            let url = try #require(doc.fileURL)
+            let export = NSMenuItem(title: "Export Highlights…",
+                                    action: #selector(GlassineDocument.exportHighlightsAsMarkdown(_:)),
+                                    keyEquivalent: "")
+            #expect(!doc.validateUserInterfaceItem(export) && doc.cachedHasHighlights == false)
+            edit(doc) { doc.addHighlight(selection: doc.pdf!.selectionForEntireDocument!, color: .yellow) }
+            #expect(doc.cachedHasHighlights == nil)
+            #expect(doc.validateUserInterfaceItem(export) && doc.cachedHasHighlights == true)
+            // Once known, validation answers from the flag without visiting pages.
+            doc.highlightPageCache.removeAll()
+            #expect(doc.validateUserInterfaceItem(export) && doc.highlightPageCache.isEmpty)
+            doc.undoManager?.undo()
+            #expect(!doc.validateUserInterfaceItem(export) && doc.savedHighlights.isEmpty)
+            doc.undoManager?.redo()
+            #expect(doc.validateUserInterfaceItem(export) && doc.savedHighlights.count == 2)
+            edit(doc) { doc.removeHighlights(doc.savedHighlights.map(\.annotation)) }
+            #expect(!doc.validateUserInterfaceItem(export))
+            doc.undoManager?.undo()
+            #expect(doc.validateUserInterfaceItem(export))
+            try doc.revert(toContentsOf: url, ofType: UTType.pdf.identifier)
+            #expect(doc.cachedHasHighlights == nil)
+            #expect(!doc.validateUserInterfaceItem(export) && doc.savedHighlights.isEmpty)
+        }
+
         @Test("Deleting noncontiguous rows reselects near the first deletion, regardless of click order",
               arguments: [[1, 4], [4, 1], [6, 7]])
         func multipleDeletionSelection(_ rows: [Int]) throws {

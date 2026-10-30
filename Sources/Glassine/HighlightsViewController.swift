@@ -11,6 +11,13 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
     private let exportButton = NSButton(title: "Export…", target: nil, action: nil)
     private var syncing = false
     private(set) var highlights: [SavedHighlight] = []
+    /// False until the first `refresh()` has read the document's highlights.
+    private(set) var isPopulated = false
+    /// The sidebar keeps this pane hidden until asked for it. Reading every
+    /// page's annotations while the window is being built would stall a
+    /// large PDF for a list nobody is looking at, so it waits until the pane
+    /// is shown or a highlight changes.
+    var defersFirstRefresh = false
     weak var document: GlassineDocument?
     var onSelect: ((SavedHighlight) -> Void)?
 
@@ -100,7 +107,7 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
             tools.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
             tools.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -10)
         ])
-        refresh()
+        if !defersFirstRefresh { refresh() }
     }
 
     func refresh(select annotation: PDFAnnotation? = nil) {
@@ -108,6 +115,7 @@ final class HighlightsViewController: NSViewController, NSTableViewDataSource, N
         let selected = annotation.map { [$0] } ?? selectedHighlights.map(\.annotation)
         let identities = Set(selected.map(ObjectIdentifier.init))
         highlights = document?.savedHighlights ?? []
+        isPopulated = true
         syncing = true
         table.reloadData()
         let rows = IndexSet(highlights.indices.filter { identities.contains(ObjectIdentifier(highlights[$0].annotation)) })
