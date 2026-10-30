@@ -196,9 +196,22 @@ final class RecentsViewController: NSViewController, NSTableViewDataSource,
 
     // MARK: Rows
 
+    /// Bumped by every reload, so rows that were already on their way when a
+    /// later reload (or a removal) asked again are dropped rather than applied:
+    /// they could still hold the row that was just removed.
+    private var reloadGeneration = 0
+
+    /// Locating the files happens off the main thread, because one on a
+    /// disconnected share can stall for the OS timeout. Until the new rows
+    /// arrive the list keeps showing the ones it has.
     func reload() {
-        allRows = RecentsModel.rows()
-        applyFilter()
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        RecentsModel.rows { [weak self] rows in
+            guard let self, generation == self.reloadGeneration else { return }
+            self.allRows = rows
+            self.applyFilter()
+        }
     }
 
     private func applyFilter() {
@@ -260,9 +273,15 @@ final class RecentsViewController: NSViewController, NSTableViewDataSource,
     @objc private func removeSelected(_ sender: Any?) {
         let index = table.selectedRow
         guard rows.indices.contains(index) else { return }
-        Prefs.removeRecentDocument(path: rows[index].key)
+        let key = rows[index].key
+        Prefs.removeRecentDocument(path: key)
+        // The row goes at once, without waiting on the file system; the reload
+        // then catches up with anything else that moved.
+        allRows.removeAll { $0.key == key }
+        applyFilter()
         reload()
-        // Land on the row that took the removed one's place.
+        // Land on the row that took the removed one's place. The reload keeps
+        // whichever row is selected when it arrives.
         if !rows.isEmpty {
             table.selectRowIndexes([min(index, rows.count - 1)], byExtendingSelection: false)
         }

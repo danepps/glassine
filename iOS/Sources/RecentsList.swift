@@ -19,6 +19,9 @@ struct RecentsList: View {
 
     @State private var rows: [RecentRow] = []
     @State private var query = ""
+    @State private var reloadGeneration = 0
+    /// Nothing is "No recent documents" until the first rows have come back.
+    @State private var hasLoaded = false
 
     private var filtered: [RecentRow] { RecentsModel.filter(rows, query: query) }
 
@@ -29,7 +32,7 @@ struct RecentsList: View {
 
     var body: some View {
         List {
-            if filtered.isEmpty {
+            if filtered.isEmpty && hasLoaded {
                 Text(rows.isEmpty ? "No recent documents" : "No matches")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -98,12 +101,25 @@ struct RecentsList: View {
         }
     }
 
+    /// Locating the files happens off the main thread, because one behind a
+    /// file provider that is slow to answer can stall. Until the new rows
+    /// arrive the list keeps showing the ones it has; rows already on their way
+    /// when a later reload asked again are dropped, since they could still hold
+    /// a row that was just removed.
     private func reload() {
-        rows = RecentsModel.rows()
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        RecentsModel.rows { resolved in
+            guard generation == reloadGeneration else { return }
+            rows = resolved
+            hasLoaded = true
+        }
     }
 
     private func remove(_ row: RecentRow) {
         Prefs.removeRecentDocument(path: row.key)
+        // The row goes at once; the reload catches up with anything else.
+        rows.removeAll { $0.key == row.key }
         reload()
     }
 }

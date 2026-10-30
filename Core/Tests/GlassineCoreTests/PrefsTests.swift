@@ -425,6 +425,36 @@ struct PrefsTests {
             #expect(rows[1].isMissing == true)
         }
     }
+
+    @Test("RecentsModel.rows(completion:) waits for queued opens and calls back on the main thread")
+    func asynchronousRowsFollowQueuedOpens() async {
+        let name = "com.epps.Glassine.tests.\(UUID().uuidString)"
+        guard let suite = UserDefaults(suiteName: name) else {
+            Issue.record("could not make a defaults suite")
+            return
+        }
+        let previous = Prefs.defaults
+        Prefs.defaults = suite
+        defer {
+            Prefs.flushRecentDocumentWrites()
+            Prefs.defaults = previous
+            suite.removePersistentDomain(forName: name)
+        }
+
+        let directory = TempDirectory()
+        let file = directory.write(Data("x".utf8), to: "opened.pdf")
+        // Not flushed: the rows have to come from behind this write on their own.
+        Prefs.noteRecentDocument(file, pageCount: 4)
+        let rows = await withCheckedContinuation { continuation in
+            RecentsModel.rows { rows in
+                #expect(Thread.isMainThread)
+                continuation.resume(returning: rows)
+            }
+        }
+        #expect(rows.map(\.key) == [file.standardizedFileURL.path])
+        #expect(rows.first?.pageCount == 4)
+        #expect(rows.first?.isMissing == false)
+    }
 }
 
 private final class HeldRecentReadDefaults: UserDefaults, @unchecked Sendable {

@@ -26,8 +26,28 @@ public struct RecentRow: Sendable, Equatable {
 /// a `List` on iOS) owns everything else.
 public enum RecentsModel {
 
+    /// `rows()` off the main thread, delivered on it. This is what the views
+    /// call: locating an entry asks the file system, and a file on a
+    /// disconnected network share or an unmounted drive can keep that waiting
+    /// for the OS timeout. The views keep showing the rows they have until these
+    /// arrive, so a slow volume leaves the list a moment out of date instead of
+    /// hanging the window.
+    ///
+    /// The work runs on the queue that records opens, so the rows include every
+    /// open noted before the call, and completions run in the order the calls
+    /// were made.
+    public static func rows(completion: @escaping @MainActor @Sendable ([RecentRow]) -> Void) {
+        Prefs.performAfterRecentDocumentWrites {
+            let resolved = rows()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(resolved) }
+            }
+        }
+    }
+
     /// Most recent first, each entry located: a moved file resolves through its
-    /// bookmark and reads as itself rather than "Not found".
+    /// bookmark and reads as itself rather than "Not found". This blocks on the
+    /// file system, so a view uses `rows(completion:)` instead.
     public static func rows() -> [RecentRow] {
         Prefs.recentDocuments.map { entry in
             let resolved = Prefs.resolvedURL(for: entry)

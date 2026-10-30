@@ -372,27 +372,40 @@ extension Prefs {
     ///
     /// Mac-side, because NSDocumentController is: Core keeps the storage and
     /// the seeded-flag key, this supplies the one list it cannot reach.
+    ///
+    /// Only the list itself is read here, because NSDocumentController belongs
+    /// to the main thread. Checking up to 530 paths for existence is not: one on
+    /// a disconnected share can block for the OS timeout. That runs on the
+    /// recents queue, ahead of the first reload and of any open noted after
+    /// this, so the first rows a picker receives already include the seeded
+    /// entries and a later open still lands on top of them.
+    @MainActor
     static func seedRecentDocumentsIfNeeded() {
         guard defaults.object(forKey: recentDocumentsSeededKey) == nil else { return }
         defaults.set(true, forKey: recentDocumentsSeededKey)
         guard recentDocuments.isEmpty else { return }
 
-        let fm = FileManager.default
-        var seen = Set<String>()
-        var seeded: [RecentDocument] = []
+        let systemRecents = NSDocumentController.shared.recentDocumentURLs
+        performAfterRecentDocumentWrites {
+            let fm = FileManager.default
+            var seen = Set<String>()
+            var seeded: [RecentDocument] = []
 
-        for url in NSDocumentController.shared.recentDocumentURLs {
-            let path = url.standardizedFileURL.path
-            guard fm.fileExists(atPath: path), seen.insert(path).inserted else { continue }
-            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
-        }
-        for path in positionedPaths() where !seen.contains(path) && fm.fileExists(atPath: path) {
-            seen.insert(path)
-            seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
-        }
+            for url in systemRecents {
+                let path = url.standardizedFileURL.path
+                guard fm.fileExists(atPath: path), seen.insert(path).inserted else { continue }
+                seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+            }
+            for path in positionedPaths() where !seen.contains(path) && fm.fileExists(atPath: path) {
+                seen.insert(path)
+                seeded.append(entry(forSeeding: URL(fileURLWithPath: path)))
+            }
 
-        // The two sources are each in their own order, so sort the whole thing.
-        seedRecentDocuments(seeded.sorted { $0.lastOpened > $1.lastOpened })
+            // The two sources are each in their own order, so sort the whole
+            // thing. The store still rechecks emptiness, so an open noted before
+            // this was queued is kept and the seed is dropped, as it always was.
+            seedRecentDocuments(seeded.sorted { $0.lastOpened > $1.lastOpened })
+        }
     }
 
     /// Deliberately no bookmark: making one reads the file, and doing that for
