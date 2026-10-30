@@ -106,7 +106,8 @@ public final class FindController: FindSink {
     /// the replacement anyway.
     private static let cancelledFindFallback: TimeInterval = 0.5
     /// Reassigning the highlight array per match is quadratic on large
-    /// documents, so hits after the first are batched onto this.
+    /// documents, so hits after the first are batched onto this, and so is the
+    /// running total in `countText`.
     private static let highlightBatchDelay: TimeInterval = 0.15
 
     public init(document: PDFDocument? = nil) {
@@ -245,10 +246,13 @@ public final class FindController: FindSink {
             // Stepping is useful as soon as there is something to step through;
             // it wraps over the results found so far.
             delegate?.findController(self, canStep: true)
+            setCountText("1 found…")
         } else {
+            // The running total rides the same batch as the highlights: a
+            // search with tens of thousands of hits would otherwise relay out
+            // the count labels once per hit. `findDidEnd` sets the exact total.
             scheduleHighlightRefresh()
         }
-        setCountText("\(matches.count) found…")
     }
 
     /// The identified form. An end reported by anything but the document we are
@@ -276,8 +280,13 @@ public final class FindController: FindSink {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.highlightBatchDelay) { [weak self] in
             guard let self else { return }
             self.highlightRefreshPending = false
-            // findDidEnd has already applied the final set if the search is over.
-            if self.findInProgress { self.notifyMatchesChanged() }
+            // findDidEnd has already applied the final set and the exact count
+            // if the search is over. A batch armed by a search that has since
+            // been replaced can land before the new one's first hit; an empty
+            // match set must leave the readout blank, not say "0 found".
+            guard self.findInProgress else { return }
+            self.notifyMatchesChanged()
+            if !self.matches.isEmpty { self.setCountText("\(self.matches.count) found…") }
         }
     }
 
@@ -315,7 +324,7 @@ public final class FindController: FindSink {
 
     /// "K of N" once a search has finished, "No matches" when it found nothing,
     /// blank when there is no query. Left alone while a search is still running
-    /// -- `findDidMatch` shows the running total there.
+    /// -- `findDidMatch` and the highlight batch show the running total there.
     private func updateSearchCount() {
         delegate?.findController(self, canStep: !matches.isEmpty)
         guard !lastQuery.isEmpty else {
