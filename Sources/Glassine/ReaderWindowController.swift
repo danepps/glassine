@@ -654,10 +654,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
     }
 
+    /// No outline sync here: the reader only ever lays pages out continuously,
+    /// so a page change is always a scroll too, and `scrollGeometryChanged`
+    /// syncs within 50 ms. Syncing here as well did the work twice.
     @objc private func pageChanged() {
         updatePageField()
         position.save()
-        sidebarVC.syncSelection()
     }
 
     func controlTextDidBeginEditing(_ obj: Notification) {

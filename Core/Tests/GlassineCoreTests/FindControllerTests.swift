@@ -389,6 +389,39 @@ struct FindControllerTests {
         #expect(controller.countText == "1 of 24")
     }
 
+    @Test("The running total is batched, and the final count is exact")
+    func runningTotalIsBatched() async {
+        let document = makeProbeDocument()
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        let hit = document.firstMatch("alpha")
+
+        controller.startFind("alpha")
+        #expect(delegate.counts == [""])
+        // A burst of hits inside one batch window reports the first at once and
+        // nothing more until the batch runs.
+        for _ in 0..<5_000 { controller.findDidMatch(hit) }
+        #expect(delegate.counts == ["", "1 found…"])
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(controller.countText == "5000 found…")
+        #expect(delegate.counts.count == 3)
+
+        // The end sets the exact total even though no batch has run since.
+        controller.findDidMatch(hit)
+        controller.findDidEnd()
+        #expect(controller.countText == "1 of 5001")
+        // Stepping after the search has finished still reads exactly.
+        controller.showMatch(4)
+        #expect(controller.countText == "5 of 5001")
+        // The batch armed by the last hit lands after the end and changes nothing.
+        let settled = delegate.counts.count
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(delegate.counts.count == settled)
+        #expect(controller.countText == "5 of 5001")
+    }
+
     // MARK: Cancellation, replaced documents and stale timers (BUG-002)
 
     @Test("Clearing the field during a pending cancellation clears the queue too")

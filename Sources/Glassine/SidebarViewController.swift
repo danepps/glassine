@@ -35,6 +35,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
     /// Set while the reading position is driving the selection, so the
     /// selection handler does not turn around and navigate.
     private var isSyncingSelection = false
+    /// Where each visible outline row starts, in row order, so a sync on every
+    /// scroll tick does not resolve thousands of destinations again. Nil when
+    /// the rows have changed: a new document, or a chapter expanded or
+    /// collapsed. Rebuilt on the next `syncSelection()`.
+    private var rowEntries: [OutlineEntry]?
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("glassine.outlineCell")
 
@@ -280,6 +285,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         guard isViewLoaded else { return }
         updateThumbnailDocument()
         outlineRoot = pdfView.document?.outlineRoot
+        rowEntries = nil
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)
         updateModeControl()
@@ -309,17 +315,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
         guard isViewLoaded, !outlineScrollView.isHidden, hasOutline,
               let here = OutlineSync.currentOrdinal(of: pdfView) else { return }
 
-        let document = pdfView.document
-        let rows: [OutlineEntry] = (0..<outlineView.numberOfRows).map { row in
-            guard let node = outlineView.item(atRow: row) as? PDFOutline else {
-                return OutlineEntry(node: PDFOutline(), depth: 0, ordinal: nil)
-            }
-            var start: OutlineSync.Ordinal?
-            if let target = OutlineSync.destination(of: node), let page = target.page {
-                start = OutlineSync.ordinal(of: page, y: target.point.y, in: document)
-            }
-            return OutlineEntry(node: node, depth: 0, ordinal: start)
-        }
+        let rows = currentRowEntries()
         // PDFKit rounds the scroll origin: after a heading jump its reported
         // destination can sit a fraction of a point above the target. Allow
         // one view point for every PDF, including ordinary paginated documents,
@@ -338,6 +334,36 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource,
             outlineView.deselectAll(nil)
         }
         isSyncingSelection = false
+    }
+
+    /// The cached row table, rebuilt if it was invalidated or no longer has
+    /// one entry per row -- the count check is a backstop for a row change
+    /// that reached the outline view by some route that did not clear it.
+    private func currentRowEntries() -> [OutlineEntry] {
+        if let rowEntries, rowEntries.count == outlineView.numberOfRows { return rowEntries }
+        let document = pdfView.document
+        let rows: [OutlineEntry] = (0..<outlineView.numberOfRows).map { row in
+            guard let node = outlineView.item(atRow: row) as? PDFOutline else {
+                return OutlineEntry(node: PDFOutline(), depth: 0, ordinal: nil)
+            }
+            var start: OutlineSync.Ordinal?
+            if let target = OutlineSync.destination(of: node), let page = target.page {
+                start = OutlineSync.ordinal(of: page, y: target.point.y, in: document)
+            }
+            return OutlineEntry(node: node, depth: 0, ordinal: start)
+        }
+        rowEntries = rows
+        return rows
+    }
+
+    // Expanding or collapsing a chapter shifts every row below it, so the
+    // cached table no longer lines up with the outline view.
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        rowEntries = nil
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        rowEntries = nil
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

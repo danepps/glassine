@@ -310,5 +310,79 @@ extension MacAppTests {
             sidebar.documentDidChange(isContinuousMarkdown: true)
             #expect(title.isHiddenOrHasHiddenAncestor && sidebar.hasOutline)
         }
+
+        /// One tall page whose outline nests two sections under the first
+        /// chapter: expanded, the rows are Chapter 1, Section A, Section B,
+        /// Chapter 2, each a quarter of the page below the last.
+        private func nestedDocument(height: CGFloat = 18_000) -> PDFDocument {
+            let pdf = PDFDocument()
+            let page = PDFPage()
+            page.setBounds(CGRect(x: 0, y: 0, width: 612, height: height), for: .mediaBox)
+            pdf.insert(page, at: 0)
+            func entry(_ title: String, quarter: Int) -> PDFOutline {
+                let node = PDFOutline()
+                node.label = title
+                node.destination = PDFDestination(page: page,
+                    at: CGPoint(x: 0, y: height - CGFloat(quarter) * height / 4))
+                return node
+            }
+            let root = PDFOutline()
+            let chapter = entry("Chapter 1", quarter: 0)
+            chapter.insertChild(entry("Section A", quarter: 1), at: 0)
+            chapter.insertChild(entry("Section B", quarter: 2), at: 1)
+            root.insertChild(chapter, at: 0)
+            root.insertChild(entry("Chapter 2", quarter: 3), at: 1)
+            pdf.outlineRoot = root
+            return pdf
+        }
+
+        @Test("The cached row table follows expand, collapse and document swaps")
+        func cachedRowsFollowOutlineChanges() throws {
+            _ = NSApplication.shared
+            let pdfView = PDFView(frame: NSRect(x: 0, y: 0, width: 600, height: 700))
+            pdfView.displayMode = .singlePageContinuous
+            pdfView.document = nestedDocument()
+            let sidebar = SidebarViewController(pdfView: pdfView, isContinuousMarkdown: true)
+            _ = sidebar.view
+            sidebar.documentDidChange(isContinuousMarkdown: true)
+            let outline = try #require(descendants(of: sidebar.view).compactMap { $0 as? NSOutlineView }.first)
+            #expect(outline.numberOfRows == 4)
+
+            func go(toQuarter quarter: Int, plus points: CGFloat = 40) throws {
+                let page = try #require(pdfView.document?.page(at: 0))
+                let height = page.bounds(for: .mediaBox).height
+                pdfView.go(to: PDFDestination(page: page,
+                    at: CGPoint(x: 0, y: height - CGFloat(quarter) * height / 4 - points)))
+                sidebar.syncSelection()
+            }
+
+            try go(toQuarter: 2)
+            #expect(outline.selectedRow == 2)          // Section B
+
+            // Collapsed, Chapter 2 moves up to row 1 and the hidden sections stop
+            // being candidates: Section B's passage now belongs to Chapter 1.
+            outline.collapseItem(outline.item(atRow: 0))
+            #expect(outline.numberOfRows == 2)
+            try go(toQuarter: 3)
+            #expect(outline.selectedRow == 1)
+            try go(toQuarter: 2)
+            #expect(outline.selectedRow == 0)
+
+            outline.expandItem(outline.item(atRow: 0))
+            try go(toQuarter: 3)
+            #expect(outline.selectedRow == 3)
+            try go(toQuarter: 1)
+            #expect(outline.selectedRow == 1)          // Section A
+
+            // A replacement with the same row count but different destinations
+            // must not reuse the old document's table. On the half-height page
+            // every old start would sit at or above Section B's passage, and a
+            // stale table would pick Chapter 2.
+            pdfView.document = nestedDocument(height: 9_000)
+            sidebar.documentDidChange(isContinuousMarkdown: true)
+            #expect(outline.numberOfRows == 4)
+            try go(toQuarter: 2)
+            #expect(outline.selectedRow == 2)
+        }
     }
 }
