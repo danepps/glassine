@@ -586,16 +586,38 @@ final class MarkdownRendererIOS {
     /// and `OutlineSync` measures with it, while `applyOutline` and
     /// `HeadingLocator` work in media-box coordinates that must not move under
     /// the destinations just written into the outline.
+    ///
+    /// What the page drew is the lower of two measures. Text comes from the
+    /// selection, which is cheap and exact. But image pixels are in no
+    /// selection, so a document that ends in a diagram below its last line
+    /// would lose the rest of the diagram; the region under the text is
+    /// therefore rasterised too (`InkBounds`, from the bottom up, in a few
+    /// coarse bands) and any ink found there extends the page.
     private static func trimTrailingBlank(of document: PDFDocument) {
         guard document.pageCount > 1,
               let last = document.page(at: document.pageCount - 1) else { return }
         let box = last.bounds(for: .mediaBox)
-        guard let text = last.selection(for: box) else { return }
         var bottom = CGFloat.greatestFiniteMagnitude
-        for line in text.selectionsByLine() {
-            let bounds = line.bounds(for: last)
-            guard bounds.height > 0, bounds.width > 0 else { continue }
-            bottom = min(bottom, bounds.minY)
+        if let text = last.selection(for: box) {
+            for line in text.selectionsByLine() {
+                let bounds = line.bounds(for: last)
+                guard bounds.height > 0, bounds.width > 0 else { continue }
+                bottom = min(bottom, bounds.minY)
+            }
+        }
+        if let pageRef = last.pageRef {
+            let below = CGRect(x: box.minX, y: box.minY, width: box.width,
+                               height: min(bottom, box.maxY) - box.minY)
+            // Ink that reaches the sheet's own foot is not anything the
+            // document drew -- the stylesheet's inch of bottom padding keeps
+            // content off it -- but a tinted paper colour painted edge to edge,
+            // which would otherwise read as ink everywhere and stop the crop.
+            // The text measurement stands then, as it did before.
+            if below.height > 0,
+               let ink = InkBounds.lowestInk(pageRef: pageRef, in: below),
+               ink > box.minY + 0.5 {
+                bottom = min(bottom, ink)
+            }
         }
         guard bottom < CGFloat.greatestFiniteMagnitude else { return }
         // The stylesheet's own inch of trailing white space, kept.

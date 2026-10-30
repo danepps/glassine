@@ -6,9 +6,15 @@ nonisolated(unsafe) private let highlightKey =
     UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
 
 /// Immutable box so the render thread only ever sees a fully formed value.
+/// The ink travels with the rectangles, so a tile thread reads both from one
+/// published object and never from shared mutable state.
 private final class HighlightBox: NSObject {
     let items: [ReaderPage.Highlight]
-    init(_ items: [ReaderPage.Highlight]) { self.items = items }
+    let ink: CGColor
+    init(_ items: [ReaderPage.Highlight], ink: CGColor) {
+        self.items = items
+        self.ink = ink
+    }
 }
 
 nonisolated(unsafe) private let readerBoundsKey =
@@ -75,28 +81,43 @@ public final class ReaderPage: PDFPage {
         }
     }
 
-    /// Set by ReaderPDFView. Empty in light mode, where PDFKit's own yellow
-    /// `highlightedSelections` are used instead.
+    /// Set by `FindHighlighter`. Empty in light mode, where PDFKit's own yellow
+    /// `highlightedSelections` are used instead. Assigning here draws in the
+    /// default `matchInk`; `setFindHighlights(_:ink:)` names the ink.
     public var findHighlights: [Highlight] {
-        get { (objc_getAssociatedObject(self, highlightKey) as? HighlightBox)?.items ?? [] }
-        set {
-            objc_setAssociatedObject(self, highlightKey, HighlightBox(newValue),
-                                     .OBJC_ASSOCIATION_RETAIN)
-        }
+        get { highlightBox?.items ?? [] }
+        set { setFindHighlights(newValue, ink: Self.matchInk) }
     }
 
-    /// Pre-filter ink for the matches. The view's inversion filter (invert +
-    /// 180 degree hue rotation) turns this into terminal green on the dark page.
-    /// Drawn translucently over white paper it comes out as a dark-green box
-    /// with the glyphs inside lifted to pale green.
+    /// Publish the highlights together with the ink they are drawn in. One
+    /// immutable box per call, so a tile thread drawing this page sees either
+    /// the old pair or the new one, never a mix.
+    public func setFindHighlights(_ highlights: [Highlight], ink: CGColor) {
+        objc_setAssociatedObject(self, highlightKey, HighlightBox(highlights, ink: ink),
+                                 .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    /// The ink the current highlights will be drawn in; nil before any were
+    /// set. For the tests.
+    var findHighlightInk: CGColor? { highlightBox?.ink }
+
+    private var highlightBox: HighlightBox? {
+        objc_getAssociatedObject(self, highlightKey) as? HighlightBox
+    }
+
+    /// Default pre-filter ink for the matches: the Mac's. The view's inversion
+    /// filter (invert + 180 degree hue rotation) turns this into terminal green
+    /// on the dark page. Drawn translucently over white paper it comes out as a
+    /// dark-green box with the glyphs inside lifted to pale green.
     ///
-    /// The default is the Mac's value, calibrated against a **linear-light**
-    /// `CIColorInvert`. iOS inverts in sRGB (Spike A), so the same green needs a
-    /// different pre-filter value there and the iOS app overwrites this at
-    /// launch -- which is why it is a `var`. Nothing else writes it, and the Mac
-    /// never touches it.
-    nonisolated(unsafe) public static var matchInk =
-        CGColor(red: 0, green: 0.77, blue: 0, alpha: 1)
+    /// Calibrated against a **linear-light** `CIColorInvert`. iOS inverts in
+    /// sRGB (Spike A), so the same green needs a different pre-filter value
+    /// there; the iOS app hands its own to `FindHighlighter(pdfView:matchInk:)`,
+    /// which passes it with every set of highlights. A constant rather than a
+    /// launch-time global, because PDFKit's tile threads read whatever ink the
+    /// draw uses and a shared `var` would be a race the moment anything wrote
+    /// it twice.
+    public static let matchInk = CGColor(red: 0, green: 0.77, blue: 0, alpha: 1)
     private static let boxAlpha: CGFloat = 0.35
     private static let currentOutlineWidth: CGFloat = 1.5
 
@@ -106,8 +127,9 @@ public final class ReaderPage: PDFPage {
         // Save/export snapshots include permanent annotations, never the
         // temporary find overlay drawn by this page subclass.
         guard Thread.current.threadDictionary[Self.originalBoundsKey] == nil else { return }
-        let boxes = findHighlights
-        guard !boxes.isEmpty else { return }
+        guard let published = highlightBox, !published.items.isEmpty else { return }
+        let boxes = published.items
+        let ink = published.ink
 
         context.saveGState()
 
@@ -116,7 +138,7 @@ public final class ReaderPage: PDFPage {
         // neighbouring lines, whose ascenders and descenders reach into a
         // line's selection bounds.
         context.setBlendMode(.normal)
-        context.setFillColor(Self.matchInk.copy(alpha: Self.boxAlpha) ?? Self.matchInk)
+        context.setFillColor(ink.copy(alpha: Self.boxAlpha) ?? ink)
         for highlight in boxes {
             context.fill(highlight.rect.insetBy(dx: 0, dy: 1))
         }
@@ -125,7 +147,7 @@ public final class ReaderPage: PDFPage {
         // outline drawn *outside* the rect painted opaque green over the
         // neighbouring lines' glyphs, which the inversion filter turned into a
         // dark strike through them.)
-        context.setStrokeColor(Self.matchInk)
+        context.setStrokeColor(ink)
         context.setLineWidth(Self.currentOutlineWidth)
         for highlight in boxes where highlight.isCurrent {
             let rect = highlight.rect.insetBy(dx: 0, dy: 1)

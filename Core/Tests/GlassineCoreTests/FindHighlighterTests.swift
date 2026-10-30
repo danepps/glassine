@@ -67,4 +67,34 @@ struct FindHighlighterTests {
         #expect((pdf.page(at: 1) as? ReaderPage)?.findHighlights.isEmpty == true)
         withExtendedLifetime(delegate) {}
     }
+
+    @Test("The highlighter's ink is published with its highlights; the default is the Mac's")
+    func inkTravelsWithHighlights() throws {
+        let delegate = HighlightPageDelegate()
+        let pdf = makeTextPDF(pages: ["alpha", "alpha"])
+        pdf.delegate = delegate
+        let view = PDFView()
+        view.document = pdf
+        let first = try #require(pdf.page(at: 0) as? ReaderPage)
+        let second = try #require(pdf.page(at: 1) as? ReaderPage)
+        let hits = pdf.findString("alpha", withOptions: [])
+
+        // The platform's own ink, as the iOS reader passes it.
+        let ink = CGColor(red: 0, green: 0.447, blue: 0, alpha: 1)
+        let custom = FindHighlighter(pdfView: view, matchInk: ink)
+        custom.isInverted = true
+        custom.setFindMatches([hits[0]], current: 0)
+        #expect(first.findHighlights.count == 1)
+        #expect(first.findHighlightInk == ink)
+
+        // No ink named: the Mac's constant, exactly as before.
+        let standard = FindHighlighter(pdfView: view)
+        standard.isInverted = true
+        standard.setFindMatches([hits[1]], current: 0)
+        #expect(second.findHighlightInk == ReaderPage.matchInk)
+        // Assigning the property directly also draws in the default.
+        first.findHighlights = []
+        #expect(first.findHighlightInk == ReaderPage.matchInk)
+        withExtendedLifetime(delegate) {}
+    }
 }

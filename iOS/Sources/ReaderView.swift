@@ -399,11 +399,11 @@ struct ReaderView: View {
         }
     }
 
-    /// Print what a printer can use. For a continuous Markdown document that is
-    /// *not* what is on screen -- one 40-inch page prints as a single sheet with
-    /// the text scaled into illegibility -- so the same paginated re-render an
-    /// export uses goes to the print controller. A PDF, and Markdown already in
-    /// Pages, print what is shown.
+    /// Print what a printer can use. For Markdown that is *not* what is on
+    /// screen -- one 40-inch continuous page prints as a single sheet with the
+    /// text scaled into illegibility, and a Pages render carries ghost copies of
+    /// its carried-over headings -- so the same paginated re-render an export
+    /// uses goes to the print controller. A PDF prints what is shown.
     private func printDocument() {
         session.paginatedDocumentForOutput { result in
             guard case .success(let document) = result,

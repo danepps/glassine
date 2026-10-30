@@ -118,7 +118,9 @@ final class DocumentSession {
     @ObservationIgnored private var content: MarkdownContent?
     @ObservationIgnored private var styling = MarkdownStyling.current
     @ObservationIgnored private var watcher: FileWatcher?
-    @ObservationIgnored private var presenter: MarkdownFilePresenter?
+    /// Both kinds have one: it is how a Files-app rename or move reaches the
+    /// session. Only Markdown also listens to it for content changes.
+    @ObservationIgnored private var presenter: DocumentFilePresenter?
     /// Reloads, in order: two saves in quick succession are two conversions
     /// racing on a concurrent queue, and without this the slower one could
     /// overwrite the newer revision.
@@ -184,6 +186,8 @@ final class DocumentSession {
     private(set) var pdfViewToken = 0
     @ObservationIgnored private var position: ReadingPosition?
     @ObservationIgnored private var accessingScope = false
+    /// When the iCloud download wait gives up. Nil when nothing is waiting.
+    @ObservationIgnored private var downloadDeadline: Date?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var scrollObservation: NSKeyValueObservation?
     @ObservationIgnored private var outlineSyncPending = false
@@ -230,12 +234,24 @@ final class DocumentSession {
             // watch the same key until it lands; NSMetadataQuery would tell us
             // sooner but wants a scope and a predicate for one known file.
             phase = .downloading
-            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+            do {
+                try FileManager.default.startDownloadingUbiquitousItem(at: url)
+            } catch {
+                downloadFailed(error)
+                return
+            }
+            downloadDeadline = Date().addingTimeInterval(Self.downloadTimeout)
             schedulePoll()
             return
         }
         load()
     }
+
+    /// How long the reader waits at "Downloading…" before saying so. Generous,
+    /// because a large scanned PDF on a slow connection is a legitimate wait;
+    /// the point is only that the wait ends. iCloud keeps downloading after the
+    /// reader gives up, so opening the file again later usually just works.
+    private static let downloadTimeout: TimeInterval = 180
 
     /// A self-terminating poll rather than a `Timer`: the closure holds only a
     /// weak reference, so it stops the moment the scene lets the session go --
@@ -248,15 +264,39 @@ final class DocumentSession {
         }
     }
 
+    /// Three ways out of the wait: the file lands, iCloud reports why it
+    /// cannot deliver it (no connection, no space, the item gone from the
+    /// server), or the deadline passes. Without the last two a failed download
+    /// spins at "Downloading…" for as long as the scene is open.
     private func pollDownload() {
         guard phase == .downloading else { return }
-        let status = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
-            .ubiquitousItemDownloadingStatus
-        guard status == .current || status == nil else {
-            schedulePoll()
+        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey,
+                                                       .ubiquitousItemDownloadingErrorKey])
+        if let error = values?.ubiquitousItemDownloadingError {
+            downloadFailed(error)
             return
         }
+        let status = values?.ubiquitousItemDownloadingStatus
+        guard status == .current || status == nil else {
+            if let deadline = downloadDeadline, Date() >= deadline {
+                downloadDeadline = nil
+                phase = .failed("\(url.lastPathComponent) did not finish downloading from "
+                    + "iCloud. It may still be on its way; try opening it again in a moment.")
+            } else {
+                schedulePoll()
+            }
+            return
+        }
+        downloadDeadline = nil
         load()
+    }
+
+    /// Ends the wait with iCloud's own explanation, which the alert shows under
+    /// the reader's usual "Cannot Open Document".
+    private func downloadFailed(_ error: Error) {
+        downloadDeadline = nil
+        phase = .failed("\(url.lastPathComponent) could not be downloaded from iCloud. "
+            + error.localizedDescription)
     }
 
     private func load() {
@@ -287,7 +327,22 @@ final class DocumentSession {
         find.document = document
         phase = .ready
         Prefs.noteRecentDocument(url, pageCount: document.pageCount)
+        startPresentingPDF()
         installInView()
+    }
+
+    /// The PDF half of the Mac's NSDocument file tracking: a presenter that
+    /// follows a Files-app rename or move, as Markdown's does. Moves only: a
+    /// PDF rewritten in place is not reloaded here, where NSDocument would
+    /// revert to it on the Mac. That is a separate change, with its own
+    /// questions about the reading position and an active search.
+    private func startPresentingPDF() {
+        guard kind == .pdf, presenter == nil else { return }
+        let presenter = DocumentFilePresenter(url: url, onChange: nil, onMove: { [weak self] newURL in
+            self?.fileDidMove(to: newURL)
+        })
+        NSFileCoordinator.addFilePresenter(presenter)
+        self.presenter = presenter
     }
 
     #if DEBUG
@@ -548,7 +603,7 @@ final class DocumentSession {
         watcher = FileWatcher(url: url) { [weak self] in
             self?.reloadFromDisk()
         }
-        let presenter = MarkdownFilePresenter(url: url, onChange: { [weak self] in
+        let presenter = DocumentFilePresenter(url: url, onChange: { [weak self] in
             // Straight into the watcher, so the coordinated and uncoordinated
             // paths share one debounce and one signature gate.
             self?.watcher?.poke()
@@ -561,21 +616,25 @@ final class DocumentSession {
 
     /// The Files app renamed or moved the open file (delivered through the
     /// presenter, on the main queue). Everything keyed by the location follows:
-    /// the watcher, the title, the Recents row, the reading position -- and the
-    /// file is re-read once from where it is now, because a revision saved just
-    /// before the move may have been in flight from the old path.
+    /// the title, the Recents row, the reading position, and for Markdown the
+    /// watcher -- and a Markdown file is re-read once from where it is now,
+    /// because a revision saved just before the move may have been in flight
+    /// from the old path. A PDF is not re-read; the `PDFDocument` already open
+    /// stays on screen, as the Mac's does across a rename.
     private func fileDidMove(to newURL: URL) {
         guard newURL != url else { return }
         let previous = url
         url = newURL
         title = newURL.deletingPathExtension().lastPathComponent
-        reloader?.invalidate()
-        watcher?.retarget(to: newURL)
         Prefs.removeRecentDocument(path: previous.standardizedFileURL.path)
-        Prefs.noteRecentDocument(newURL, pageCount: nil)
+        // A PDF's row keeps its page count; Markdown has none until typeset.
+        Prefs.noteRecentDocument(newURL, pageCount: kind == .pdf ? document?.pageCount : nil)
         // ReadingPosition reads the URL through a closure, so saving now writes
         // the position under the new path.
         savePosition()
+        guard kind == .markdown else { return }
+        reloader?.invalidate()
+        watcher?.retarget(to: newURL)
         reloadFromDisk()
     }
 
@@ -628,24 +687,22 @@ final class DocumentSession {
 
     // MARK: Output
 
-    /// True when what is on screen is not what should leave the app: a
-    /// continuous render is one 40-inch page, which is a way to read and not a
-    /// thing to hand someone or feed a printer.
-    /// The *installed* layout: the Pages preference can change before its
-    /// asynchronous render has replaced the continuous PDF (and a failed render
-    /// never replaces it), and the tall page on screen is what must not go out.
-    private var needsPaginatedOutput: Bool {
-        kind == .markdown && isContinuousMarkdown
-    }
-
-    /// The document an export or a print should use. Output is always paginated,
-    /// so a continuous render is typeset a second time under its own renderer
-    /// key -- the document's own render is not superseded -- and given the same
-    /// outline. Anything else is what is already on screen.
+    /// The document an export or a print should use. A PDF is what is already
+    /// on screen. Markdown is always typeset a second time, under its own
+    /// renderer key -- the document's own render is not superseded -- and given
+    /// the same outline, because what is on screen is never what should leave
+    /// the app: a continuous render is one 40-inch page, which is a way to read
+    /// and not a thing to hand someone or feed a printer, and even a Pages
+    /// render carries the keep-with-next hack's ghost headings below the
+    /// printable band, which a recipient's search would find twice. The output
+    /// render is paginated and drops the hack (`paginatedWithoutCarryOver`),
+    /// accepting an occasional heading orphaned at the foot of a page instead.
+    /// The cost is one more typesetting, a few hundred milliseconds, for each
+    /// export or print of a Pages document.
     func paginatedDocumentForOutput(
         _ completion: @escaping @MainActor (Result<PDFDocument, Error>) -> Void
     ) {
-        guard needsPaginatedOutput, let bodyHTML = content?.html else {
+        guard kind == .markdown, let bodyHTML = content?.html else {
             guard let document else {
                 completion(.failure(Self.nothingToExport))
                 return
@@ -657,7 +714,7 @@ final class DocumentSession {
         // that looked one way on screen and printed another would be a bug
         // report, and the darker panels print better than the near-whites did.
         let html = MarkdownHTML.page(body: bodyHTML, title: title,
-                                     styling: styling.paginated,
+                                     styling: styling.paginatedWithoutCarryOver,
                                      platformCSS: ReaderTheme.markdownPlatformCSS)
         MarkdownRendererIOS.shared.render(html: html,
                                           baseURL: url,
@@ -1067,28 +1124,34 @@ extension DocumentSession: FindSink {
     }
 }
 
-/// `NSFilePresenter` for the open Markdown file, beside the vnode watcher.
+/// `NSFilePresenter` for the open file, whichever kind it is.
 ///
-/// The Mac gets by on the watcher alone because the writers that matter there
-/// (editors, CLI tools) do not coordinate. On iOS the important writers do:
-/// iCloud Drive and the Files app both go through `NSFileCoordinator`, and a
-/// coordinated write can leave the vnode source with nothing to report. This
-/// pokes the watcher's debounce rather than doing anything itself, so one save
-/// seen twice still costs one render.
+/// For both kinds it follows the file: iOS has no NSDocument, so without a
+/// presenter a Files-app rename or move of an open document goes unnoticed
+/// and the session keeps saving its position and Recents row under a path
+/// that no longer exists.
+///
+/// For Markdown it also sits beside the vnode watcher. The Mac gets by on the
+/// watcher alone because the writers that matter there (editors, CLI tools) do
+/// not coordinate. On iOS the important writers do: iCloud Drive and the Files
+/// app both go through `NSFileCoordinator`, and a coordinated write can leave
+/// the vnode source with nothing to report. `onChange` pokes the watcher's
+/// debounce rather than doing anything itself, so one save seen twice still
+/// costs one render. A PDF passes no `onChange`.
 ///
 /// `@unchecked Sendable` because it is: every callback is delivered on the main
 /// queue, which is where the closures it holds belong and the only place the
 /// URL is rewritten (a move must update `presentedItemURL`, or the coordinator
 /// keeps delivering events for the old location).
-final class MarkdownFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+final class DocumentFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
 
     private(set) var presentedItemURL: URL?
     let presentedItemOperationQueue = OperationQueue.main
-    private let onChange: @MainActor () -> Void
+    private let onChange: (@MainActor () -> Void)?
     private let onMove: @MainActor (URL) -> Void
 
     init(url: URL,
-         onChange: @escaping @MainActor () -> Void,
+         onChange: (@MainActor () -> Void)?,
          onMove: @escaping @MainActor (URL) -> Void) {
         self.presentedItemURL = url
         self.onChange = onChange
@@ -1097,6 +1160,7 @@ final class MarkdownFilePresenter: NSObject, NSFilePresenter, @unchecked Sendabl
     }
 
     func presentedItemDidChange() {
+        guard let onChange else { return }
         MainActor.assumeIsolated { onChange() }
     }
 

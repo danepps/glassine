@@ -82,6 +82,10 @@ public struct MarkdownStyling: Equatable, Sendable {
     public var css: String
     public var size: Int
     public var layout: MarkdownLayout
+    /// Whether paged geometry includes the keep-with-next hack that carries a
+    /// heading stranded at the foot of a page over to the next one. True
+    /// everywhere except the iOS output path; see `paginatedWithoutCarryOver`.
+    public var carriesHeadings = true
 
     public init(styleID: String, css: String, size: Int, layout: MarkdownLayout) {
         self.styleID = styleID
@@ -103,6 +107,23 @@ public struct MarkdownStyling: Equatable, Sendable {
     public var paginated: MarkdownStyling {
         var copy = self
         copy.layout = .pages
+        return copy
+    }
+
+    /// Paginated, without the heading carry-over: what iOS exports and prints.
+    ///
+    /// iOS typesets pages through `UIPrintPageRenderer`, which leaves a clipped
+    /// copy of every carried-over heading below the printable band of the page
+    /// it left. The reader filters those out of its own find results, but a
+    /// file that leaves the app takes them along, and Preview, Acrobat or a
+    /// recipient's search then finds each such heading twice. Without the hack
+    /// a heading can occasionally be orphaned at the foot of a page -- a
+    /// visible flaw, but an honest one, where duplicated invisible text is a
+    /// confusing one. The on-screen reader keeps the hack, and so does the
+    /// Mac, whose `WKPrintingView` leaves no ghosts.
+    public var paginatedWithoutCarryOver: MarkdownStyling {
+        var copy = paginated
+        copy.carriesHeadings = false
         return copy
     }
 }
@@ -553,7 +574,12 @@ public enum MarkdownHTML {
     /// and `--paper` may not: it stays #FFFFFF in every built-in style, and a
     /// custom style that tints it will see that tint in dark mode.
     private static func baseStyle(_ styling: MarkdownStyling) -> String {
-        let geometry = styling.layout == .continuous ? continuousGeometry : pagedGeometry
+        let geometry: String
+        switch styling.layout {
+        case .continuous: geometry = continuousGeometry
+        case .pages:
+            geometry = styling.carriesHeadings ? pagedGeometry : pagedGeometryWithoutCarryOver
+        }
         return """
         :root {
           --body-font: ui-serif, "New York", Georgia, serif;
@@ -674,12 +700,26 @@ public enum MarkdownHTML {
 
     /// Real pages: margins come from NSPrintInfo, so the document has no page
     /// box of its own -- only the rules that keep blocks from being split.
-    private static let pagedGeometry = """
+    /// Assembled from three pieces so the variant without the heading
+    /// carry-over shares the other two, and the assembled text is exactly the
+    /// single block it used to be (`MarkdownHTMLSnapshotTests` is the guard).
+    private static let pagedGeometry =
+        headingBreakRules + "\n" + headingCarryOver + "\n" + blockBreakRules
+
+    /// Real pages without the keep-with-next hack: what `MarkdownStyling`'s
+    /// `carriesHeadings = false` asks for. See `paginatedWithoutCarryOver`.
+    private static let pagedGeometryWithoutCarryOver =
+        headingBreakRules + "\n" + blockBreakRules
+
+    private static let headingBreakRules = """
     h1, h2, h3, h4, h5, h6 {
       break-after: avoid;
       page-break-after: avoid;
       break-inside: avoid;
     }
+    """
+
+    private static let headingCarryOver = """
     /* WebKit ignores break-after: avoid when the next block is itself
        unbreakable, which leaves headings stranded at the foot of a page.
        Giving the heading an invisible tail that is taller than a line, then
@@ -691,8 +731,10 @@ public enum MarkdownHTML {
       height: 72pt;
       margin-bottom: -72pt;
     }
-    pre, tr { break-inside: avoid; page-break-inside: avoid; }
     """
+
+    private static let blockBreakRules =
+        "pre, tr { break-inside: avoid; page-break-inside: avoid; }"
 
     /// One tall page: printed with no margins at all, so the inch of white
     /// space has to be padding on the body -- where it is also part of the
