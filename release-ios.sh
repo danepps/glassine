@@ -25,8 +25,20 @@
 # *manually* with those two -- see the comment above the identity checks -- so
 # neither can be fetched on the fly); the App Store Connect API key at
 # ~/.private_keys/AuthKey_<KEY_ID>.p8, which is where xcodebuild looks and which
-# is NOT in the repo and must never be; and `gh` logged in for the GitHub
+# is NOT in the repo and must never be; its two identifiers in
+# ~/.private_keys/glassine.env (below); and `gh` logged in for the GitHub
 # release, exactly as on the Mac side.
+#
+# One-time setup on each Mac, for the key's identifiers: the Key ID and the
+# Issuer ID are not committed (this repo is public, and they are the .p8's two
+# companions), so create ~/.private_keys/glassine.env with exactly two lines,
+#   KEY_ID=<the 10-character Key ID>
+#   ISSUER_ID=<the Issuer ID, a UUID>
+# both from App Store Connect ▸ Users and Access ▸ Integrations ▸ App Store
+# Connect API (or copied from the other Mac's file), then
+#   chmod 600 ~/.private_keys/glassine.env
+# The file is read, not sourced: only those two names are picked out, so
+# nothing in it runs. `--check` reports it missing or incomplete.
 #
 # There is no Sparkle here and no appcast: TestFlight is the feed. Nothing in
 # this script touches glassine-appcast.xml or appcast.xml.
@@ -36,10 +48,9 @@ REPO="danepps/glassine"
 TEAM_ID=82H77TF7AH
 
 # App Store Connect API key. The .p8 is referred to by path and never read,
-# copied or printed here.
-KEY_ID=9D6LK6456Y
-ISSUER_ID=69a6de82-678e-47e3-e053-5b8c7c11a4d1
-KEY_PATH="$HOME/.private_keys/AuthKey_$KEY_ID.p8"
+# copied or printed here; KEY_ID and ISSUER_ID come from ENV_FILE in the
+# preflight (see the setup note above), and KEY_PATH is derived from KEY_ID there.
+ENV_FILE="$HOME/.private_keys/glassine.env"
 
 SPEC="$ROOT/iOS/project.yml"
 PROJ="$ROOT/iOS/Glassine.xcodeproj"
@@ -172,19 +183,90 @@ require $([[ "$IDENTITIES" == *"Apple Distribution"* ]] && echo 1 || echo 0) \
 
 PROFILE_NAME="Glassine iOS App Store"
 PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
-HAVE_PROFILE=0
+# Present is not enough: an expired profile, or one made under another team,
+# passes a name match and fails only at -exportArchive, after the multi-minute
+# archive. So each profile is decoded to its plist and the one(s) named
+# PROFILE_NAME must also be for TEAM_ID and unexpired. There can be more than
+# one with that name (a renewal installed beside the old one); any one good
+# copy is enough, which is also the one Xcode picks.
+PROFILE_NAMED=0       # some profile is called PROFILE_NAME
+PROFILE_TEAM=0        # ... and its TeamIdentifier includes TEAM_ID
+PROFILE_VALID=0       # ... and its ExpirationDate is still ahead
+PROFILE_TEAMS=""      # the teams the named ones are for, if never TEAM_ID
+PROFILE_EXPIRED=""    # the expiry of a named, right-team one, if all expired
+NOW="$(date -u +%s)"
 for profile in "$PROFILE_DIR"/*.mobileprovision(N); do
-  if security cms -D -i "$profile" 2>/dev/null | grep -q "<string>$PROFILE_NAME</string>"; then
-    HAVE_PROFILE=1
+  decoded="$(security cms -D -i "$profile" 2>/dev/null)" || continue
+  [[ "$(plutil -extract Name raw -o - - <<<"$decoded" 2>/dev/null)" == "$PROFILE_NAME" ]] \
+    || continue
+  PROFILE_NAMED=1
+  teams="$(plutil -extract TeamIdentifier xml1 -o - - <<<"$decoded" 2>/dev/null \
+    | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | tr '\n' ' ')"
+  if [[ " $teams" != *" $TEAM_ID "* ]]; then
+    PROFILE_TEAMS="${teams% }"
+    continue
+  fi
+  PROFILE_TEAM=1
+  expires="$(plutil -extract ExpirationDate raw -o - - <<<"$decoded" 2>/dev/null || true)"
+  expires_at="$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$expires" +%s 2>/dev/null || echo 0)"
+  if (( expires_at > NOW )); then
+    PROFILE_VALID=1
     break
   fi
+  PROFILE_EXPIRED="${expires:-an unreadable date}"
 done
-require $HAVE_PROFILE \
+require $PROFILE_NAMED \
   "the App Store profile \"$PROFILE_NAME\" is installed" \
   "download it from developer.apple.com ▸ Certificates, IDs & Profiles ▸ Profiles into $PROFILE_DIR"
+if (( PROFILE_NAMED )); then
+  require $PROFILE_TEAM \
+    "the App Store profile is for team $TEAM_ID" \
+    "it is for ${PROFILE_TEAMS:-no team}; download the one made under $TEAM_ID"
+fi
+if (( PROFILE_TEAM )); then
+  require $PROFILE_VALID \
+    "the App Store profile has not expired" \
+    "it expired $PROFILE_EXPIRED; regenerate it at developer.apple.com ▸ Profiles and download it into $PROFILE_DIR"
+fi
 
-require $([[ -f "$KEY_PATH" ]] && echo 1 || echo 0) \
-  "App Store Connect API key is present" "expected $KEY_PATH"
+# The key's two identifiers, from ENV_FILE. Read line by line rather than
+# sourced, so the file cannot run anything or reset this script's variables;
+# `export`, quotes, blank lines and # comments are tolerated. Nothing here
+# echoes the values.
+KEY_ID=""
+ISSUER_ID=""
+if [[ -r "$ENV_FILE" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#export }"
+    name="${line%%=*}"
+    [[ "$line" == *=* && ( "$name" == KEY_ID || "$name" == ISSUER_ID ) ]] || continue
+    value="${line#*=}"
+    value="${value//[\"\'[:space:]]/}"
+    case "$name" in
+      KEY_ID) KEY_ID="$value" ;;
+      ISSUER_ID) ISSUER_ID="$value" ;;
+    esac
+  done < "$ENV_FILE"
+fi
+IDS_DETAIL=""
+if [[ ! -r "$ENV_FILE" ]]; then
+  IDS_DETAIL="$ENV_FILE is missing; create it with KEY_ID=<key id> and ISSUER_ID=<issuer id> (setup note at the top of ${0:t})"
+elif [[ -z "$KEY_ID" || -z "$ISSUER_ID" ]]; then
+  IDS_DETAIL="$ENV_FILE needs both KEY_ID= and ISSUER_ID=; missing:"
+  [[ -z "$KEY_ID" ]] && IDS_DETAIL+=" KEY_ID"
+  [[ -z "$ISSUER_ID" ]] && IDS_DETAIL+=" ISSUER_ID"
+elif [[ ! "$KEY_ID" =~ '^[A-Z0-9]{10}$' ]]; then
+  IDS_DETAIL="KEY_ID in $ENV_FILE is not a 10-character Key ID"
+elif [[ ! "$ISSUER_ID" =~ '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' ]]; then
+  IDS_DETAIL="ISSUER_ID in $ENV_FILE is not a UUID"
+fi
+require $([[ -z "$IDS_DETAIL" ]] && echo 1 || echo 0) \
+  "App Store Connect key ids are in $ENV_FILE" "$IDS_DETAIL"
+
+KEY_PATH="$HOME/.private_keys/AuthKey_$KEY_ID.p8"
+require $([[ -n "$KEY_ID" && -f "$KEY_PATH" ]] && echo 1 || echo 0) \
+  "App Store Connect API key is present" \
+  "$([[ -n "$KEY_ID" ]] && echo "expected $KEY_PATH" || echo "needs KEY_ID from $ENV_FILE first")"
 
 # gh is only needed for the GitHub release of the tag, which --no-upload skips.
 if (( ! NO_UPLOAD )); then
