@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-10-20. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-10-30. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -35,8 +35,88 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Full code review, unreleased (Claude, 2026-10-20).** Branch
-  `code-review-2026-10-20`, opened as a PR for Dan to review; nothing released.
+- **Released 1.9.8 (Claude, 2026-10-30).** Build 24, tag `v1.9.8`. Two
+  things: a link fix Dan hit, and every item the 2026-10-20 review left open
+  in `reviews/2026-10-20-decisions.md`, done by five parallel Opus agents in
+  worktrees cut from `v1.9.7` and merged onto `main` without conflicts.
+  - **Wrapped plain-text URLs open whole** (`fbd815c`). Word saves PDFs whose
+    footnote URLs are text, not link annotations, and PDFKit's detection
+    stops at the line end, so an address wrapped after `ginsburg-` opened as
+    half an address. `ReaderPDFView` now intercepts the click, and Core's
+    `TextLinks.url(in:at:)` joins the runs a word processor wrapped on
+    `- / _ = & ? # ~ % +` (never a period: that is a sentence end), checks
+    the result with `NSDataDetector`, and opens it. Real link annotations
+    still go to PDFKit. Trade-off: a drag cannot start inside a text URL.
+    8 Core tests.
+  - **Reader Mode trims progressively** (item 1, `c9447b4`). Detection is
+    rastered at 0.5 px/pt with an edge-narrowing scan (same answer as the old
+    252 threshold), runs in a bounded `TaskGroup` (`min(cores − 1, 8)` pages
+    at once; 5.3 s → 0.65 s on an 87-page scan), and streams results in
+    batches to a main-actor consumer that checks the generation each time.
+    Documents of ≤ 100 pages still install once, as before; longer ones
+    analyse the reading page ± 4 first (`readingPageIndex`, fed by the
+    window controller from the saved position) and apply as batches arrive,
+    unknown pages showing their full box. 6 new macOS tests.
+  - **No page walk for hidden highlights** (item 2, `688c44a`). The
+    Highlights pane defers its first refresh until shown
+    (`defersFirstRefresh`); `GlassineDocument.hasHighlights` is a cached flag
+    reset in `setHighlights` and on read/revert, so menu validation never
+    visits pages. Recolouring does not reset it (cannot change existence).
+  - **Sidebar outline sync caches its row table** (item 3, `e2778ac`,
+    `b5ac486`): `rowEntries` is rebuilt only on `documentDidChange`,
+    expand/collapse, or a row-count mismatch; the duplicate synchronous
+    `syncSelection()` in `pageChanged()` is gone (every page change is also a
+    scroll, so the 50 ms debounce follows it).
+  - **Find count is batched** (item 8a, `ff3676f`): after the first hit, the
+    count label updates on `FindController`'s existing 150 ms highlight
+    batch; `findDidEnd` still sets the exact K-of-N count. Shared with iOS.
+  - **Recents resolve off the main thread** (item 6, `f989522`).
+    `RecentsModel.rows(completion:)` runs on Prefs' serial `recentsQueue`
+    (via `Prefs.performAfterRecentDocumentWrites`) and calls back on main;
+    `RecentsViewController.reload()` keeps the old rows until new ones
+    arrive, with a generation counter so a removal is not undone by an
+    in-flight result. The first-launch seed's 530 existence probes moved to
+    the same queue. **Visible change:** the Recents window and start tab
+    appear at once and fill a beat later. iOS `RecentsList` same.
+  - **Image inliner budget** (item 7A, `2b1f751`): `MarkdownHTML.imageBudget`
+    = 32 MB per document, body and footnotes sharing it; images past it keep
+    their `src` (blank under the CSP). 7B (a data-URI cache) was not done:
+    `MarkdownDocumentModel` is stateless and the cache would have to thread
+    through `GlassineDocument`, `DocumentSession` and the reloader.
+  - **`RecentsModel.dateText` honours `now:`** (item 12b, `503a4f4`).
+  - **iOS, compile-checked only** (no simulator here; wants a TestFlight
+    pass): exports and prints re-typeset with
+    `MarkdownStyling.paginatedWithoutCarryOver`, so Pages-layout output no
+    longer carries ghost headings (item 5, `409608e`); `DocumentFilePresenter`
+    (ex-`MarkdownFilePresenter`) follows Files-app moves of PDFs too (item 8b,
+    `ba181b1`); `pollDownload` reads `.ubiquitousItemDownloadingErrorKey` and
+    gives up after 180 s with an alert (item 8c, `8a61fbe`);
+    `ReaderPage.matchInk` is a `static let` and `FindHighlighter(pdfView:
+    matchInk:)` publishes the ink with the rects in one immutable box, so the
+    launch-time write is gone (item 12a, `4513bd1`); the tall-page crop takes
+    the lower of the text measure and `InkBounds.lowestInk` (item 4,
+    `a1b08e4`). **`InkBounds.swift` is a copy of the CoreGraphics half of the
+    Mac's `ReaderContentBounds`**, made before the Mac detector was rewritten;
+    the two should be consolidated, and until then a fix to one belongs in
+    both.
+  - **`release-ios.sh`** (`aec34c1`): the App Store profile is decoded with
+    `security cms -D` and its `TeamIdentifier` and `ExpirationDate` checked
+    before the archive; `KEY_ID`/`ISSUER_ID` are read (not sourced) from
+    `~/.private_keys/glassine.env` — **one-time setup on each Mac**, see the
+    TestFlight section below. The two values are still in this file's
+    history sections and in git history; scrubbing them is Dan's call.
+  - Tests on the merged tree: 187 Core (169 + 18), 101 macOS (94 + 7), three
+    pre-existing skips. Manual checks not done and worth a look: a 500+ page
+    scan in Reader Mode (position and zoom steady as batches arrive; width
+    fit uses the widest page known so far), the Contents pane following page
+    jumps within ~50 ms, Recents row removal on both pickers, the Highlights
+    pane shown after a hidden add.
+  - Known nit: `build-ios.sh --device` still prints its Built line after a
+    signing `** BUILD FAILED **`; left alone.
+- **Full code review (Claude, 2026-10-20), released as 1.9.7 the same day
+  from the MacBook** (PR #5 merged at `66b2f34`, release `771e345`). Branch
+  `code-review-2026-10-20`; the decision memo commit (`26d861e`) landed on
+  `main` with 1.9.8.
   Four independent reviews (Claude plus three parallel review agents over the
   macOS shell, Core and iOS + scripts, and a headless Codex gpt-6-astra pass)
   consolidated and every finding re-verified against the code before a fix.
@@ -1271,7 +1351,8 @@ Dan's stated requirements, all met as of this handoff:
   has a start tab; the Mac's control only ever writes 0 or 1, so nothing there
   notices), and `ReaderPage.matchInk` became a `public static var` so the iOS app
   can overwrite the Mac's linear-light-calibrated green with an sRGB one at
-  launch. **The dark-mode look is measurably the same product**: against Spike A's
+  launch (since 1.9.8 a `static let`; iOS passes its ink to
+  `FindHighlighter(pdfView:matchInk:)` instead). **The dark-mode look is measurably the same product**: against Spike A's
   probe PDF on the iPad Pro 13-inch simulator, paper, ink, the blue link, the
   R/G/B squares, the gradient and the eight-step grey ramp come back **identical
   to Spike A at all three Dark Paper levels** (paper 0/28/43, ink 255/237/230,
@@ -2493,7 +2574,7 @@ it; it consumes `GlassineCore` and nothing under `Sources/Glassine`.
 
 | File | Role |
 |---|---|
-| `GlassineApp.swift` | `@main App`, one `WindowGroup`. `AppLaunch.configure()` creates `Documents/Styles` and points `Prefs.stylesDirectory` at it (so it shows in Files), installs the iOS find ink into `ReaderPage.matchInk`, and installs `AppearanceBridge` as `Prefs.applyAppearanceOverride` — `overrideUserInterfaceStyle` on every connected scene's windows, which is the iOS `NSApp.appearance`. |
+| `GlassineApp.swift` | `@main App`, one `WindowGroup`. `AppLaunch.configure()` creates `Documents/Styles` and points `Prefs.stylesDirectory` at it (so it shows in Files) and installs `AppearanceBridge` as `Prefs.applyAppearanceOverride` — `overrideUserInterfaceStyle` on every connected scene's windows, which is the iOS `NSApp.appearance`. |
 | `ReaderTheme.swift` | Every number about the inversion: the Dark Paper `contrast`/`brightness` conversion, the 0.94 pre-filter gutter, the re-derived find ink with the arithmetic behind it, the chrome colour, and `PageInversion` — the modifier the reader and the thumbnail strip share, written without a conditional so switching appearance cannot rebuild the `PDFView`. Also `MainBox`, the weak `@unchecked Sendable` box that gets a `@MainActor` object across the `@Sendable` closures NotificationCenter, KVO and GCD insist on. |
 | `PrefsModel.swift` | `@Observable` mirror of the four preferences the reader reacts to, refreshed from `.glassinePrefsChanged`. Writes go through `Prefs`, never to the mirror. |
 | `DocumentSession.swift` | One document for one scene: URL + security scope held for the session, the coordinated read, the iCloud download wait, the `PDFDocument`, `FindController` (this class is its delegate), `ReadingPosition` plus the iOS-specific position *save*, the outline entries and current selection, the page readout, the go-to-page dialog's state, and a `kind` with `.markdown` reserved. `PDFDocumentBridge` is the `PDFDocumentDelegate`: `ReaderPage.self` for pages, PDFKit's find callbacks hopped to the main actor. |
@@ -2805,10 +2886,12 @@ decision (2026-09-06): TestFlight only, **no App Store review submission** yet;
 nothing in the script submits one.
 
 **`./release-ios.sh <version> [--check] [--no-upload]`** does the release:
-twelve preflights (on `main`, clean tree, in sync with `origin/main`, version
+fifteen preflights (on `main`, clean tree, in sync with `origin/main`, version
 newer than `MARKETING_VERSION`, tag `ios-v<version>` free locally and remotely,
 `xcodegen`, `xcodebuild`, an Apple identity, an **Apple Distribution**
-certificate, the **App Store profile** installed, the API key, `gh`), then it
+certificate, the **App Store profile** installed *and* for team `82H77TF7AH`
+*and* unexpired (decoded with `security cms -D`), `KEY_ID`/`ISSUER_ID` in
+`~/.private_keys/glassine.env`, the API key, `gh`), then it
 sets `MARKETING_VERSION` and bumps
 `CURRENT_PROJECT_VERSION` in `iOS/project.yml` — the source of truth; the plist
 they end up in is generated — runs `xcodegen generate`, `xcodebuild archive`
@@ -2839,8 +2922,11 @@ Apple Distribution certificate in the login keychain — check with `security
 find-identity -v -p codesigning` — and if the Apple Distribution certificate is
 missing there, it has to be *exported from this Mac's keychain with its private
 key* and imported, because the portal's copy is public-key only); `gh auth
-status` green; the `.p8` copied to `~/.private_keys/` privately, by hand; and
-the "Glassine iOS App Store" profile downloaded from developer.apple.com ▸
+status` green; the `.p8` copied to `~/.private_keys/` privately, by hand;
+`~/.private_keys/glassine.env` (mode 600) holding the two lines
+`KEY_ID=<10-char key id>` and `ISSUER_ID=<uuid>` from App Store Connect ▸
+Users and Access ▸ Integrations (since 1.9.8 the script reads them from there,
+not from its own text); and the "Glassine iOS App Store" profile downloaded from developer.apple.com ▸
 Profiles into `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`.
 `./build-ios.sh` needs none of it. `./release-ios.sh <version> --check` is the
 one-command way to find out whether a machine is ready.
