@@ -44,11 +44,6 @@ enum AppLaunch {
         try? FileManager.default.createDirectory(at: styles, withIntermediateDirectories: true)
         Prefs.stylesDirectory = styles
 
-        // The Mac's find ink was calibrated against a linear-light CIColorInvert;
-        // iOS inverts in sRGB, so the same green needs a different pre-filter
-        // value. See ReaderTheme.matchInk for the arithmetic.
-        ReaderPage.matchInk = ReaderTheme.matchInk
-
         AppearanceBridge.install()
     }
 }

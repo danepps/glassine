@@ -27,12 +27,18 @@ public final class FindHighlighter {
     }
 
     private weak var pdfView: PDFView?
+    /// The pre-filter ink every highlight this object publishes is drawn in.
+    private let matchInk: CGColor
     private var lineRects: [ObjectIdentifier: [LineRect]] = [:]
     private var pagesByMatch: [Int: [PDFPage]] = [:]
     private var allMatchPages: [PDFPage] = []
 
-    public init(pdfView: PDFView) {
+    /// `matchInk` is the pre-filter colour of the boxes, which depends on how
+    /// the platform inverts the page: the default is the Mac's (see
+    /// `ReaderPage.matchInk`), and iOS passes its sRGB re-derivation.
+    public init(pdfView: PDFView, matchInk: CGColor = ReaderPage.matchInk) {
         self.pdfView = pdfView
+        self.matchInk = matchInk
     }
 
     public func setFindMatches(_ selections: [PDFSelection], current: Int) {
@@ -100,10 +106,10 @@ public final class FindHighlighter {
         for page in pages where seen.insert(ObjectIdentifier(page)).inserted {
             if let readerPage = page as? ReaderPage {
                 let rects = isInverted ? (lineRects[ObjectIdentifier(page)] ?? []) : []
-                readerPage.findHighlights = rects.map {
+                readerPage.setFindHighlights(rects.map {
                     ReaderPage.Highlight(rect: $0.rect,
                                          isCurrent: $0.match == currentMatchIndex)
-                }
+                }, ink: matchInk)
             }
             pdfView.annotationsChanged(on: page)
         }

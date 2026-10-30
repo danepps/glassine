@@ -38,7 +38,11 @@ enum ReaderCommand {
 final class ReaderPDFView: PDFView {
 
     /// Platform-independent highlight bookkeeping; this view is just its host.
-    private lazy var highlighter = FindHighlighter(pdfView: self)
+    /// The ink is iOS's own: the Mac's default was calibrated for a
+    /// linear-light inversion, and iOS inverts in sRGB (see
+    /// `ReaderTheme.matchInk` for the arithmetic).
+    private lazy var highlighter = FindHighlighter(pdfView: self,
+                                                   matchInk: ReaderTheme.matchInk)
 
     /// When true, matches are drawn by `ReaderPage` as green boxes instead of
     /// PDFKit's translucent wash, which reads poorly through the inversion.
