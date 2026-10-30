@@ -99,7 +99,9 @@ extension MacAppTests {
 
         @Test("Odd page dimensions do not exceed the raster cap through rounding")
         func roundingAtRasterLimit() throws {
-            for longSide in [1101.0, 1128.5, 1133.75] {
+            // The first sizes rounded past the old 1,200-pixel cap; the last
+            // ones now meet the cap at half a pixel per point.
+            for longSide in [1101.0, 1128.5, 1133.75, 2401.0, 2428.5] {
                 for landscape in [false, true] {
                     let box = CGRect(x: 0, y: 0, width: landscape ? longSide : 700,
                                      height: landscape ? 700 : longSide)
@@ -115,6 +117,40 @@ extension MacAppTests {
                     #expect(result.minX > 65 && result.minY > 85)
                     #expect(result.maxX < artwork.maxX + 5 && result.maxY < artwork.maxY + 5)
                 }
+            }
+        }
+
+        @Test("The edge-narrowing ink scan finds exactly the pixels a full scan finds")
+        func inkScanMatchesFullScan() {
+            var generator = SystemRandomNumberGenerator()
+            let white = UInt32(bigEndian: 0xFFFF_FFFF)
+            for trial in 0..<200 {
+                let width = Int.random(in: 1...40, using: &generator)
+                let height = Int.random(in: 1...40, using: &generator)
+                let words = UnsafeMutablePointer<UInt32>.allocate(capacity: width * height)
+                defer { words.deallocate() }
+                words.initialize(repeating: white, count: width * height)
+                // Some bitmaps stay blank; others get marks that are only just
+                // dark enough (251 in one channel) or only just too light (252).
+                for _ in 0..<(trial % 5 == 0 ? 0 : Int.random(in: 1...6, using: &generator)) {
+                    var bytes: [UInt8] = [255, 255, 255, 255]
+                    bytes[Int.random(in: 0...2, using: &generator)] =
+                        [0, 120, 251, 252].randomElement(using: &generator)!
+                    let word = bytes.withUnsafeBytes { $0.load(as: UInt32.self) }
+                    words[Int.random(in: 0..<(width * height), using: &generator)] = word
+                }
+                var expected: (Int, Int, Int, Int)?
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let pixel = withUnsafeBytes(of: words[y * width + x]) { Array($0) }
+                        guard pixel[0] < 252 || pixel[1] < 252 || pixel[2] < 252 else { continue }
+                        let (minX, minY, maxX, maxY) = expected ?? (x, y, x, y)
+                        expected = (min(minX, x), min(minY, y), max(maxX, x), max(maxY, y))
+                    }
+                }
+                let found = ReaderContentBounds.inkBounds(words, width: width, height: height)
+                #expect(found.map { [$0.minX, $0.minY, $0.maxX, $0.maxY] }
+                    == expected.map { [$0.0, $0.1, $0.2, $0.3] })
             }
         }
 
