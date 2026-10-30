@@ -100,6 +100,38 @@ struct MarkdownHTMLTests {
         #expect(under.html.contains("data:image/png;base64,"))
     }
 
+    @Test("Images past the document's budget, notes included, keep their src")
+    func imageDocumentBudget() {
+        #expect(MarkdownHTML.imageBudget == 32 * 1024 * 1024)
+
+        let root = TempDirectory()
+        for name in ["a", "b", "c", "n"] {
+            try? Data(count: 1024).write(to: root.url.appendingPathComponent("\(name).png"))
+        }
+        try? Data(count: 100).write(to: root.url.appendingPathComponent("tiny.png"))
+
+        // 2500 bytes: a and b fit, c would take it to 3072 and does not, the
+        // tiny one still fits behind it, and the note's image -- inlined after
+        // the body -- finds the budget spent.
+        let markdown = """
+        ![a](a.png) ![b](b.png) ![c](c.png) ![tiny](tiny.png)[^1]
+
+        [^1]: ![n](n.png)
+        """
+        let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: root.url,
+                                          imageBudget: 2500)
+        #expect(converted.html.components(separatedBy: "data:image/png;base64,").count - 1 == 3)
+        #expect(!converted.html.contains("\"a.png\""))
+        #expect(!converted.html.contains("\"b.png\""))
+        #expect(converted.html.contains("\"c.png\""))
+        #expect(!converted.html.contains("\"tiny.png\""))
+        #expect(converted.html.contains("\"n.png\""))
+
+        // The same document under the real budget inlines all five.
+        let roomy = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: root.url)
+        #expect(roomy.html.components(separatedBy: "data:image/png;base64,").count - 1 == 5)
+    }
+
     @Test("Word count is over the plain text, not the markup")
     func wordCount() {
         let markdown = """

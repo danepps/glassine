@@ -175,7 +175,25 @@ public enum MarkdownHTML {
                      baseDirectory: URL?) -> (html: String,
                                               headings: [MarkdownHeading],
                                               stats: MarkdownStats) {
+        body(fromMarkdown: markdown, baseDirectory: baseDirectory, imageBudget: imageBudget)
+    }
+
+    /// How many bytes of image files one document may inline, the body and its
+    /// notes together. The per-image cap alone lets twenty large screenshots
+    /// build an HTML string of well over a hundred megabytes on every save;
+    /// past this, an image keeps its `src` and the CSP leaves it blank, exactly
+    /// as an image over the per-image cap does.
+    static let imageBudget = 32 * 1024 * 1024
+
+    /// The same, with the budget spelled out, so a test can reach it with
+    /// kilobytes rather than writing tens of megabytes of fixtures.
+    static func body(fromMarkdown markdown: String,
+                     baseDirectory: URL?,
+                     imageBudget: Int) -> (html: String,
+                                           headings: [MarkdownHeading],
+                                           stats: MarkdownStats) {
         let base = baseDirectory?.standardizedFileURL
+        var imageBytesLeft = imageBudget
         // cmark normalises CRLF itself, but the two passes that run *before*
         // the parse (front matter, footnote definitions) split on "\n" and would
         // see a stray "\r" at the end of every line of a Windows-saved file: a
@@ -185,7 +203,7 @@ public enum MarkdownHTML {
             .replacingOccurrences(of: "\r", with: "\n")
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
-        document = inliningImages(document, baseDirectory: base)
+        document = inliningImages(document, baseDirectory: base, bytesLeft: &imageBytesLeft)
         document = sanitised(document)
 
         // A document with no definitions cannot have a reference, so it is not
@@ -203,7 +221,7 @@ public enum MarkdownHTML {
         for label in referencer.order {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
-            note = inliningImages(note, baseDirectory: base)
+            note = inliningImages(note, baseDirectory: base, bytesLeft: &imageBytesLeft)
             note = sanitised(note)
             noteWords += statistics(of: note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
@@ -220,9 +238,13 @@ public enum MarkdownHTML {
         return (html, anchorer.headings, stats)
     }
 
-    private static func inliningImages(_ document: Document, baseDirectory: URL?) -> Document {
+    /// `bytesLeft` carries the document's image budget from the body into each
+    /// of its notes, so the notes cannot each spend a fresh one.
+    private static func inliningImages(_ document: Document, baseDirectory: URL?,
+                                       bytesLeft: inout Int) -> Document {
         guard let baseDirectory else { return document }
-        var inliner = ImageInliner(baseDirectory: baseDirectory)
+        var inliner = ImageInliner(baseDirectory: baseDirectory, bytesLeft: bytesLeft)
+        defer { bytesLeft = inliner.bytesLeft }
         return (inliner.visit(document) as? Document) ?? document
     }
 
@@ -398,6 +420,11 @@ public enum MarkdownHTML {
         /// Refuse to inline anything huge: it would bloat the HTML and stall
         /// the render for no reading benefit.
         static let sizeCap = 8 * 1024 * 1024
+        /// What is left of the document-wide budget. An image that does not fit
+        /// in it is skipped, but a smaller one later in the document can still
+        /// be inlined; an image used twice is in the HTML twice, so it counts
+        /// twice.
+        var bytesLeft: Int
 
         mutating func visitImage(_ image: Image) -> Markup? {
             guard let source = image.source, !source.isEmpty else { return image }
@@ -413,12 +440,14 @@ public enum MarkdownHTML {
             guard resolved.path.hasPrefix(folder.path + "/") else { return image }
 
             guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey]),
-                  let size = values.fileSize, size <= Self.sizeCap,
-                  let data = try? Data(contentsOf: resolved),
+                  let size = values.fileSize, size <= Self.sizeCap, size <= bytesLeft,
                   let type = UTType(filenameExtension: resolved.pathExtension),
-                  let mime = type.preferredMIMEType
+                  let mime = type.preferredMIMEType,
+                  let data = try? Data(contentsOf: resolved)
             else { return image }
 
+            // What was read, not what the size said: the file can have grown.
+            bytesLeft -= data.count
             var copy = image
             copy.source = "data:\(mime);base64,\(data.base64EncodedString())"
             return copy
