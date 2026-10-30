@@ -398,7 +398,8 @@ public enum Prefs {
     }
 
     /// Bookmark creation reads the file, so keep it off the main thread and
-    /// outside recentsLock. The queue also preserves the order of opens.
+    /// outside recentsLock. The queue also preserves the order of opens, and
+    /// recents resolution and the first-launch seed queue up behind them.
     private static let recentsQueue = DispatchQueue(label: "com.epps.Glassine.recents")
 
     /// Record an open: the file moves to the front and takes today's date.
@@ -420,6 +421,15 @@ public enum Prefs {
     /// reads them -- a test, or a deliberate flush before quitting.
     public static func flushRecentDocumentWrites() {
         recentsQueue.sync {}
+    }
+
+    /// Run `work` on the recents queue, after every open already noted and
+    /// before any noted later. Recents resolution runs here, so its rows are
+    /// never older than an open the reader has already made, and so does the
+    /// Mac's first-launch seed, so an open noted after the seed was queued
+    /// lands on top of the seeded list instead of racing it.
+    public static func performAfterRecentDocumentWrites(_ work: @escaping @Sendable () -> Void) {
+        recentsQueue.async(execute: work)
     }
 
     public static func removeRecentDocument(path: String) {
