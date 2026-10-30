@@ -118,7 +118,9 @@ final class DocumentSession {
     @ObservationIgnored private var content: MarkdownContent?
     @ObservationIgnored private var styling = MarkdownStyling.current
     @ObservationIgnored private var watcher: FileWatcher?
-    @ObservationIgnored private var presenter: MarkdownFilePresenter?
+    /// Both kinds have one: it is how a Files-app rename or move reaches the
+    /// session. Only Markdown also listens to it for content changes.
+    @ObservationIgnored private var presenter: DocumentFilePresenter?
     /// Reloads, in order: two saves in quick succession are two conversions
     /// racing on a concurrent queue, and without this the slower one could
     /// overwrite the newer revision.
@@ -287,7 +289,22 @@ final class DocumentSession {
         find.document = document
         phase = .ready
         Prefs.noteRecentDocument(url, pageCount: document.pageCount)
+        startPresentingPDF()
         installInView()
+    }
+
+    /// The PDF half of the Mac's NSDocument file tracking: a presenter that
+    /// follows a Files-app rename or move, as Markdown's does. Moves only: a
+    /// PDF rewritten in place is not reloaded here, where NSDocument would
+    /// revert to it on the Mac. That is a separate change, with its own
+    /// questions about the reading position and an active search.
+    private func startPresentingPDF() {
+        guard kind == .pdf, presenter == nil else { return }
+        let presenter = DocumentFilePresenter(url: url, onChange: nil, onMove: { [weak self] newURL in
+            self?.fileDidMove(to: newURL)
+        })
+        NSFileCoordinator.addFilePresenter(presenter)
+        self.presenter = presenter
     }
 
     #if DEBUG
@@ -548,7 +565,7 @@ final class DocumentSession {
         watcher = FileWatcher(url: url) { [weak self] in
             self?.reloadFromDisk()
         }
-        let presenter = MarkdownFilePresenter(url: url, onChange: { [weak self] in
+        let presenter = DocumentFilePresenter(url: url, onChange: { [weak self] in
             // Straight into the watcher, so the coordinated and uncoordinated
             // paths share one debounce and one signature gate.
             self?.watcher?.poke()
@@ -561,21 +578,25 @@ final class DocumentSession {
 
     /// The Files app renamed or moved the open file (delivered through the
     /// presenter, on the main queue). Everything keyed by the location follows:
-    /// the watcher, the title, the Recents row, the reading position -- and the
-    /// file is re-read once from where it is now, because a revision saved just
-    /// before the move may have been in flight from the old path.
+    /// the title, the Recents row, the reading position, and for Markdown the
+    /// watcher -- and a Markdown file is re-read once from where it is now,
+    /// because a revision saved just before the move may have been in flight
+    /// from the old path. A PDF is not re-read; the `PDFDocument` already open
+    /// stays on screen, as the Mac's does across a rename.
     private func fileDidMove(to newURL: URL) {
         guard newURL != url else { return }
         let previous = url
         url = newURL
         title = newURL.deletingPathExtension().lastPathComponent
-        reloader?.invalidate()
-        watcher?.retarget(to: newURL)
         Prefs.removeRecentDocument(path: previous.standardizedFileURL.path)
-        Prefs.noteRecentDocument(newURL, pageCount: nil)
+        // A PDF's row keeps its page count; Markdown has none until typeset.
+        Prefs.noteRecentDocument(newURL, pageCount: kind == .pdf ? document?.pageCount : nil)
         // ReadingPosition reads the URL through a closure, so saving now writes
         // the position under the new path.
         savePosition()
+        guard kind == .markdown else { return }
+        reloader?.invalidate()
+        watcher?.retarget(to: newURL)
         reloadFromDisk()
     }
 
@@ -1065,28 +1086,34 @@ extension DocumentSession: FindSink {
     }
 }
 
-/// `NSFilePresenter` for the open Markdown file, beside the vnode watcher.
+/// `NSFilePresenter` for the open file, whichever kind it is.
 ///
-/// The Mac gets by on the watcher alone because the writers that matter there
-/// (editors, CLI tools) do not coordinate. On iOS the important writers do:
-/// iCloud Drive and the Files app both go through `NSFileCoordinator`, and a
-/// coordinated write can leave the vnode source with nothing to report. This
-/// pokes the watcher's debounce rather than doing anything itself, so one save
-/// seen twice still costs one render.
+/// For both kinds it follows the file: iOS has no NSDocument, so without a
+/// presenter a Files-app rename or move of an open document goes unnoticed
+/// and the session keeps saving its position and Recents row under a path
+/// that no longer exists.
+///
+/// For Markdown it also sits beside the vnode watcher. The Mac gets by on the
+/// watcher alone because the writers that matter there (editors, CLI tools) do
+/// not coordinate. On iOS the important writers do: iCloud Drive and the Files
+/// app both go through `NSFileCoordinator`, and a coordinated write can leave
+/// the vnode source with nothing to report. `onChange` pokes the watcher's
+/// debounce rather than doing anything itself, so one save seen twice still
+/// costs one render. A PDF passes no `onChange`.
 ///
 /// `@unchecked Sendable` because it is: every callback is delivered on the main
 /// queue, which is where the closures it holds belong and the only place the
 /// URL is rewritten (a move must update `presentedItemURL`, or the coordinator
 /// keeps delivering events for the old location).
-final class MarkdownFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+final class DocumentFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
 
     private(set) var presentedItemURL: URL?
     let presentedItemOperationQueue = OperationQueue.main
-    private let onChange: @MainActor () -> Void
+    private let onChange: (@MainActor () -> Void)?
     private let onMove: @MainActor (URL) -> Void
 
     init(url: URL,
-         onChange: @escaping @MainActor () -> Void,
+         onChange: (@MainActor () -> Void)?,
          onMove: @escaping @MainActor (URL) -> Void) {
         self.presentedItemURL = url
         self.onChange = onChange
@@ -1095,6 +1122,7 @@ final class MarkdownFilePresenter: NSObject, NSFilePresenter, @unchecked Sendabl
     }
 
     func presentedItemDidChange() {
+        guard let onChange else { return }
         MainActor.assumeIsolated { onChange() }
     }
 
