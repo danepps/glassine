@@ -65,6 +65,34 @@ struct RecentsModelTests {
         #expect(RecentsModel.dateText(.distantPast, now: now) == "")
     }
 
+    @Test("dateText decides today and yesterday from `now`, not the clock")
+    func dateStringsFollowNow() throws {
+        let calendar = Calendar.current
+        // Noon on a fixed day, well away from today and from any DST change.
+        let now = try #require(calendar.date(from: DateComponents(year: 2025, month: 3, day: 5,
+                                                                  hour: 12)))
+        let startOfDay = calendar.startOfDay(for: now)
+
+        #expect(RecentsModel.dateText(now, now: now).hasPrefix("Today, "))
+        // The first minute of the same day is still today.
+        #expect(RecentsModel.dateText(startOfDay.addingTimeInterval(60), now: now)
+                .hasPrefix("Today, "))
+        // A minute before midnight is yesterday, and so is the start of that day.
+        #expect(RecentsModel.dateText(startOfDay.addingTimeInterval(-60), now: now) == "Yesterday")
+        let dayBefore = try #require(calendar.date(byAdding: .day, value: -1, to: startOfDay))
+        #expect(RecentsModel.dateText(dayBefore, now: now) == "Yesterday")
+        // Two days back is a plain date.
+        let twoDaysBack = try #require(calendar.date(byAdding: .day, value: -2, to: now))
+        let plain = RecentsModel.dateText(twoDaysBack, now: now)
+        #expect(!plain.hasPrefix("Today") && plain != "Yesterday" && !plain.isEmpty)
+
+        // The real clock's today is neither "Today" nor "Yesterday" as of that
+        // March: it is a date in a later year, so it names its year.
+        let realToday = RecentsModel.dateText(Date(), now: now)
+        #expect(!realToday.hasPrefix("Today") && realToday != "Yesterday")
+        #expect(realToday.contains("\(calendar.component(.year, from: Date()))"))
+    }
+
     @Test("detailText abbreviates only a leading home directory")
     func homeAbbreviation() {
         let home = "/Users/dan"

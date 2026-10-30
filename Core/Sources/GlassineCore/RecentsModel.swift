@@ -91,8 +91,15 @@ public enum RecentsModel {
         // A seeded entry can have no date at all: better blank than 1 Jan 2001.
         guard date > .distantPast else { return "" }
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today, " + timeFormatter.string(from: date) }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        // Against `now` rather than the system clock, so the caller (and a
+        // test) decides what today is.
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "Today, " + timeFormatter.string(from: date)
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
         if calendar.isDate(date, equalTo: now, toGranularity: .year) {
             return dayFormatter.string(from: date)
         }
