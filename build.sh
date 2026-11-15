@@ -1,18 +1,20 @@
 #!/bin/zsh
 # Build Glassine.app into ./build.
-# Usage: ./build.sh [--run] [--debug] [--adhoc] [--notarize]
+# Usage: ./build.sh [--run] [--debug] [--adhoc] [--notarize] [--preview]
 set -euo pipefail
 ROOT="${0:A:h}"
 CONFIG=release
 RUN=0
 ADHOC=0
+IS_PREVIEW=0
 for arg in "$@"; do
   case "$arg" in
     --run) RUN=1 ;;
     --debug) CONFIG=debug ;;
     --adhoc) ADHOC=1 ;;   # skip Developer ID signing (faster, offline)
     --notarize) NOTARIZE=1 ;;   # submit to Apple, wait, staple (needs "notary" keychain profile)
-    *) echo "unknown option: $arg (use --run, --debug, --adhoc, --notarize)" >&2; exit 2 ;;
+    --preview) IS_PREVIEW=1 ;;   # separate app identity, with updates disabled
+    *) echo "unknown option: $arg (use --run, --debug, --adhoc, --notarize, --preview)" >&2; exit 2 ;;
   esac
 done
 NOTARIZE=${NOTARIZE:-0}
@@ -41,10 +43,26 @@ fi
 echo "Verified linked macOS SDK: $LINKED_SDK"
 
 APP="$ROOT/build/Glassine.app"
+if (( IS_PREVIEW )); then APP="$ROOT/build/Glassine Preview.app"; fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/Glassine"
 cp "$ROOT/Support/Info.plist" "$APP/Contents/Info.plist"
+if (( IS_PREVIEW )); then
+  PLIST="$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.epps.Glassine.Preview" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName Glassine Preview" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Glassine Preview" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :GlassinePreviewBuild bool true" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$PLIST"
+  # A preview can open files explicitly without becoming their default app.
+  typeIndex=0
+  while /usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:$typeIndex" "$PLIST" >/dev/null 2>&1; do
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDocumentTypes:${typeIndex}:LSHandlerRank None" "$PLIST"
+    (( typeIndex += 1 ))
+  done
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 if [[ -f "$ROOT/Support/Glassine.icns" ]]; then
   cp "$ROOT/Support/Glassine.icns" "$APP/Contents/Resources/Glassine.icns"
@@ -55,6 +73,22 @@ done
 if [[ -f "$ROOT/Support/Assets.car" ]]; then
   cp "$ROOT/Support/Assets.car" "$APP/Contents/Resources/Assets.car"
 fi
+
+# Finder discovers the preview extension inside the installed app. Its version
+# must track the host so Sparkle replacements update both bundles together.
+PREVIEW="$APP/Contents/PlugIns/GlassineQuickLook.appex"
+mkdir -p "$PREVIEW/Contents/MacOS"
+cp "$ROOT/.build/$CONFIG/GlassineQuickLook" "$PREVIEW/Contents/MacOS/GlassineQuickLook"
+cp "$ROOT/Support/QuickLook/Info.plist" "$PREVIEW/Contents/Info.plist"
+if (( IS_PREVIEW )); then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.epps.Glassine.Preview.QuickLook" "$PREVIEW/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Glassine Preview Markdown" "$PREVIEW/Contents/Info.plist"
+fi
+printf 'XPC!????' > "$PREVIEW/Contents/PkgInfo"
+for key in CFBundleShortVersionString CFBundleVersion; do
+  value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$APP/Contents/Info.plist")"
+  /usr/libexec/PlistBuddy -c "Set :$key $value" "$PREVIEW/Contents/Info.plist"
+done
 
 # Sparkle. `swift build` links against the SwiftPM binary artifact but, unlike
 # Xcode, embeds nothing, so the framework is copied in by hand; the target's
@@ -88,6 +122,8 @@ fi
 # https://sparkle-project.org/documentation/sandboxing/ -- note Sparkle warns
 # against signing the app itself with --deep.
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" \
+  --entitlements "$ROOT/Support/QuickLook/GlassineQuickLook.entitlements" "$PREVIEW"
 codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" "$SPARKLE/XPCServices/Installer.xpc"
 codesign --force "${SIGN_OPTS[@]}" --preserve-metadata=entitlements \
   --sign "$SIGN_ID" "$SPARKLE/XPCServices/Downloader.xpc"

@@ -3,8 +3,9 @@
 <https://github.com/danepps/glassine>
 
 A small, fast, native macOS PDF reader that also opens Markdown. Swift + AppKit
-+ PDFKit, no Electron, no storyboards; WebKit is used only offscreen, to typeset
-Markdown into pages. Built because PDF Expert got slow.
++ PDFKit, no Electron, no storyboards. WebKit typesets Markdown into pages;
+macOS's Quick Look viewer displays Markdown previews in Finder. Built because
+PDF Expert got slow.
 
 Renamed from **Folio** at 1.1.0; the bundle identifier changed with it, so the
 first launch carries your Folio settings, reading positions and custom Markdown
@@ -50,6 +51,10 @@ updated in place.
   Export the rendered pages with ⇧⌘E — always paginated, however
   you are reading it. Everything Markdown-specific lives in its own **Markdown**
   menu, between View and Go.
+- **Markdown previews in Finder.** Select a Markdown file and press Space to
+  see Glassine's Manuscript typography, tables, code, task lists, heading links
+  and footnotes. The bundled Quick Look extension follows the system's light
+  or dark appearance. See the setup instructions below.
 - **Footnotes and heading links.** `[^label]` references and their
   `[^label]: …` definitions are set as superscript markers and a notes section
   at the end, numbered by first use; clicking a marker jumps to the note and
@@ -129,11 +134,40 @@ macOS 14 or later, Apple Silicon only (the build is arm64; a universal binary wo
 ./build.sh          # builds build/Glassine.app
 ./build.sh --run    # builds and launches
 ./build.sh --debug  # debug configuration
+./build.sh --preview # builds a separate Glassine Preview.app with updates disabled
 ```
+
+`--preview` uses a separate preferences domain and Quick Look extension
+identifier, and does not claim default document associations. The preview's
+extension appears as **Glassine Preview Markdown** in System Settings.
+It can be signed and notarized with `./build.sh --preview --notarize`.
 
 Drag `build/Glassine.app` to `/Applications` if you want it in Launchpad, then
 right-click a PDF ▸ Get Info ▸ Open With to make it the default. For Markdown
 there is a menu item: Markdown ▸ Open Markdown Files with Glassine by Default.
+
+For Finder previews, install Glassine in `/Applications` and open it once.
+In **System Settings ▸ General ▸ Login Items & Extensions ▸ Quick Look**, enable
+**Glassine Markdown Preview**. If another Markdown preview extension is already
+enabled, such as Marked Quick Look, turn that provider off there when choosing
+Glassine. Glassine does not change another provider's setting. Apple describes
+these controls in [Login Items & Extensions settings][extension-settings].
+On older macOS versions, find Quick Look under the Extensions settings.
+
+The preview uses the built-in Manuscript style at 12 pt, independently of the
+reader's style preferences. Files over 2 MiB show an Open in Glassine notice.
+Images embedded as `data:` URIs display. Image files next to the document do
+not: macOS sandboxes the extension to the Markdown file itself, so a relative
+image shows its alt text in Finder, and only the reader inlines it. Remote
+images do not load. Scripts, embedded frames and objects, and `<meta>`,
+`<link>` and `<base>` tags are removed, as they are in the reader; any other
+embedded HTML is shown as text, except line breaks and bare formatting tags
+(`<u>`, `<b>`, `<i>`, `<em>`, `<strong>`, `<s>`, `<sup>`, `<sub>`, `<kbd>`,
+`<mark>`, `<small>`); HTML comments stay hidden. Links keep only `#heading`,
+web and `mailto:` destinations. Math and Mermaid blocks are shown as source.
+PDF previews continue to use macOS's built-in provider.
+
+[extension-settings]: https://support.apple.com/guide/mac-help/mtusr003/mac
 
 Dependencies are Sparkle and [swift-markdown][], which is pinned by commit
 because its own manifest depends on swift-cmark by branch and SwiftPM will not
@@ -164,6 +198,8 @@ checked in.
 ```
 Package.swift                 Swift Package for the Mac app (depends on Core/)
 Support/Info.plist            bundle metadata, PDF and Markdown document types
+Support/QuickLook/            preview extension metadata and sandbox entitlements
+Sources/GlassineQuickLook/    Markdown Quick Look provider, embedded by build.sh
 Support/Glassine.icon, .icns, Assets.car   app icon sources and compiled variants
 build.sh                      assembles build/Glassine.app
 release.sh                    cuts a Mac release and updates glassine-appcast.xml
@@ -172,6 +208,7 @@ build-ios.sh                  xcodegen + xcodebuild for the simulator or a devic
 release-ios.sh                archives, exports and uploads an iOS build to TestFlight
 Core/                         GlassineCore: the logic both apps share, with its tests
   MarkdownHTML.swift          Markdown -> HTML + headings + the print stylesheet
+  MarkdownPreview.swift       the self-contained HTML page Finder's Quick Look shows
   Prefs.swift                 UserDefaults-backed settings, recents and reading positions
   FileWatcher.swift           vnode watcher behind Markdown auto-refresh
   ReaderPage.swift            PDFPage subclass that draws dark-mode find highlights

@@ -132,6 +132,121 @@ struct MarkdownHTMLTests {
         #expect(roomy.html.components(separatedBy: "data:image/png;base64,").count - 1 == 5)
     }
 
+    @Test("The reader inlines image and PDF figures, and nothing else")
+    func imageTypes() {
+        let root = TempDirectory()
+        root.write(Data([0x25, 0x50, 0x44, 0x46, 0x2D]), to: "figure.pdf")
+        root.write(Data("plain".utf8), to: "notes.txt")
+
+        // A PDF figure is what a pandoc or LaTeX workflow produces, and WebKit
+        // draws it in an <img>; it must keep inlining in the reader.
+        let figure = MarkdownHTML.body(fromMarkdown: "![fig](figure.pdf)", baseDirectory: root.url)
+        #expect(figure.html.contains("data:application/pdf;base64,"))
+
+        // A file that is not drawable is left as its reference, not embedded.
+        let text = MarkdownHTML.body(fromMarkdown: "![notes](notes.txt)", baseDirectory: root.url)
+        #expect(!text.html.contains("data:"))
+        #expect(text.html.contains("notes.txt"))
+    }
+
+    @Test("A directory named like an image is not inlined")
+    func imageMustBeRegularFile() throws {
+        let root = TempDirectory()
+        try FileManager.default.createDirectory(
+            at: root.url.appendingPathComponent("folder.png"), withIntermediateDirectories: true)
+        let html = MarkdownHTML.body(fromMarkdown: "![x](folder.png)", baseDirectory: root.url).html
+        #expect(!html.contains("data:"))
+        #expect(html.contains("folder.png"))
+    }
+
+    @Test("A preview's image budget is 8 MB, shared by the body and its notes")
+    func previewImageBudget() {
+        #expect(MarkdownHTML.previewImageBudget == 8 * 1024 * 1024)
+
+        let root = TempDirectory()
+        for name in ["a", "b", "n"] {
+            root.write(Data(count: 1024), to: "\(name).png")
+        }
+        // 2500 bytes: both body images fit, the note's finds the budget spent
+        // and, in a preview, falls back to its label.
+        let markdown = """
+        ![a](a.png) ![b](b.png)[^1]
+
+        [^1]: ![n](n.png)
+        """
+        let small = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: root.url,
+                                      imageBudget: 2500, output: .preview).html
+        #expect(small.components(separatedBy: "data:image/png;base64,").count - 1 == 2)
+        #expect(small.contains("[n]"))
+
+        // Through the public entry point: two 5 MB images fit the reader's
+        // 32 MB but not a preview's 8 MB, and the note pays from the same pot.
+        root.write(Data(count: 5 * 1024 * 1024), to: "large.png")
+        let large = """
+        ![body](large.png)[^1]
+
+        [^1]: ![note](large.png)
+        """
+        let reader = MarkdownHTML.body(fromMarkdown: large, baseDirectory: root.url).html
+        #expect(reader.components(separatedBy: "data:image/png;base64,").count - 1 == 2)
+        let preview = MarkdownHTML.body(fromMarkdown: large, baseDirectory: root.url,
+                                        output: .preview).html
+        #expect(preview.components(separatedBy: "data:image/png;base64,").count - 1 == 1)
+        #expect(preview.contains("[note]"))
+    }
+
+    @Test("A preview sanitises first, then shows the remaining raw HTML as text")
+    func previewSanitisesThenFilters() {
+        let markdown = """
+        # Real heading
+
+        <script>
+        window.location = "https://attacker.example/";
+        </script>
+
+        <div class="note">Kept</div>
+
+        Inline <script>alert(1)</script>text with <b>bold</b>, <iframe src="https://x"></iframe> \
+        a [quoted one](http://x.example/?q="y"&r=1) and a [forged link](glassine-outline://0).
+
+        ```c#
+        code
+        ```
+
+        Note.[^1]
+
+        [^1]: <object data="https://x"></object> and <meta http-equiv="refresh" content="0">
+        """
+        let html = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil,
+                                     output: .preview).html
+        // The sanitiser removes these outright: not rendered, and not shown as
+        // text either, closing tags included.
+        #expect(!html.contains("script"))
+        #expect(!html.contains("window.location"))
+        #expect(!html.contains("iframe"))
+        #expect(!html.contains("object"))
+        #expect(!html.contains("refresh"))
+        // What survives the sanitiser is text in a preview, except a bare
+        // formatting tag.
+        #expect(html.contains("&lt;div class="))
+        #expect(!html.contains("<div"))
+        #expect(html.contains("<b>bold</b>"))
+        #expect(html.contains("alert(1)"))
+        // The quote became %22 in the sanitiser and the & was escaped once by
+        // the filter: no &amp;amp;, no &quot; inside the URL.
+        #expect(html.contains("href=\"http://x.example/?q=%22y%22&amp;r=1\""))
+        // No private outline links at all in a preview, forged or generated;
+        // the heading keeps its id.
+        #expect(!html.contains("glassine-outline"))
+        #expect(html.contains("forged link"))
+        #expect(html.contains("<h1 id=\"real-heading\">Real heading</h1>"))
+        // The sanitiser's code-language rule is the one that applies.
+        #expect(html.contains("class=\"language-c#\""))
+        // Generated footnote HTML is added after the filter, so it is live.
+        #expect(html.contains("class=\"fnref\""))
+        #expect(html.contains("class=\"fnback\""))
+    }
+
     @Test("Word count is over the plain text, not the markup")
     func wordCount() {
         let markdown = """
