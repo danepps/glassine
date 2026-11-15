@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Install before anything asks for NSDocumentController.shared.
         _ = GlassineDocumentController()
+        // Text selection on scanned pages; before any document vends a page.
+        ScanSelectionPatch.install()
         // Before anything reads a preference, and so before a window exists.
         FolioMigration.runIfNeeded()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)

@@ -425,4 +425,24 @@ struct CopyCleanupTests {
                      CopyCleanup.Line(text: "tution", bounds: .null, page: 0)]
         #expect(CopyCleanup.text(lines: lines) == "the constitution")
     }
+
+    // MARK: Scanned pages
+
+    @Test("A scan's page image is dropped, without breaking a paragraph across the page turn")
+    func dropsThePageImage() {
+        let before = ColumnLayout().add("The paragraph runs to the foot of the").lines
+        let after = ColumnLayout().add("page and carries on over the turn.", page: 1).lines
+        // The next page's scan (U+FFFC with page-sized bounds) between them.
+        let image = CopyCleanup.Line(text: "\u{FFFC}",
+                                     bounds: CGRect(x: 0, y: 0, width: 612, height: 792), page: 1)
+        #expect(CopyCleanup.text(lines: before + [image] + after)
+                == "The paragraph runs to the foot of the page and carries on over the turn.")
+    }
+
+    @Test("Text-only path: page images are dropped too, and inline ones removed")
+    func dropsThePageImageWithoutGeometry() {
+        #expect(CopyCleanup.text("\u{FFFC}\nfirst line\n\u{FFFC}\nsecond line")
+                == "first line second line")
+        #expect(CopyCleanup.text("see the \u{FFFC} figure") == "see the figure")
+    }
 }

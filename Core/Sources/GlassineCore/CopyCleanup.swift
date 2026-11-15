@@ -86,7 +86,9 @@ public enum CopyCleanup {
         var started = false
         var pendingBreak = false
         for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = collapsingSpaces(String(rawLine))
+            // A page image is neither text nor a blank line.
+            if PageTextMap.isGraphicOnly(String(rawLine)) { continue }
+            let line = collapsingSpaces(withoutGraphics(String(rawLine)))
             if line.isEmpty {
                 if started { pendingBreak = true }
                 continue
@@ -146,7 +148,12 @@ public enum CopyCleanup {
         var out: [Prepared] = []
         var blankSeen = false
         for line in lines {
-            let text = collapsingSpaces(line.text)
+            // The page image of a scan (U+FFFC; see `PageTextMap`) arrives as a
+            // line of its own in a selection that spans pages or covers a whole
+            // page. It is skipped rather than treated as a blank line, which
+            // would break a paragraph running across the page turn.
+            if PageTextMap.isGraphicOnly(line.text) { continue }
+            let text = collapsingSpaces(withoutGraphics(line.text))
             guard !text.isEmpty else {
                 // Not dropped so much as remembered: a blank line is a paragraph
                 // break, and it is the only one the text can state outright.
@@ -239,6 +246,12 @@ public enum CopyCleanup {
             }
         }
         return out
+    }
+
+    /// The text with any object replacement characters (inline images) taken
+    /// out: they paste as an unreadable box.
+    private static func withoutGraphics(_ text: String) -> String {
+        text.contains("\u{FFFC}") ? text.replacingOccurrences(of: "\u{FFFC}", with: "") : text
     }
 
     private static func isPlainSpace(_ character: Character) -> Bool {

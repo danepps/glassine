@@ -54,7 +54,27 @@ final class ReaderPDFView: PDFView {
         let pagePoint = convert(point, to: page)
         // A real link annotation wins; PDFKit handles those correctly.
         if page.annotation(at: pagePoint)?.type == "Link" { return nil }
-        return TextLinks.url(in: text, at: page.characterIndex(at: pagePoint))
+        // On a scan under OCR text, PDFKit's index is the page image's.
+        let index = (page as? ReaderPage)?.textCharacterIndex(at: pagePoint)
+            ?? page.characterIndex(at: pagePoint)
+        return TextLinks.url(in: text, at: index)
+    }
+
+    /// The pointer over a scan with OCR text. PDFKit reports the page image
+    /// under every point of such a page and so shows a hand everywhere; this
+    /// reports text over the lines and bare page between them, which gives
+    /// the I-beam and the arrow of an ordinary page. `areaOfInterest(forMouse:)`
+    /// and PDFKit's cursor code both come through here. Link and annotation
+    /// areas are left as PDFKit found them.
+    override func areaOfInterest(for cursorLocation: NSPoint) -> PDFAreaOfInterest {
+        var area = super.areaOfInterest(for: cursorLocation)
+        guard area.contains(.imageArea),
+              let page = page(for: cursorLocation, nearest: false) as? ReaderPage,
+              let overText = page.isOverScanText(at: convert(cursorLocation, to: page))
+        else { return area }
+        area.remove(.imageArea)
+        if overText { area.insert(.textArea) } else { area.remove(.textArea) }
+        return area
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -294,8 +314,11 @@ final class ReaderPDFView: PDFView {
     /// "Copy Without Cleanup" (⌥⌘C) still reaches PDFKit's own copy for the
     /// paste that wants the lines as printed.
     override func copy(_ sender: Any?) {
+        // Nothing but a page image (U+FFFC) selected: PDFKit's copy, as before
+        // there was text to clean. With text alongside, the cleanup drops it.
         guard let selection = currentSelection,
-              let raw = selection.string, !raw.isEmpty else {
+              let raw = selection.string, !raw.isEmpty,
+              !PageTextMap.isGraphicOnly(raw) else {
             super.copy(sender)
             return
         }

@@ -602,7 +602,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // MARK: PDFDocumentDelegate
 
     func classForPage() -> AnyClass {
-        ReaderPage.self
+        // Normally done at launch already; this covers a document opened
+        // without the app delegate (the tests). Idempotent and cheap.
+        ScanSelectionPatch.install()
+        return ReaderPage.self
     }
 
     func didMatchString(_ instance: PDFSelection) {
