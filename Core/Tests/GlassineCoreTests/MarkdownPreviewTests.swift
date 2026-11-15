@@ -207,6 +207,123 @@ struct MarkdownPreviewTests {
         #expect(html.contains("[Over budget]"))
     }
 
+    /// The `href`s of the outline's links, in order.
+    private func outlineHrefs(_ html: String) throws -> [String] {
+        let start = try #require(html.range(of: "<nav class=\"preview-outline\""))
+        let end = try #require(html.range(of: "</nav>", range: start.upperBound..<html.endIndex))
+        return html[start.upperBound..<end.lowerBound]
+            .components(separatedBy: "<a href=\"").dropFirst()
+            .compactMap { $0.split(separator: "\"", maxSplits: 1).first.map(String.init) }
+    }
+
+    @Test("Two or more headings get a headings column listing each one in order")
+    func outlineColumn() throws {
+        let folder = TempDirectory()
+        let html = try render("""
+        # Title
+
+        Intro.
+
+        ## First part
+
+        ### A detail
+
+        ## Second part
+        """, folder: folder)
+        #expect(html.contains("<nav class=\"preview-outline\" aria-label=\"Contents\"><ul>"))
+        #expect(try outlineHrefs(html) == ["#title", "#first-part", "#a-detail", "#second-part"])
+        #expect(html.contains("<li class=\"outline-depth-0\"><a href=\"#title\" title=\"Title\">Title</a></li>"))
+        #expect(html.contains("<li class=\"outline-depth-1\"><a href=\"#first-part\" title=\"First part\">First part</a></li>"))
+        #expect(html.contains("<li class=\"outline-depth-2\"><a href=\"#a-detail\""))
+        #expect(html.contains("<li class=\"outline-depth-1\"><a href=\"#second-part\""))
+        // The body follows the column, in its own element.
+        let nav = try #require(html.range(of: "</nav>"))
+        let main = try #require(html.range(of: "<main class=\"preview-body\">"))
+        #expect(nav.upperBound <= main.lowerBound)
+        #expect(html.contains("</main>\n</body>"))
+        #expect(html.contains("<h2 id=\"first-part\">First part</h2>"))
+        #expect(!html.contains("<script"))
+        #expect(html.contains("content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'\""))
+    }
+
+    @Test("Indentation is relative to the shallowest heading in the document")
+    func outlineRelativeDepth() throws {
+        let folder = TempDirectory()
+        let page = try render("## Two\n\n#### Four\n\n### Three\n\n## Two again\n", folder: folder)
+        let html = try #require(page.components(separatedBy: "</head>").last)
+        #expect(html.contains("<li class=\"outline-depth-0\"><a href=\"#two\""))
+        #expect(html.contains("<li class=\"outline-depth-2\"><a href=\"#four\""))
+        #expect(html.contains("<li class=\"outline-depth-1\"><a href=\"#three\""))
+        #expect(html.contains("<li class=\"outline-depth-0\"><a href=\"#two-again\""))
+        #expect(!html.contains("outline-depth-3"))
+    }
+
+    @Test("Repeated titles link to their numbered ids, and every link names an id in the body")
+    func outlineRepeatedTitles() throws {
+        let folder = TempDirectory()
+        let html = try render("# Notes\n\nA.\n\n# Notes\n\nB.\n\n## Notes\n\n## !!!\n", folder: folder)
+        let hrefs = try outlineHrefs(html)
+        #expect(hrefs == ["#notes", "#notes-1", "#notes-2", "#section"])
+        for href in hrefs {
+            #expect(html.contains("id=\"\(href.dropFirst())\""))
+        }
+    }
+
+    @Test("Outline titles and hrefs are escaped")
+    func outlineEscaping() throws {
+        let folder = TempDirectory()
+        let html = try render("""
+        # Smith & Jones
+
+        ## Code `a<b> "q"` here
+        """, folder: folder)
+        let nav = try #require(html.range(of: "<nav"))
+        let navEnd = try #require(html.range(of: "</nav>"))
+        let navHTML = String(html[nav.lowerBound..<navEnd.upperBound])
+        #expect(navHTML.contains("<a href=\"#smith--jones\" title=\"Smith &amp; Jones\">Smith &amp; Jones</a>"))
+        // Inline code keeps a straight quote (prose quotes come out curly).
+        #expect(navHTML.contains("<a href=\"#code-ab-q-here\" title=\"Code a&lt;b&gt; &quot;q&quot; here\">Code a&lt;b&gt; &quot;q&quot; here</a>"), "\(navHTML)")
+        #expect(!navHTML.contains("<b>"))
+        #expect(!navHTML.contains("\"q\""))
+    }
+
+    @Test("No column for zero or one heading, an empty file, or a file too large to preview")
+    func outlineAbsent() throws {
+        let folder = TempDirectory()
+        for text in ["Just a paragraph.", "# Only one\n\nText.", "  \n\n"] {
+            let html = try render(text, folder: folder)
+            let body = try #require(html.components(separatedBy: "</head>").last)
+            #expect(!body.contains("<nav"))
+            #expect(!body.contains("<main"))
+            // Exactly the body the page had before the column existed.
+            let converted = MarkdownHTML.body(fromMarkdown: text, baseDirectory: folder.url,
+                                              output: .preview).html
+            let expected = converted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "<p class=\"preview-notice\">This Markdown file is empty.</p>" : converted
+            #expect(html.contains("</head><body>\n\(expected)\n</body></html>"))
+        }
+        let url = folder.write(Data(repeating: 0x23, count: MarkdownPreview.maximumFileSize + 1),
+                               to: "Large.md")
+        let large = String(decoding: try MarkdownPreview.html(for: url), as: UTF8.self)
+        #expect(!large.contains("<nav"))
+        #expect(large.contains("</head><body>\n<p class=\"preview-notice\">This file is too large"))
+    }
+
+    @Test("Headings with no text, or built without a slug, are left out of the column")
+    func outlineSkipsUnlinkable() {
+        #expect(MarkdownPreview.outline([
+            MarkdownHeading(level: 1, title: "One", index: 0, slug: "one"),
+            MarkdownHeading(level: 1, title: "No slug", index: 1)
+        ]) == nil)
+        let html = MarkdownPreview.outline([
+            MarkdownHeading(level: 1, title: "", index: 0, slug: "section"),
+            MarkdownHeading(level: 2, title: "A", index: 1, slug: "a"),
+            MarkdownHeading(level: 3, title: "B", index: 2, slug: "b")
+        ])
+        #expect(html?.contains("href=\"#section\"") == false)
+        #expect(html?.contains("<li class=\"outline-depth-0\"><a href=\"#a\"") == true)
+    }
+
     @Test("The image budget spans the body and footnotes")
     func totalImageBudget() throws {
         let folder = TempDirectory()

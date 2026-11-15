@@ -760,6 +760,20 @@ struct MarkdownHeadingAnchorTests {
         #expect(converted.headings.map(\.title) == ["The Rule"])
     }
 
+    @Test("Each heading's slug is exactly the id written for it, in both outputs")
+    func slugField() {
+        let markdown = "# Notes\n\n## Notes\n\n### ¡¿?!\n\n## Über *Größe*[^n]\n\n[^n]: Note.\n"
+        for output in [MarkdownHTML.Output.pdf, .preview] {
+            let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil,
+                                              output: output)
+            #expect(converted.headings.map(\.slug) == ["notes", "notes-1", "section", "über-größe"])
+            let ids = converted.html.components(separatedBy: " id=\"").dropFirst()
+                .compactMap { $0.split(separator: "\"").first.map(String.init) }
+                .filter { !$0.hasPrefix("fn") }
+            #expect(ids == converted.headings.map(\.slug))
+        }
+    }
+
     @Test("The outline anchor is still inside the heading, after the id")
     func anchorSurvives() {
         let output = html("# One\n\n## Two\n")

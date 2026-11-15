@@ -54,7 +54,8 @@ updated in place.
 - **Markdown previews in Finder.** Select a Markdown file and press Space to
   see Glassine's Manuscript typography, tables, code, task lists, heading links
   and footnotes. The bundled Quick Look extension follows the system's light
-  or dark appearance. See the setup instructions below.
+  or dark appearance. A document with two or more headings gets a column of
+  heading links on the left. See the setup instructions below.
 - **Footnotes and heading links.** `[^label]` references and their
   `[^label]: …` definitions are set as superscript markers and a notes section
   at the end, numbered by first use; clicking a marker jumps to the note and
@@ -156,6 +157,10 @@ On older macOS versions, find Quick Look under the Extensions settings.
 
 The preview uses the built-in Manuscript style at 12 pt, independently of the
 reader's style preferences. Files over 2 MiB show an Open in Glassine notice.
+A document with two or more headings gets a headings column on the left
+whose links jump to each heading; it is hidden when the panel is narrower than
+700 points, and, since the preview runs no scripts, it does not highlight the
+section you are reading.
 Images embedded as `data:` URIs display. Image files next to the document do
 not: macOS sandboxes the extension to the Markdown file itself, so a relative
 image shows its alt text in Finder, and only the reader inlines it. Remote

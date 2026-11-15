@@ -27,9 +27,37 @@ public enum MarkdownPreview {
         let converted = MarkdownHTML.body(fromMarkdown: text,
                                           baseDirectory: url.deletingLastPathComponent(),
                                           output: .preview)
-        let body = converted.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "<p class=\"preview-notice\">This Markdown file is empty.</p>" : converted.html
-        return page(body: body, title: url.lastPathComponent)
+        if converted.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return notice("This Markdown file is empty.", title: url.lastPathComponent)
+        }
+        guard let outline = outline(converted.headings) else {
+            return page(body: converted.html, title: url.lastPathComponent)
+        }
+        return page(body: outline + "\n<main class=\"preview-body\">\n"
+                        + converted.html + "</main>",
+                    title: url.lastPathComponent)
+    }
+
+    /// The headings column: one ordinary fragment link per heading, to the
+    /// `id` the anchorer gave it. No script (the CSP allows none), so there is
+    /// no current-section highlight and nothing collapses.
+    ///
+    /// nil for a document with fewer than two listable headings, which keeps
+    /// today's single-column page. A heading with no text is left out: its
+    /// link would be an empty line. (Its slug is never empty -- the anchorer
+    /// falls back to `section` -- but one built without a slug is skipped too,
+    /// so every href names an `id` that is really in the body.)
+    static func outline(_ headings: [MarkdownHeading]) -> String? {
+        let listed = headings.filter { !$0.slug.isEmpty && !$0.title.isEmpty }
+        guard listed.count >= 2, let top = listed.map(\.level).min() else { return nil }
+        let items = listed.map { heading -> String in
+            let title = MarkdownHTML.escape(heading.title)
+            return "<li class=\"outline-depth-\(heading.level - top)\">"
+                + "<a href=\"#\(MarkdownHTML.escape(heading.slug))\" title=\"\(title)\">"
+                + title + "</a></li>"
+        }
+        return "<nav class=\"preview-outline\" aria-label=\"Contents\"><ul>\n"
+            + items.joined(separator: "\n") + "\n</ul></nav>"
     }
 
     private static func notice(_ message: String, title: String) -> Data {
@@ -63,6 +91,52 @@ public enum MarkdownPreview {
     img { height: auto; }
     table { display: block; overflow-x: auto; }
     .preview-notice { color: var(--muted); }
+    /* The headings column, present only for two or more headings. Below
+       700px it is hidden and <main> is an unstyled block, so the page is
+       laid out exactly as one without the column. */
+    .preview-outline { display: none; }
+    @media (min-width: 700px) {
+      body:has(> .preview-outline) { max-width: none; margin: 0; padding: 0 0 0 200px; }
+      .preview-outline {
+        display: block;
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 200px;
+        box-sizing: border-box;
+        overflow-y: auto;
+        padding: 32px 12px 32px 16px;
+        background: var(--paper);
+        border-right: 1px solid var(--rule);
+        font: 12px/1.35 -apple-system, system-ui, sans-serif;
+        overflow-wrap: normal;
+      }
+      .preview-outline ul { list-style: none; margin: 0; padding: 0; }
+      .preview-outline li { margin: 0; padding: 2px 0; }
+      .preview-outline a {
+        display: block;
+        color: var(--muted);
+        text-decoration: none;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .preview-outline a:hover { color: var(--text); text-decoration: none; }
+      .preview-outline .outline-depth-0 { font-weight: 600; }
+      .preview-outline .outline-depth-0:not(:first-child) { margin-top: 6px; }
+      .preview-outline .outline-depth-1 { padding-left: 12px; }
+      .preview-outline .outline-depth-2 { padding-left: 24px; }
+      .preview-outline .outline-depth-3 { padding-left: 36px; }
+      .preview-outline .outline-depth-4 { padding-left: 48px; }
+      .preview-outline .outline-depth-5 { padding-left: 60px; }
+      .preview-body {
+        box-sizing: border-box;
+        max-width: 54rem;
+        margin: 0 auto;
+        padding: 32px clamp(24px, 4vw, 56px) 48px;
+      }
+    }
     @media (prefers-color-scheme: dark) {
       :root {
         --paper: #181818;

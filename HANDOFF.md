@@ -91,10 +91,29 @@ Dan's stated requirements, all met as of this handoff:
     `com.epps.Glassine.Preview.QuickLook`, shown as **Glassine Preview
     Markdown**. `release.sh` needs no change: it zips whatever `build.sh
     --notarize` assembled, PlugIns included, after the version bump.
-  - **Verified.** Core 222 tests passed (210 on main + 12 new: 8 in
-    `MarkdownPreviewTests`, 4 in `MarkdownHTMLTests`); snapshot hashes
-    unchanged. macOS `swift test --no-parallel`: 106 Swift Testing tests
-    passed (including the new WebKit `MarkdownPreviewRenderingTests`) with the
+  - **Headings column.** A document with two or more
+    headings gets `<nav class="preview-outline">` (flat list of `#slug`
+    links, `outline-depth-N` relative to the shallowest level, plain title
+    escaped, full title in `title`) before `<main class="preview-body">`;
+    fewer headings and the empty/too-large notices emit the old page
+    unchanged. Built in `MarkdownPreview.outline` from `converted.headings`;
+    `MarkdownHeading` gained `slug` (default `""`), set by the anchorer to
+    the exact `id` it writes, PDF HTML byte-identical. CSS only, in
+    `previewCSS`: at ≥700px a fixed 200px column (system font 12px, muted,
+    hairline `--rule` border, own scroll, ellipsis) and `body:has(>
+    .preview-outline)` hands the centred column to `<main>`; below 700px the
+    nav is `display: none` and the body is laid out as before. Quick Look's
+    760px panel leaves a ~500px text column. No script, so no current-section
+    highlight or collapse (the CSP forbids script and the reply is data-based);
+    Marked's extension gets those with a view-based preview, its own native
+    outline beside a script-enabled web view and a network entitlement, which
+    we chose not to take on. A heading with no text is left out of the list.
+    Tests: Core 229 (7 new), macOS 107 Swift Testing (1 new WebKit test at
+    760 and 600px, both appearances). Not checked in Finder's panel.
+  - **Verified.** Core 229 tests passed (210 on main + 19 new: 14 in
+    `MarkdownPreviewTests`, 5 in `MarkdownHTMLTests`); snapshot hashes
+    unchanged. macOS `swift test --no-parallel`: 107 Swift Testing tests
+    passed (including the two WebKit `MarkdownPreviewRenderingTests`) with the
     three existing opt-in checks skipped; XCTest 4 run, 1 skipped
     (`GLASSINE_SCAN_PDF`). `./build.sh --preview --adhoc`: appex present,
     version 1.9.9 / build 25 matching the host, identifier

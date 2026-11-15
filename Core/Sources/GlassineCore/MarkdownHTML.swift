@@ -137,16 +137,20 @@ public struct MarkdownStats: Equatable, Sendable {
 
 /// One heading of a Markdown document, in document order. `index` is what the
 /// `glassine-outline://` anchor in the HTML carries, so a link annotation in the
-/// rendered PDF names exactly one heading.
+/// rendered PDF names exactly one heading. `slug` is the `id` the heading was
+/// given in the HTML, exactly as written there (never empty for a heading the
+/// renderer produced; empty for one built by hand without it).
 public struct MarkdownHeading: Sendable {
     public var level: Int
     public var title: String
     public var index: Int
+    public var slug: String
 
-    public init(level: Int, title: String, index: Int) {
+    public init(level: Int, title: String, index: Int, slug: String = "") {
         self.level = level
         self.title = title
         self.index = index
+        self.slug = slug
     }
 }
 
@@ -413,15 +417,17 @@ public enum MarkdownHTML {
         mutating func visitHeading(_ heading: Heading) -> Markup? {
             let index = headings.count
             let title = title(of: heading)
+            let slug = slug(for: title)
             headings.append(MarkdownHeading(level: heading.level,
                                             title: title,
-                                            index: index))
+                                            index: index,
+                                            slug: slug))
             let inner = heading.children.map { HTMLFormatter.format($0) }.joined()
             let level = heading.level
             let content = includeOutlineLinks
                 ? "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
                 : inner
-            return HTMLBlock("<h\(level) id=\"\(slug(for: title))\">"
+            return HTMLBlock("<h\(level) id=\"\(slug)\">"
                              + content + "</h\(level)>\n")
         }
 
@@ -685,7 +691,9 @@ public enum MarkdownHTML {
 
     // MARK: Template
 
-    private static func escape(_ text: String) -> String {
+    /// Internal rather than private so `MarkdownPreview` escapes its outline
+    /// with the same rules.
+    static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
