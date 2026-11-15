@@ -107,7 +107,9 @@ Dan's stated requirements, all met as of this handoff:
     highlight or collapse (the CSP forbids script and the reply is data-based);
     Marked's extension gets those with a view-based preview, its own native
     outline beside a script-enabled web view and a network entitlement, which
-    we chose not to take on. A heading with no text is left out of the list.
+    we chose not to take on for now; the case for and against going native,
+    with a spike plan, is in `reviews/2026-11-15-quicklook-native-preview.md`
+    (open decision). A heading with no text is left out of the list.
     Tests: Core 229 (7 new), macOS 107 Swift Testing (1 new WebKit test at
     760 and 600px, both appearances). Not checked in Finder's panel.
   - **Unique heading ids (reader and preview).** The anchorer numbered
