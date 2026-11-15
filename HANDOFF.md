@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-10-30. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-11-15. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -35,6 +35,49 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Released 1.9.9 (Claude, 2026-11-15).** Build 25, tag `v1.9.9`, PR #7.
+  One fix: text on scanned pages with an OCR layer (JSTOR's `page2pdf` files)
+  could not be selected. Dan tested the ad-hoc build by hand before release.
+  Full diagnosis in `AI Memos/scanned-pdf-text-selection-2026-11-15.md`.
+  - **Cause, measured on macOS 27.2.1; stock PDFKit, not Glassine.** PDFKit
+    puts the full-page scan into the page's text as one U+FFFC at index 0
+    whose bounds cover the page, and every point-based hit test lands on it:
+    `characterIndex(at:)` returns 0 anywhere over the scan, and
+    `selectionForWord(at:)`, `selection(from:to:)` and the rest return just
+    the image. `PDFPage.string` and `selection(for: NSRange)` stay correct.
+    Only a scan tagged as a `/Figure` does this; an untagged image does not.
+  - **Fix** (`f544d21`). All of PDFKit's selection tracking goes through one
+    private page method, `selectionFromPoint:toPoint:type:` (type 0
+    character, 1 word, 2 line), plus `selectionFromPointToBottom:type:` and
+    `selectionFromTopToPoint:type:` for drags that cross a page.
+    `ScanSelectionPatch` (Mac target only, never Core or iOS) adds those to
+    `ReaderPage`; when PDFKit's own hit is an image with text over it, the
+    page answers from `PageTextMap` (Core: nearest line, then nearest
+    character) and returns `selection(for:)`; otherwise PDFKit's original
+    runs. PDFKit's native tracking is kept. Each method's signature is
+    checked at launch and nothing is installed on a mismatch, so a renamed
+    method means today's behaviour, not a crash. Kill switch:
+    `defaults write com.epps.Glassine DisableScanSelectionFix -bool YES`.
+  - **`characterBounds(at:)` is wrong on invisible text**: it drifts from the
+    glyphs (about 60 pt by character 1000 on a real page). `ReaderPage.textMap`
+    takes each box from a one-character `selection(for:)` instead.
+  - **Pointer** (`4103ab6`): PDFKit reported the image under every point of a
+    scan, so the pointer was a hand. `ReaderPDFView.areaOfInterest(for:)` now
+    reports text over the lines and bare page in the margins there.
+  - **Also**: cleaned Copy and `addHighlight` leave the page image out of a
+    selection that spans pages; `textLink(at:)` uses
+    `ReaderPage.textCharacterIndex(at:)`, so plain-text links work on scans.
+  - **Testing mouse gestures without the pointer.** `ScanSelectionGestureTests`
+    (XCTest, in `Tests/GlassineTests/ScanSelectionTests.swift`) drives a real
+    PDFKit drag, double-click and triple-click in a window that is never
+    activated: make `PDFPageView` accept first mouse, queue the drag and
+    release with `NSApp.postEvent`, send the press with `NSApp.sendEvent`,
+    drain with `NSApp.nextEvent` (`RunLoop.run` does not dispatch queued
+    events). They are XCTest because the same events end a Swift Testing run
+    early. Set `GLASSINE_SCAN_PDF` and `GLASSINE_SCAN_PAGE` to run them
+    against a real file.
+  - **Not done**: iPadOS not checked for the same bug; shift-click extend and
+    a real two-column scan not tested.
 - **Released 1.9.8 (Claude, 2026-10-30).** Build 24, tag `v1.9.8`. Two
   things: a link fix Dan hit, and every item the 2026-10-20 review left open
   in `reviews/2026-10-20-decisions.md`, done by five parallel Opus agents in
