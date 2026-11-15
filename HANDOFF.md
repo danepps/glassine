@@ -110,8 +110,15 @@ Dan's stated requirements, all met as of this handoff:
     we chose not to take on. A heading with no text is left out of the list.
     Tests: Core 229 (7 new), macOS 107 Swift Testing (1 new WebKit test at
     760 and 600px, both appearances). Not checked in Finder's panel.
-  - **Verified.** Core 229 tests passed (210 on main + 19 new: 14 in
-    `MarkdownPreviewTests`, 5 in `MarkdownHTMLTests`); snapshot hashes
+  - **Unique heading ids (reader and preview).** The anchorer numbered
+    repeats from a per-slug count alone, so "Notes", "Notes", "Notes 1" gave
+    the last two the same `notes-1` and a `#notes-1` link or outline entry for
+    the third landed on the second. It now also keeps the set of ids issued
+    and steps past any that is taken (`notes`, `notes-1`, `notes-1-1`). This
+    changes reader HTML only for a document with such a collision; Dan asked
+    for it in both.
+  - **Verified.** Core 230 tests passed (210 on main + 20 new: 14 in
+    `MarkdownPreviewTests`, 6 in `MarkdownHTMLTests`); snapshot hashes
     unchanged. macOS `swift test --no-parallel`: 107 Swift Testing tests
     passed (including the two WebKit `MarkdownPreviewRenderingTests`) with the
     three existing opt-in checks skipped; XCTest 4 run, 1 skipped

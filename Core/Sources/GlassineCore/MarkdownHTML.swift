@@ -413,6 +413,10 @@ public enum MarkdownHTML {
         /// How many headings have already claimed each slug, so a repeated
         /// title becomes `slug-1`, `slug-2`, … the way GitHub numbers them.
         private var taken: [String: Int] = [:]
+        /// Every id handed out so far. The count alone is not enough: "Notes",
+        /// "Notes", "Notes 1" would give the last two the same `notes-1`, and a
+        /// link to the third heading would land on the second.
+        private var issued: Set<String> = []
 
         mutating func visitHeading(_ heading: Heading) -> Markup? {
             let index = headings.count
@@ -446,9 +450,17 @@ public enum MarkdownHTML {
                 }
             }
             if slug.isEmpty { slug = "section" }
-            let used = taken[slug, default: 0]
+            // Number from this slug's own count, then keep going past any id a
+            // differently titled heading has already taken.
+            var used = taken[slug, default: 0]
+            var id = used == 0 ? slug : "\(slug)-\(used)"
+            while issued.contains(id) {
+                used += 1
+                id = "\(slug)-\(used)"
+            }
             taken[slug] = used + 1
-            return used == 0 ? slug : "\(slug)-\(used)"
+            issued.insert(id)
+            return id
         }
 
         /// The bookmark's label. Not `heading.plainText`: that reads an

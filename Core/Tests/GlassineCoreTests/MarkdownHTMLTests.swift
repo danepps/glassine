@@ -760,6 +760,23 @@ struct MarkdownHeadingAnchorTests {
         #expect(converted.headings.map(\.title) == ["The Rule"])
     }
 
+    @Test("Heading ids stay unique when a numbered title collides with a repeat's suffix")
+    func slugsAreUnique() {
+        // "Notes 1" slugs to notes-1, which the second "Notes" already holds.
+        let after = MarkdownHTML.body(fromMarkdown: "# Notes\n\n# Notes\n\n# Notes 1\n\n# Notes\n",
+                                      baseDirectory: nil)
+        #expect(after.headings.map(\.slug) == ["notes", "notes-1", "notes-1-1", "notes-2"])
+        // The other order: the numbered title comes first and the repeat steps past it.
+        let before = MarkdownHTML.body(fromMarkdown: "# Notes 1\n\n# Notes\n\n# Notes\n\n# Notes\n",
+                                       baseDirectory: nil)
+        #expect(before.headings.map(\.slug) == ["notes-1", "notes", "notes-2", "notes-3"])
+        for converted in [after, before] {
+            for slug in converted.headings.map(\.slug) {
+                #expect(converted.html.components(separatedBy: " id=\"\(slug)\"").count == 2)
+            }
+        }
+    }
+
     @Test("Each heading's slug is exactly the id written for it, in both outputs")
     func slugField() {
         let markdown = "# Notes\n\n## Notes\n\n### ¡¿?!\n\n## Über *Größe*[^n]\n\n[^n]: Note.\n"
