@@ -162,6 +162,14 @@ public struct PageTextMap: Sendable {
         return nil
     }
 
+    /// Whether `point` is on a line of text, between its words included. For
+    /// the pointer: an I-beam over the lines and an arrow in the margins, as
+    /// on a page that was never a scan. A hair of slack keeps the I-beam
+    /// steady along a line's edge.
+    public func isOverTextLine(_ point: CGPoint) -> Bool {
+        lines.contains { $0.rect.insetBy(dx: -2, dy: -1).contains(point) }
+    }
+
     /// What a press at `from` dragged to `to` selects, at the given
     /// granularity. Nil when nothing would be selected (a character drag that
     /// never crossed a character's middle) or the page has no text.

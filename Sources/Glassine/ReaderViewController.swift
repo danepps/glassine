@@ -60,6 +60,23 @@ final class ReaderPDFView: PDFView {
         return TextLinks.url(in: text, at: index)
     }
 
+    /// The pointer over a scan with OCR text. PDFKit reports the page image
+    /// under every point of such a page and so shows a hand everywhere; this
+    /// reports text over the lines and bare page between them, which gives
+    /// the I-beam and the arrow of an ordinary page. `areaOfInterest(forMouse:)`
+    /// and PDFKit's cursor code both come through here. Link and annotation
+    /// areas are left as PDFKit found them.
+    override func areaOfInterest(for cursorLocation: NSPoint) -> PDFAreaOfInterest {
+        var area = super.areaOfInterest(for: cursorLocation)
+        guard area.contains(.imageArea),
+              let page = page(for: cursorLocation, nearest: false) as? ReaderPage,
+              let overText = page.isOverScanText(at: convert(cursorLocation, to: page))
+        else { return area }
+        area.remove(.imageArea)
+        if overText { area.insert(.textArea) } else { area.remove(.textArea) }
+        return area
+    }
+
     override func mouseDown(with event: NSEvent) {
         pendingTextLink = nil
         if event.clickCount == 1,

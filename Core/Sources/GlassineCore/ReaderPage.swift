@@ -239,6 +239,13 @@ extension ReaderPage {
         return map.strictCharacterIndex(at: point) ?? NSNotFound
     }
 
+    /// Whether `point` is over a line of text, on a scan under text; nil
+    /// anywhere PDFKit's own hit is not such a scan, where its own answer
+    /// about text and images stands. For the pointer shape.
+    public func isOverScanText(at point: CGPoint) -> Bool? {
+        scanTextMap(hitAt: point)?.isOverTextLine(point)
+    }
+
     /// The text map, when PDFKit's own hit at `point` is a text-bearing scan.
     private func scanTextMap(hitAt point: CGPoint) -> PageTextMap? {
         scanTextMap(nativeIndex: characterIndex(at: point))

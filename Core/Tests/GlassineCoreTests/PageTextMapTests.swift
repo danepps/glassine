@@ -235,6 +235,15 @@ struct PageTextMapTests {
         #expect(map.strictCharacterIndex(at: CGPoint(x: 80, y: 698)) == nil)   // leading
     }
 
+    @Test("Over a text line: on a word or between words, not the margin or the leading")
+    func overTextLine() {
+        let (layout, starts) = column()
+        let map = layout.map
+        #expect(map.isOverTextLine(layout.point(starts[2] + 4)))
+        #expect(!map.isOverTextLine(CGPoint(x: 30, y: 705)))   // margin
+        #expect(!map.isOverTextLine(CGPoint(x: 80, y: 698)))   // leading
+    }
+
     @Test("Empty boxes stay in the text but not in the geometry; no text means no caret")
     func emptyBoxes() {
         var layout = Layout()

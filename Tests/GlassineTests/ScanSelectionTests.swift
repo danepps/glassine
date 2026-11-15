@@ -360,6 +360,37 @@ final class ScanSelectionGestureTests: XCTestCase {
         XCTAssertNil(harness.click(word, count: 1))
     }
 
+    /// The pointer: PDFKit reports the page image everywhere on a scan (a
+    /// hand); the view reports text over the lines (I-beam) and bare page in
+    /// the margin (arrow). A drag that starts in the margin still selects.
+    func testPointerAreaOverAScanIsTextOnLinesAndPageInMargins() throws {
+        let (document, pdf, folder) = try ScanFixture.open(makeScanPDFData(pages: [ScanFixture.lines()]))
+        defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+        let page = try XCTUnwrap(pdf.page(at: 0) as? ReaderPage)
+        try XCTSkipUnless(ScanFixture.reproduces(page),
+                          "PDFKit no longer reports the tagged scan as a U+FFFC hit; nothing to fix here")
+        let harness = Harness(document: pdf, page: page)
+        defer { harness.close() }
+
+        let line5 = ScanFixture.range(of: "Line 5 ", on: page).location
+        let onWord = ScanFixture.center(of: ScanFixture.range(of: "scholars", on: page, after: line5), on: page)
+        let inMargin = CGPoint(x: page.bounds(for: .cropBox).minX + 4, y: onWord.y)
+
+        let overText = harness.view.areaOfInterest(for: harness.point(onWord, on: page))
+        XCTAssertTrue(overText.contains(.textArea))
+        XCTAssertFalse(overText.contains(.imageArea))
+
+        let overMargin = harness.view.areaOfInterest(for: harness.point(inMargin, on: page))
+        XCTAssertTrue(overMargin.contains(.pageArea))
+        XCTAssertFalse(overMargin.contains(.textArea))
+        XCTAssertFalse(overMargin.contains(.imageArea))
+
+        let dragged = try XCTUnwrap(harness.drag(from: harness.point(inMargin, on: page),
+                                                 to: harness.point(onWord, on: page)))
+        XCTAssertFalse(dragged.contains("\u{FFFC}"))
+        XCTAssertTrue(dragged.hasPrefix("Line 5 "), dragged)
+    }
+
     func testBornDigitalPageStillSelectsNatively() throws {
         let (document, pdf, folder) = try ScanFixture.open(
             makeScanPDFData(pages: [ScanFixture.lines()], scan: false))
