@@ -54,7 +54,10 @@ final class ReaderPDFView: PDFView {
         let pagePoint = convert(point, to: page)
         // A real link annotation wins; PDFKit handles those correctly.
         if page.annotation(at: pagePoint)?.type == "Link" { return nil }
-        return TextLinks.url(in: text, at: page.characterIndex(at: pagePoint))
+        // On a scan under OCR text, PDFKit's index is the page image's.
+        let index = (page as? ReaderPage)?.textCharacterIndex(at: pagePoint)
+            ?? page.characterIndex(at: pagePoint)
+        return TextLinks.url(in: text, at: index)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -294,8 +297,11 @@ final class ReaderPDFView: PDFView {
     /// "Copy Without Cleanup" (⌥⌘C) still reaches PDFKit's own copy for the
     /// paste that wants the lines as printed.
     override func copy(_ sender: Any?) {
+        // Nothing but a page image (U+FFFC) selected: PDFKit's copy, as before
+        // there was text to clean. With text alongside, the cleanup drops it.
         guard let selection = currentSelection,
-              let raw = selection.string, !raw.isEmpty else {
+              let raw = selection.string, !raw.isEmpty,
+              !PageTextMap.isGraphicOnly(raw) else {
             super.copy(sender)
             return
         }

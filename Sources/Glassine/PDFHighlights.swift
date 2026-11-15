@@ -128,7 +128,9 @@ extension GlassineDocument {
     func addHighlight(selection: PDFSelection, color: HighlightColor) -> [SavedHighlight] {
         guard canEditHighlights, selection.string?.isEmpty == false,
               selection.pages.allSatisfy({ $0.document === pdf }) else { return [] }
-        let lines = selection.selectionsByLine()
+        // A line that is only a page image (a scan's U+FFFC, in a selection that
+        // spans pages) would paint the whole page.
+        let lines = selection.selectionsByLine().filter { !PageTextMap.isGraphicOnly($0.string ?? "") }
         let added: [SavedHighlight] = selection.pages.compactMap { page in
             let pageLines = lines.filter { $0.pages.contains(where: { $0 === page }) }
             let rects = pageLines.map { $0.bounds(for: page) }.filter {

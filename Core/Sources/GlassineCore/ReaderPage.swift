@@ -25,6 +25,14 @@ private final class ReaderBoundsBox: NSObject {
     init(_ rect: CGRect) { self.rect = rect }
 }
 
+nonisolated(unsafe) private let textMapKey =
+    UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
+
+private final class TextMapBox: NSObject {
+    let map: PageTextMap
+    init(_ map: PageTextMap) { self.map = map }
+}
+
 /// PDFPage subclass used for every page (see `GlassineDocument.classForPage()`).
 /// It draws the dark-mode find highlights: PDFKit renders pages through the
 /// page object, so this is the hook that actually runs, and the highlight
@@ -156,5 +164,104 @@ public final class ReaderPage: PDFPage {
         }
 
         context.restoreGState()
+    }
+}
+
+// MARK: - Selecting text on scanned pages
+
+/// On a scan with an invisible OCR layer, PDFKit's point lookups land on the
+/// page image (one U+FFFC whose bounds cover the page) instead of the words on
+/// it; see `PageTextMap`. These answer the same questions from the page's own
+/// text geometry, but only when PDFKit's answer would have been that image, so
+/// every other page keeps PDFKit's behaviour exactly.
+///
+/// Public API only. The Mac app routes PDFKit's private selection method here
+/// (`ScanSelectionPatch`); nothing in Core touches private API.
+extension ReaderPage {
+
+    /// What a text-preferring lookup decided.
+    public enum TextSelectionOverride {
+        /// PDFKit's hit was not a scan under text: use PDFKit's own answer.
+        case native
+        /// The page's answer, which may be that nothing is selected.
+        case text(PDFSelection?)
+    }
+
+    /// The page's text geometry, built on first use and kept. One small
+    /// selection per character, so a few milliseconds for a full page; ask on
+    /// the main thread.
+    ///
+    /// The boxes come from `selection(for:)` rather than `characterBounds(at:)`:
+    /// on invisible OCR text the latter drifts a character or more from the
+    /// glyph it names, while a one-character selection's bounds match the text
+    /// as drawn.
+    public var textMap: PageTextMap {
+        if let box = objc_getAssociatedObject(self, textMapKey) as? TextMapBox { return box.map }
+        let map = PageTextMap(text: string ?? "") { index in
+            selection(for: NSRange(location: index, length: 1))?.bounds(for: self) ?? .null
+        }
+        objc_setAssociatedObject(self, textMapKey, TextMapBox(map), .OBJC_ASSOCIATION_RETAIN)
+        return map
+    }
+
+    /// What dragging (or double- or triple-clicking, by granularity) from one
+    /// point to another selects, when either end lands on a scan under text.
+    public func textPreferringSelection(from: CGPoint, to: CGPoint,
+                                        granularity: PageTextMap.Granularity) -> TextSelectionOverride {
+        guard let map = scanTextMap(hitAt: from) ?? scanTextMap(hitAt: to) else { return .native }
+        return .text(map.range(from: from, to: to, granularity: granularity)
+            .flatMap { selection(covering: $0, in: map) })
+    }
+
+    /// From a point to the end of the page's text: this page's part of a drag
+    /// that continues onto a later page.
+    public func textPreferringSelection(fromPointToBottom point: CGPoint,
+                                        granularity: PageTextMap.Granularity) -> TextSelectionOverride {
+        guard let map = scanTextMap(hitAt: point) else { return .native }
+        return .text(map.rangeToEnd(from: point, granularity: granularity)
+            .flatMap { selection(covering: $0, in: map) })
+    }
+
+    /// From the start of the page's text to a point: this page's part of a
+    /// drag that began on an earlier page.
+    public func textPreferringSelection(fromTopToPoint point: CGPoint,
+                                        granularity: PageTextMap.Granularity) -> TextSelectionOverride {
+        guard let map = scanTextMap(hitAt: point) else { return .native }
+        return .text(map.rangeFromStart(to: point, granularity: granularity)
+            .flatMap { selection(covering: $0, in: map) })
+    }
+
+    /// `characterIndex(at:)`, except that a hit on a scan under text becomes
+    /// the character actually under the point, or `NSNotFound` between words.
+    public func textCharacterIndex(at point: CGPoint) -> Int {
+        let native = characterIndex(at: point)
+        guard let map = scanTextMap(nativeIndex: native) else { return native }
+        return map.strictCharacterIndex(at: point) ?? NSNotFound
+    }
+
+    /// The text map, when PDFKit's own hit at `point` is a text-bearing scan.
+    private func scanTextMap(hitAt point: CGPoint) -> PageTextMap? {
+        scanTextMap(nativeIndex: characterIndex(at: point))
+    }
+
+    /// The cheap test first -- is the native hit a U+FFFC at all -- so an
+    /// ordinary page never builds a map.
+    private func scanTextMap(nativeIndex index: Int) -> PageTextMap? {
+        guard index >= 0, index != NSNotFound, let text = string as NSString?,
+              index < text.length, text.character(at: index) == PageTextMap.objectReplacement
+        else { return nil }
+        let map = textMap
+        return map.isTextBearingGraphic(at: index) ? map : nil
+    }
+
+    /// A selection of `range` that leaves out the scan itself, so the image
+    /// is never highlighted along with the text on it.
+    private func selection(covering range: NSRange, in map: PageTextMap) -> PDFSelection? {
+        var result: PDFSelection?
+        for part in map.removingTextBearingGraphics(from: range) {
+            guard let piece = selection(for: part) else { continue }
+            if let result { result.add(piece) } else { result = piece }
+        }
+        return result
     }
 }
