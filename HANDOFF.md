@@ -35,6 +35,28 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Released 1.10.0 (Claude, 2026-11-16).** PDFs on the Mac now reload when
+  another program rewrites them (a LaTeX build, a script, iCloud), as Markdown
+  already did. Branch `feature/pdf-live-reload`. Dan tested the ad-hoc build
+  by hand with a generated PDF rewritten in place (same page count, shorter
+  file, highlight save, close right after a rebuild).
+  - PDFs now start the same `FileWatcher` as Markdown; a change goes through
+    `NSDocument.revert(toContentsOf:)`, which keeps NSDocument's modification
+    date straight and posts `glassineDocumentDidReplacePDF`, so the window
+    keeps the page (clamped to a shorter file) and re-runs the search.
+    `presentedItemDidChange` now pokes the watcher for both kinds.
+  - `FileWatcher.acceptCurrentState()` (Core) lets the document claim its own
+    highlight saves; an epoch drops a change already queued for main.
+  - The file on disk wins: highlights not yet saved (1.5 s debounce) are
+    dropped, never saved over the new file.
+  - Crash fixed on the way: closing a window soon after a reload made PDFKit
+    throw in `-[PDFDocument pageAtIndex:]` from a pending layout timer, once
+    the page-class delegate was gone. `windowWillClose` now sets
+    `pdfView.document = nil` after saving the position.
+  - **iOS deliberately unchanged** (Dan: not needed there). The iOS session
+    still follows PDF moves only.
+  - Known: a password-protected PDF asks for its password again on every
+    reload.
 - **Released 1.9.9 (Claude, 2026-11-15).** Build 25, tag `v1.9.9`, PR #7.
   One fix: text on scanned pages with an OCR layer (JSTOR's `page2pdf` files)
   could not be selected. Dan tested the ad-hoc build by hand before release.
