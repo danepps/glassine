@@ -123,8 +123,16 @@ public enum Prefs {
     /// from the `appearance` setter, before the change notification goes out.
     nonisolated(unsafe) public static var applyAppearanceOverride: ((AppearanceMode) -> Void)?
 
-    /// Sizes offered in View ▸ Markdown ▸ Size.
+    /// Sizes offered in View ▸ Markdown ▸ Size on the Mac, and in Settings ▸
+    /// Size on iOS. iOS goes much larger: a Letter page is fitted to the
+    /// screen's width, which on an iPhone shrinks it to roughly two-thirds, so
+    /// 11 pt reads as about 7 pt and a reader needs 20 pt or more to get back
+    /// to an ordinary phone text size.
+    #if os(iOS)
+    public static let markdownFontSizes = [10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32]
+    #else
     public static let markdownFontSizes = [10, 11, 12, 13]
+    #endif
 
     /// Render page content light-on-dark when the app is in dark mode. Default on.
     public static var invertInDarkMode: Bool {

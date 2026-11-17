@@ -69,7 +69,9 @@ struct SettingsView: View {
                             Text("\(size) pt").tag(size)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    // Eleven sizes do not fit in a segmented control on a
+                    // phone, so this one is a menu.
+                    .pickerStyle(.menu)
                     .accessibilityIdentifier("markdownSizePicker")
                     .accessibilityLabel("Markdown size")
                     .accessibilityHint("Body text size in points")
