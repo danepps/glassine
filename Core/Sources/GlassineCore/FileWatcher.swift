@@ -39,6 +39,10 @@ public final class FileWatcher: @unchecked Sendable {
     private var pending: DispatchWorkItem?
     private var reopenAttempts = 0
     private var stopped = false
+    /// Bumped by `acceptCurrentState()`. A change already on its way to the
+    /// main actor carries the epoch it was seen in, and is dropped there if the
+    /// owner has since said the file's current state is its own.
+    private var epoch = 0
 
     public init(url: URL, onChange: @escaping @MainActor @Sendable () -> Void) {
         self.url = url
@@ -83,6 +87,23 @@ public final class FileWatcher: @unchecked Sendable {
             self.directorySource = nil
             self.reopenAttempts = 0
             self.openSources()
+        }
+    }
+
+    /// Take the file as it is now as the baseline, and drop any change already
+    /// seen but not yet delivered. For an owner that has just written the file
+    /// itself (Glassine saving highlights into a PDF), so its own save is not
+    /// reported back to it as somebody else's.
+    ///
+    /// Synchronous, so that by the time it returns no earlier change can still
+    /// arrive. Safe from the main actor: the watcher's queue never waits on main.
+    public func acceptCurrentState() {
+        queue.sync {
+            guard !stopped else { return }
+            pending?.cancel()
+            pending = nil
+            signature = Self.signature(of: url)
+            epoch &+= 1
         }
     }
 
@@ -167,12 +188,22 @@ public final class FileWatcher: @unchecked Sendable {
             }
             self.signature = current
             let notify = self.onChange
+            let seenIn = self.epoch
             // The work item runs on the watcher's private queue; hop to main,
-            // where the callback is declared to run.
-            DispatchQueue.main.async { MainActor.assumeIsolated { notify() } }
+            // where the callback is declared to run -- unless, by the time it
+            // gets there, the watcher has been stopped or the owner has claimed
+            // this state of the file as its own write.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isLive(epoch: seenIn) else { return }
+                MainActor.assumeIsolated { notify() }
+            }
         }
         pending = work
         queue.asyncAfter(deadline: .now() + Self.debounce, execute: work)
+    }
+
+    private func isLive(epoch seenIn: Int) -> Bool {
+        queue.sync { !stopped && epoch == seenIn }
     }
 
     private static func signature(of url: URL) -> Signature? {

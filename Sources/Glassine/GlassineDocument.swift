@@ -194,6 +194,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         highlightSaveInProgress = true
         save(to: url, ofType: UTType.pdf.identifier, for: .saveOperation) { [self] error in
             highlightSaveInProgress = false
+            // The file on disk is now this save, not an outside edit: without
+            // this the watcher would hand it straight back as a reload.
+            if error == nil { watcher?.acceptCurrentState() }
             if error == nil && isDocumentEdited {
                 // If a queued user action changed the document during a save,
                 // a close request must wait until those changes are saved too.
@@ -229,9 +232,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     override func makeWindowControllers() {
         addWindowController(ReaderWindowController(document: self))
+        startWatching()
         guard kind == .markdown else { return }
         startRender()
-        startWatching()
         observePrefs()
     }
 
@@ -307,7 +310,36 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private func startWatching() {
         guard let url = fileURL, watcher == nil else { return }
         watcher = FileWatcher(url: url) { [weak self] in
-            self?.reloadFromDisk()
+            guard let self else { return }
+            switch self.kind {
+            case .markdown: self.reloadFromDisk()
+            case .pdf: self.reloadPDFFromDisk()
+            }
+        }
+    }
+
+    /// Another program rewrote the PDF (a LaTeX build, a script, another
+    /// editor). Re-read it through NSDocument's revert, which keeps its own
+    /// modification-date bookkeeping straight -- so the next highlight save does
+    /// not complain that the file changed behind its back -- and clears the
+    /// undo stack, whose entries point into the old pages. `revert` posts
+    /// `glassineDocumentDidReplacePDF`, and the window keeps the reader's page
+    /// (clamped if the new file is shorter) and re-runs any search.
+    ///
+    /// The file on disk wins. Highlights not yet written into it (the save
+    /// waits 1.5 s) are dropped rather than saved over the new file, which
+    /// would silently put the old pages back.
+    @MainActor
+    private func reloadPDFFromDisk() {
+        guard kind == .pdf, let url = fileURL, let type = fileType else { return }
+        // Our own save is landing; its completion re-baselines the watcher.
+        guard !highlightSaveInProgress else { return }
+        do {
+            try revert(toContentsOf: url, ofType: type)
+        } catch {
+            // Usually a file caught half-written; the writer's next event brings
+            // another try. Until then the last good PDF stays on screen.
+            NSLog("Glassine: could not reload \(url.lastPathComponent): \(error)")
         }
     }
 
@@ -346,17 +378,15 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     }
 
     // Route the coordinated-write callback into the watcher instead of letting
-    // NSDocument run its own revert machinery; the watcher's debounce and
+    // NSDocument run its own revert machinery directly; the watcher's debounce and
     // signature gate then keep the two paths from rendering twice.
     override func presentedItemDidChange() {
-        if kind == .markdown {
-            // Delivered on the presenter queue; `watcher` is owned by the main
-            // actor (set in startWatching, cleared in close), so read it there.
-            DispatchQueue.main.async { [weak self] in
-                self?.watcher?.poke()
-            }
-        } else {
-            super.presentedItemDidChange()
+        // Both kinds: a PDF rewritten through NSFileCoordinator (iCloud,
+        // Finder) takes the same debounce and signature gate as one written
+        // directly. Delivered on the presenter queue; `watcher` is owned by the
+        // main actor (set in startWatching, cleared in close), so read it there.
+        DispatchQueue.main.async { [weak self] in
+            self?.watcher?.poke()
         }
     }
 
