@@ -17,8 +17,8 @@ macOS 26 (Tahoe) with Swift 6.3 / Xcode 26.
 `danepps/pdfreader` → `danepps/glassine` (GitHub redirects the old name). Notes
 below that describe past work say "Folio" where that is what happened; anything
 naming a file, symbol, identifier or URL is current and says Glassine. The two
-local checkouts keep their old directory names: `~/ClaudeCode/pdf` on the
-MacBook and `~/ClaudeCode/pdfreader` on the Studio.
+local checkouts: `~/ClaudeCode/glassine` on the
+MacBook (renamed from `pdf` 2026-11-16) and `~/ClaudeCode/pdfreader` on the Studio.
 
 Dan's stated requirements, all met as of this handoff:
 
@@ -2216,7 +2216,7 @@ swift scripts/make-doc-icon.swift --pdf   # regenerate the matching PDF icon
 ./release.sh 1.0.1         # cut a release (see "Signing, notarization, updates")
 ```
 
-- Repo lives at `~/ClaudeCode/pdf` on the MacBook and `~/ClaudeCode/pdfreader` on the Studio; both directory names predate the rename and were left alone. Use absolute paths from whichever root you're in.
+- Repo lives at `~/ClaudeCode/glassine` on the MacBook (folder renamed from `pdf` 2026-11-16) and `~/ClaudeCode/pdfreader` on the Studio. Use absolute paths from whichever root you're in.
 - Always run the `.app`, never the bare binary: NSDocument needs Info.plist.
 - Dependencies are Sparkle and swift-markdown; the latter is pinned by commit
   (currently `27b7fc1a`) because its manifest depends on swift-cmark by branch.
@@ -2953,7 +2953,7 @@ again. Do not add an entry to `appcast.xml` and do not point `release.sh` at it.
 
 ### Signing on both Macs
 
-Status 2026-09-04: the MacBook (repo at `~/ClaudeCode/pdf`) has the Developer
+Status 2026-09-04: the MacBook (repo at `~/ClaudeCode/glassine`) has the Developer
 ID certificate and the `notary` profile and notarizes fine, but **not** the
 Sparkle EdDSA key, so `release.sh` stops in preflight there. A release attempt
 that day ran all the way through notarization before `generate_appcast` found
@@ -2989,7 +2989,7 @@ Steps 1–4 are kept for setting up any further machine.
    `./build.sh` has resolved the package. On this Mac:
    `~/ClaudeCode/pdfreader/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/glassine_eddsa_key`.
    Transfer privately, then on the MacBook:
-   `~/ClaudeCode/pdf/.build/artifacts/sparkle/Sparkle/bin/generate_keys -f ~/glassine_eddsa_key`
+   `~/ClaudeCode/glassine/.build/artifacts/sparkle/Sparkle/bin/generate_keys -f ~/glassine_eddsa_key`
    and delete the file on both machines. Do **not** run bare `generate_keys`
    there — it would mint a second key that no shipped app trusts.
 6. **End to end:** `./build.sh --notarize` should finish with `accepted` and
