@@ -52,6 +52,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // Observe sleep even before the first Markdown file is opened. The
         // offscreen WebKit view itself is still created only for a render.
         _ = MarkdownRenderer.shared
+        // glassine:///path/to/file links. A GetURL Apple Event, not
+        // application(_:open:), so Finder file opens stay with NSDocumentController.
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURL(_:withReply:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor,
+                                    withReply reply: NSAppleEventDescriptor) {
+        guard let raw = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue else { return }
+        guard let fileURL = GlassineURL.fileURL(fromString: raw) else {
+            NSSound.beep()
+            return
+        }
+        NSDocumentController.shared.openDocument(withContentsOf: fileURL, display: true) {
+            _, _, error in
+            if let error { NSApp.presentError(error) }
+        }
     }
 
     /// Set once the app is on its way out, so a window closing during quit does
@@ -205,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Prefs.markdownFontSize = sender.tag
     }
 
-    /// Larger/Smaller Text walk the same four sizes the Text Size submenu
+    /// Larger/Smaller Text walk the same sizes the Text Size submenu
     /// lists, and are disabled at either end rather than wrapping around.
     @objc func increaseMarkdownFontSize(_ sender: Any?) {
         stepMarkdownFontSize(by: 1)

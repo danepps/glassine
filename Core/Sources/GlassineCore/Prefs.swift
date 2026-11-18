@@ -124,7 +124,7 @@ public enum Prefs {
     nonisolated(unsafe) public static var applyAppearanceOverride: ((AppearanceMode) -> Void)?
 
     /// Sizes offered in View ▸ Markdown ▸ Size.
-    public static let markdownFontSizes = [10, 11, 12, 13]
+    public static let markdownFontSizes = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24]
 
     /// Render page content light-on-dark when the app is in dark mode. Default on.
     public static var invertInDarkMode: Bool {
