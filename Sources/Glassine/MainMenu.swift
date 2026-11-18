@@ -263,7 +263,7 @@ enum MainMenu {
         }
         textSize.submenu = textSizeMenu
         menu.addItem(textSize)
-        // The same four sizes the submenu lists, stepped one at a time; ⌥⌘ so
+        // The same sizes the submenu lists, stepped one at a time; ⌥⌘ so
         // they cannot be mistaken for View's ⌘= / ⌘- page zoom.
         add(menu, "Larger Text", #selector(AppDelegate.increaseMarkdownFontSize(_:)),
             key: "=", modifiers: [.command, .option], target: appDelegate)

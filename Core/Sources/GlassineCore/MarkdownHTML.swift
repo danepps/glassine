@@ -137,16 +137,20 @@ public struct MarkdownStats: Equatable, Sendable {
 
 /// One heading of a Markdown document, in document order. `index` is what the
 /// `glassine-outline://` anchor in the HTML carries, so a link annotation in the
-/// rendered PDF names exactly one heading.
+/// rendered PDF names exactly one heading. `slug` is the `id` the heading was
+/// given in the HTML, exactly as written there (never empty for a heading the
+/// renderer produced; empty for one built by hand without it).
 public struct MarkdownHeading: Sendable {
     public var level: Int
     public var title: String
     public var index: Int
+    public var slug: String
 
-    public init(level: Int, title: String, index: Int) {
+    public init(level: Int, title: String, index: Int, slug: String = "") {
         self.level = level
         self.title = title
         self.index = index
+        self.slug = slug
     }
 }
 
@@ -156,6 +160,13 @@ public struct MarkdownHeading: Sendable {
 /// deliberately *not* in it (no `@page` rule) because the print info supplies
 /// the margins and WebKit would otherwise apply both.
 public enum MarkdownHTML {
+    public enum Output: Sendable {
+        /// The reader's PDF pipeline: private outline links around headings.
+        case pdf
+        /// Interactive HTML for Finder's Quick Look: real heading anchors,
+        /// passive Markdown content, and a smaller image budget.
+        case preview
+    }
 
     /// Decode file bytes as text. UTF-8 is the rule; a UTF-16 byte-order mark is
     /// honoured, and anything else is reported the way an unreadable PDF is.
@@ -192,11 +203,20 @@ public enum MarkdownHTML {
     /// are rewritten in the tree before the headings are anchored, so that a
     /// footnote inside a heading is already a marker by the time the anchorer
     /// formats the heading's children.
+    ///
+    /// `output` is `.pdf` for the reader. `.preview` is the Quick Look page:
+    /// headings get plain `id`s without the private outline links, embedded
+    /// HTML is shown as text after the sanitiser has removed what it removes
+    /// everywhere, links keep only fragment, http(s) and mailto destinations,
+    /// and the image budget is `previewImageBudget`.
     public static func body(fromMarkdown markdown: String,
-                     baseDirectory: URL?) -> (html: String,
-                                              headings: [MarkdownHeading],
-                                              stats: MarkdownStats) {
-        body(fromMarkdown: markdown, baseDirectory: baseDirectory, imageBudget: imageBudget)
+                     baseDirectory: URL?,
+                     output: Output = .pdf) -> (html: String,
+                                                headings: [MarkdownHeading],
+                                                stats: MarkdownStats) {
+        body(fromMarkdown: markdown, baseDirectory: baseDirectory,
+             imageBudget: output == .preview ? previewImageBudget : imageBudget,
+             output: output)
     }
 
     /// How many bytes of image files one document may inline, the body and its
@@ -206,13 +226,18 @@ public enum MarkdownHTML {
     /// as an image over the per-image cap does.
     static let imageBudget = 32 * 1024 * 1024
 
+    /// The same for a Quick Look preview, which is built on every Space press
+    /// in Finder and handed over as one in-memory HTML string.
+    static let previewImageBudget = 8 * 1024 * 1024
+
     /// The same, with the budget spelled out, so a test can reach it with
     /// kilobytes rather than writing tens of megabytes of fixtures.
     static func body(fromMarkdown markdown: String,
                      baseDirectory: URL?,
-                     imageBudget: Int) -> (html: String,
-                                           headings: [MarkdownHeading],
-                                           stats: MarkdownStats) {
+                     imageBudget: Int,
+                     output: Output = .pdf) -> (html: String,
+                                                headings: [MarkdownHeading],
+                                                stats: MarkdownStats) {
         let base = baseDirectory?.standardizedFileURL
         var imageBytesLeft = imageBudget
         // cmark normalises CRLF itself, but the two passes that run *before*
@@ -225,7 +250,7 @@ public enum MarkdownHTML {
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
         document = inliningImages(document, baseDirectory: base, bytesLeft: &imageBytesLeft)
-        document = sanitised(document)
+        document = sanitised(document, output: output)
 
         // A document with no definitions cannot have a reference, so it is not
         // worth rebuilding its whole tree to find out.
@@ -243,7 +268,7 @@ public enum MarkdownHTML {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
             note = inliningImages(note, baseDirectory: base, bytesLeft: &imageBytesLeft)
-            note = sanitised(note)
+            note = sanitised(note, output: output)
             noteWords += statistics(of: note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
         }
@@ -251,7 +276,7 @@ public enum MarkdownHTML {
         var stats = statistics(of: document)
         stats.words += noteWords
 
-        var anchorer = HeadingAnchorer()
+        var anchorer = HeadingAnchorer(includeOutlineLinks: output == .pdf)
         if let rewritten = anchorer.visit(document) as? Document {
             document = rewritten
         }
@@ -269,9 +294,16 @@ public enum MarkdownHTML {
         return (inliner.visit(document) as? Document) ?? document
     }
 
-    private static func sanitised(_ document: Document) -> Document {
+    /// The sanitiser runs on every document. A preview then goes through the
+    /// content filter as well, which sees what the sanitiser left: forbidden
+    /// elements are already gone, so the filter has only passive HTML to show
+    /// as text, and destinations already have `"` as `%22`.
+    private static func sanitised(_ document: Document, output: Output) -> Document {
         var sanitiser = Sanitiser()
-        return (sanitiser.visit(document) as? Document) ?? document
+        let clean = (sanitiser.visit(document) as? Document) ?? document
+        guard output == .preview else { return clean }
+        var filter = PreviewContentFilter()
+        return (filter.visit(clean) as? Document) ?? clean
     }
 
     /// Wrap a formatted body in the full page: charset, CSP, and the stylesheet
@@ -372,23 +404,35 @@ public enum MarkdownHTML {
     /// destination in the printed PDF, so the link is live in the reader
     /// without any annotation surgery. A fragment that matches no heading is
     /// simply dead, as it was before.
+    ///
+    /// A preview keeps the `id`s and leaves out the outline links, which only
+    /// the PDF pipeline reads.
     private struct HeadingAnchorer: MarkupRewriter {
+        let includeOutlineLinks: Bool
         var headings: [MarkdownHeading] = []
         /// How many headings have already claimed each slug, so a repeated
         /// title becomes `slug-1`, `slug-2`, … the way GitHub numbers them.
         private var taken: [String: Int] = [:]
+        /// Every id handed out so far. The count alone is not enough: "Notes",
+        /// "Notes", "Notes 1" would give the last two the same `notes-1`, and a
+        /// link to the third heading would land on the second.
+        private var issued: Set<String> = []
 
         mutating func visitHeading(_ heading: Heading) -> Markup? {
             let index = headings.count
             let title = title(of: heading)
+            let slug = slug(for: title)
             headings.append(MarkdownHeading(level: heading.level,
                                             title: title,
-                                            index: index))
+                                            index: index,
+                                            slug: slug))
             let inner = heading.children.map { HTMLFormatter.format($0) }.joined()
             let level = heading.level
-            return HTMLBlock("<h\(level) id=\"\(slug(for: title))\">"
-                             + "<a class=\"fh\" href=\"glassine-outline://\(index)\">"
-                             + inner + "</a></h\(level)>\n")
+            let content = includeOutlineLinks
+                ? "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
+                : inner
+            return HTMLBlock("<h\(level) id=\"\(slug)\">"
+                             + content + "</h\(level)>\n")
         }
 
         /// GitHub's anchor slug: lower-cased, everything but letters, numbers,
@@ -406,9 +450,17 @@ public enum MarkdownHTML {
                 }
             }
             if slug.isEmpty { slug = "section" }
-            let used = taken[slug, default: 0]
+            // Number from this slug's own count, then keep going past any id a
+            // differently titled heading has already taken.
+            var used = taken[slug, default: 0]
+            var id = used == 0 ? slug : "\(slug)-\(used)"
+            while issued.contains(id) {
+                used += 1
+                id = "\(slug)-\(used)"
+            }
             taken[slug] = used + 1
-            return used == 0 ? slug : "\(slug)-\(used)"
+            issued.insert(id)
+            return id
         }
 
         /// The bookmark's label. Not `heading.plainText`: that reads an
@@ -436,6 +488,11 @@ public enum MarkdownHTML {
     /// Rewrites relative image sources that point inside the document's own
     /// folder into `data:` URIs. Remote sources are left alone and the CSP then
     /// keeps them from loading, so a render never touches the network.
+    ///
+    /// In a Finder preview the sandbox grants the extension the Markdown file
+    /// alone, so a sibling image normally fails to open and falls back to its
+    /// alt text. The checks below are defence in depth for whatever access a
+    /// host does grant, not the everyday path there.
     private struct ImageInliner: MarkupRewriter {
         let baseDirectory: URL
         /// Refuse to inline anything huge: it would bloat the HTML and stall
@@ -460,14 +517,28 @@ public enum MarkdownHTML {
                 .standardizedFileURL.resolvingSymlinksInPath()
             guard resolved.path.hasPrefix(folder.path + "/") else { return image }
 
-            guard let values = try? resolved.resourceValues(forKeys: [.fileSizeKey]),
-                  let size = values.fileSize, size <= Self.sizeCap, size <= bytesLeft,
+            let limit = min(Self.sizeCap, bytesLeft)
+            // Only a regular file, and only something WebKit can draw in an
+            // <img>: any image type, and PDF, which pandoc and LaTeX workflows
+            // use for figures and which WebKit on Apple platforms renders
+            // inline.
+            guard let values = try? resolved.resourceValues(
+                      forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize, size <= limit,
                   let type = UTType(filenameExtension: resolved.pathExtension),
+                  type.conforms(to: .image) || type.conforms(to: .pdf),
                   let mime = type.preferredMIMEType,
-                  let data = try? Data(contentsOf: resolved)
+                  let file = try? FileHandle(forReadingFrom: resolved)
             else { return image }
+            defer { try? file.close() }
+            // A bounded read, checked again: the file can have grown since the
+            // size was read, and must not be pulled in whole if it has.
+            let data: Data
+            do { data = try file.read(upToCount: limit + 1) ?? Data() } catch { return image }
+            guard data.count <= limit else { return image }
 
-            // What was read, not what the size said: the file can have grown.
+            // What was read, not what the size said.
             bytesLeft -= data.count
             var copy = image
             copy.source = "data:\(mime);base64,\(data.base64EncodedString())"
@@ -552,9 +623,89 @@ public enum MarkdownHTML {
         }
     }
 
+    /// Quick Look is an interactive browser surface, so a preview goes further
+    /// than the sanitiser: Markdown formatting is kept, but embedded HTML is
+    /// rendered as text. Runs after the `Sanitiser`, so `<script>`, `<iframe>`
+    /// and the rest are already gone rather than shown; generated footnote and
+    /// heading HTML is added after this pass. The page's CSP is a second layer
+    /// that blocks scripts, remote resources and embedded documents.
+    ///
+    /// Code-fence languages are left to the sanitiser, which already reduces
+    /// them to characters that are safe in a class attribute.
+    private struct PreviewContentFilter: MarkupRewriter {
+        mutating func visitHTMLBlock(_ block: HTMLBlock) -> Markup? {
+            let raw = block.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+            if raw.hasPrefix("<!--"), raw.hasSuffix("-->") { return nil }
+            return CodeBlock(block.rawHTML)
+        }
+
+        /// A bare formatting tag: no attributes, so nowhere for a handler or a
+        /// URL to hide. Anything else inline is shown as the text it was.
+        private static let passiveTag =
+            #"^</?(br|sup|sub|u|b|i|em|strong|s|kbd|mark|small)\s*/?>$"#
+
+        /// The closing tag of an element the sanitiser removes. Inline, the
+        /// parser hands over `<script>` and `</script>` as separate nodes; the
+        /// sanitiser drops the opening one, and the reader keeps the closing
+        /// one as an inert tag. Shown as text it would be a stray
+        /// `</script>` in the preview, so it goes with its opening tag.
+        private static let removedClosingTag =
+            #"^<\s*/\s*(script|iframe|object|embed)\s*>$"#
+
+        mutating func visitInlineHTML(_ inline: InlineHTML) -> Markup? {
+            let raw = inline.rawHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A comment is invisible in the reader and stays invisible here,
+            // whether it sits on its own line (an HTML block) or mid-sentence.
+            if raw.hasPrefix("<!--"), raw.hasSuffix("-->") { return nil }
+            if raw.range(of: Self.removedClosingTag,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+                return nil
+            }
+            if raw.range(of: Self.passiveTag,
+                         options: [.regularExpression, .caseInsensitive]) != nil {
+                return InlineHTML(raw.lowercased())
+            }
+            return Text(inline.rawHTML)
+        }
+
+        /// Fragment, web and mail links only; anything else (a relative file,
+        /// `file:`, `javascript:`) keeps its text and loses its destination.
+        /// The destination is HTML-escaped here because the formatter writes
+        /// it unescaped; the sanitiser has already turned `"` into `%22`, which
+        /// this leaves alone, so nothing is escaped twice.
+        mutating func visitLink(_ link: Link) -> Markup? {
+            guard var copy = defaultVisit(link) as? Link else { return link }
+            let scheme = link.destination.flatMap { URL(string: $0)?.scheme?.lowercased() } ?? ""
+            if let destination = link.destination,
+               destination.hasPrefix("#") || ["https", "http", "mailto"].contains(scheme) {
+                copy.destination = escape(destination)
+            } else {
+                copy.destination = nil
+            }
+            return copy
+        }
+
+        mutating func visitImage(_ image: Image) -> Markup? {
+            // Unavailable local assets and blocked remote images still have an
+            // accessible, readable label instead of an unexplained empty box.
+            let label = image.plainText.isEmpty ? "Image" : image.plainText
+            // The inliner also produces application/pdf: WebKit paints PDF
+            // figures in <img>. Compare the media type before any parameters
+            // or payload so similar-looking application types stay blocked.
+            let mediaType = image.source?.prefix { $0 != ";" && $0 != "," }.lowercased() ?? ""
+            guard let source = image.source,
+                  mediaType.hasPrefix("data:image/") || mediaType == "data:application/pdf" else {
+                return Text("[\(label)]")
+            }
+            return InlineHTML("<img src=\"\(escape(source))\" alt=\"\(escape(label))\" />")
+        }
+    }
+
     // MARK: Template
 
-    private static func escape(_ text: String) -> String {
+    /// Internal rather than private so `MarkdownPreview` escapes its outline
+    /// with the same rules.
+    static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")

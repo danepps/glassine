@@ -69,7 +69,7 @@ struct SettingsView: View {
                             Text("\(size) pt").tag(size)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .accessibilityIdentifier("markdownSizePicker")
                     .accessibilityLabel("Markdown size")
                     .accessibilityHint("Body text size in points")

@@ -17,8 +17,8 @@ macOS 26 (Tahoe) with Swift 6.3 / Xcode 26.
 `danepps/pdfreader` → `danepps/glassine` (GitHub redirects the old name). Notes
 below that describe past work say "Folio" where that is what happened; anything
 naming a file, symbol, identifier or URL is current and says Glassine. The two
-local checkouts keep their old directory names: `~/ClaudeCode/pdf` on the
-MacBook and `~/ClaudeCode/pdfreader` on the Studio.
+local checkouts: `~/ClaudeCode/glassine` on the
+MacBook (renamed from `pdf` 2026-11-16) and `~/ClaudeCode/pdfreader` on the Studio.
 
 Dan's stated requirements, all met as of this handoff:
 
@@ -57,6 +57,107 @@ Dan's stated requirements, all met as of this handoff:
     still follows PDF moves only.
   - Known: a password-protected PDF asks for its password again on every
     reload.
+- **Markdown Finder Quick Look (unreleased; Claude, 2026-11-15).** Branch
+  `feature/markdown-quicklook` off `main` at `0eb09a8` (1.9.9). Pressing Space
+  on a Markdown file in Finder shows it in Glassine's typography. Ported by
+  hand from `codex/quicklook-preview-1.9.5` (Codex, September, built on
+  1.9.5; draft PRs #3/#4), not merged or cherry-picked.
+  - **Design.** `Sources/GlassineQuickLook/PreviewProvider.swift` is a
+    `QLPreviewProvider` with a data-based reply (`QLIsDataBasedPreview`): it
+    returns self-contained HTML from `GlassineCore.MarkdownPreview`, and macOS
+    supplies the window, scrolling and WebKit process. No PDF printing
+    pipeline, no preference reads or writes, no custom styles: the built-in
+    Manuscript style at 12 pt, continuous layout, plus a preview layer
+    (passed as `platformCSS`) for a centred reading column and system
+    light/dark colours. The loader takes UTF-8 or BOM-marked UTF-16, reads at
+    most 2 MiB with a bounded read, and shows a notice for an empty or larger
+    file. The extension is its own SwiftPM executable target linked with
+    `-e _NSExtensionMain` and `-application_extension`; `build.sh` wraps it in
+    `Contents/PlugIns/GlassineQuickLook.appex`, copies the host's version and
+    build into it, and signs it (App Sandbox + user-selected read-only, its
+    only entitlements) before the app. Identifier `com.epps.Glassine.QuickLook`,
+    principal class `GlassineQuickLook.PreviewProvider`, six Markdown content
+    types, never plain text or PDF.
+  - **`MarkdownHTML.body(…, output:)`.** `.pdf` (the default, every existing
+    caller) is unchanged; `.preview` leaves out the private
+    `glassine-outline://` links (headings keep their GitHub `id`s), uses an
+    8 MiB image budget instead of 32 MiB (`previewImageBudget`, same single
+    `bytesLeft` shared by body and notes), and after main's `Sanitiser` runs
+    `PreviewContentFilter` on the body and each note: other raw HTML is shown
+    as text, bare formatting tags (`br sup sub u b i em strong s kbd mark
+    small`) pass, comments are hidden, links keep only `#…`, http(s) and
+    `mailto:` destinations, and images not inlined as `data:image/*` or
+    `data:application/pdf` become `[alt]`. The CSP is unchanged. Sibling
+    image files normally show their alt text in Finder: the sandbox grants
+    the Markdown file alone.
+  - **What changed in the port.** Main had hardened `MarkdownHTML.swift`
+    since 1.9.5 (Sanitiser, document image budget, symlinks resolved on both
+    sides, CRLF), so the preview was fitted into that: the old optional
+    `remainingBytes` and preview-only symlink branch are gone. The inliner
+    now, in both modes, requires a regular file of an image or PDF type and
+    reads with `read(upToCount: limit + 1)`, limit = min(8 MB cap, budget
+    left), still charging bytes read. Only reader-visible change: a non-image
+    file referenced as an image (e.g. `![](notes.txt)`) is no longer inlined
+    as `data:text/plain`; a corpus diff of `body()` against main was otherwise
+    byte-identical. In a preview `<script>`, `<iframe>`, `<object>`, `<embed>`,
+    `<meta>`, `<link>`, `<base>` are removed by the Sanitiser rather than shown
+    as text, and the filter also drops the orphaned inline closing tag
+    (`</script>` etc.) the Sanitiser leaves behind. No double escaping: the
+    Sanitiser makes `"` into `%22` and the filter HTML-escapes the destination
+    once (tested). The filter's own code-language rule was dropped; the
+    Sanitiser's (which keeps `#` and `.`) applies.
+  - **`--preview` builds** (`./build.sh --preview`) produce
+    `build/Glassine Preview.app`: identity `com.epps.Glassine.Preview`, its own
+    preferences, `GlassinePreviewBuild` set so `main.swift` starts no Sparkle
+    updater, no feed URL, handler rank None; the extension is
+    `com.epps.Glassine.Preview.QuickLook`, shown as **Glassine Preview
+    Markdown**. `release.sh` needs no change: it zips whatever `build.sh
+    --notarize` assembled, PlugIns included, after the version bump.
+  - **Headings column.** A document with two or more
+    headings gets `<nav class="preview-outline">` (flat list of `#slug`
+    links, `outline-depth-N` relative to the shallowest level, plain title
+    escaped, full title in `title`) before `<main class="preview-body">`;
+    fewer headings and the empty/too-large notices emit the old page
+    unchanged. Built in `MarkdownPreview.outline` from `converted.headings`;
+    `MarkdownHeading` gained `slug` (default `""`), set by the anchorer to
+    the exact `id` it writes, PDF HTML byte-identical. CSS only, in
+    `previewCSS`: at ≥700px a fixed 200px column (system font 12px, muted,
+    hairline `--rule` border, own scroll, ellipsis) and `body:has(>
+    .preview-outline)` hands the centred column to `<main>`; below 700px the
+    nav is `display: none` and the body is laid out as before. Quick Look's
+    760px panel leaves a ~500px text column. No script, so no current-section
+    highlight or collapse (the CSP forbids script and the reply is data-based);
+    Marked's extension gets those with a view-based preview, its own native
+    outline beside a script-enabled web view and a network entitlement, which
+    we chose not to take on for now; the case for and against going native,
+    with a spike plan, is in `reviews/2026-11-15-quicklook-native-preview.md`
+    (open decision). A heading with no text is left out of the list.
+    Tests: Core 229 (7 new), macOS 107 Swift Testing (1 new WebKit test at
+    760 and 600px, both appearances). Not checked in Finder's panel.
+  - **Unique heading ids (reader and preview).** The anchorer numbered
+    repeats from a per-slug count alone, so "Notes", "Notes", "Notes 1" gave
+    the last two the same `notes-1` and a `#notes-1` link or outline entry for
+    the third landed on the second. It now also keeps the set of ids issued
+    and steps past any that is taken (`notes`, `notes-1`, `notes-1-1`). This
+    changes reader HTML only for a document with such a collision; Dan asked
+    for it in both.
+  - **Verified.** Core 230 tests passed (210 on main + 20 new: 14 in
+    `MarkdownPreviewTests`, 6 in `MarkdownHTMLTests`); snapshot hashes
+    unchanged. macOS `swift test --no-parallel`: 107 Swift Testing tests
+    passed (including the two WebKit `MarkdownPreviewRenderingTests`) with the
+    three existing opt-in checks skipped; XCTest 4 run, 1 skipped
+    (`GLASSINE_SCAN_PDF`). `./build.sh --preview --adhoc`: appex present,
+    version 1.9.9 / build 25 matching the host, identifier
+    `com.epps.Glassine.Preview.QuickLook`, `codesign --verify --deep --strict`
+    passes, entitlements are exactly sandbox + user-selected read-only. Not
+    launched or registered.
+  - **Not verified on this build.** Finder end-to-end (Space on a `.md`; the
+    September branch did this at 1.9.5 only); that clicking a heading or
+    footnote link inside Finder's Quick Look panel navigates (the WebKit test
+    covers a bare web view); notarization of an appex-bearing build at this
+    version (Apple accepted one at 1.8.0 in September). `qlmanage -p` crashed
+    in ExtensionFoundation on macOS 27 then, so Finder itself is the test.
+    Math/Mermaid, custom preview styles and thumbnails are not included.
 - **Released 1.9.9 (Claude, 2026-11-15).** Build 25, tag `v1.9.9`, PR #7.
   One fix: text on scanned pages with an OCR layer (JSTOR's `page2pdf` files)
   could not be selected. Dan tested the ad-hoc build by hand before release.
@@ -2129,6 +2230,7 @@ Dan's stated requirements, all met as of this handoff:
 ./build.sh --run           # release build + launch (run from repo root)
 ./build.sh --debug         # debug config
 ./build.sh --adhoc         # skip Developer ID signing (offline, no keychain)
+./build.sh --preview       # build/Glassine Preview.app: own identity, no updates
 swift test --package-path Core   # the GlassineCore unit tests (Swift Testing)
 ./scripts/make-icon.sh     # regenerate app icon assets
 swift scripts/make-doc-icon.swift   # regenerate the Markdown document icon
@@ -2136,7 +2238,7 @@ swift scripts/make-doc-icon.swift --pdf   # regenerate the matching PDF icon
 ./release.sh 1.0.1         # cut a release (see "Signing, notarization, updates")
 ```
 
-- Repo lives at `~/ClaudeCode/pdf` on the MacBook and `~/ClaudeCode/pdfreader` on the Studio; both directory names predate the rename and were left alone. Use absolute paths from whichever root you're in.
+- Repo lives at `~/ClaudeCode/glassine` on the MacBook (folder renamed from `pdf` 2026-11-16) and `~/ClaudeCode/pdfreader` on the Studio. Use absolute paths from whichever root you're in.
 - Always run the `.app`, never the bare binary: NSDocument needs Info.plist.
 - Dependencies are Sparkle and swift-markdown; the latter is pinned by commit
   (currently `27b7fc1a`) because its manifest depends on swift-cmark by branch.
@@ -2196,7 +2298,8 @@ arithmetic, the recents model, and both paths through `applyOutline`.
 
 | File | Role |
 |---|---|
-| `MarkdownHTML.swift` | Markdown → HTML, and the types around it: `MarkdownLayout`, `MarkdownStyle` (the six built-ins plus the `.css` files in `Prefs.stylesDirectory`), `MarkdownStyling`, `MarkdownStats`, `MarkdownHeading`. Decode (UTF-8, UTF-16 by BOM), front-matter strip, `Markdown.Document` + `HTMLFormatter`, the `ImageInliner` (relative local images → `data:` URIs) and `HeadingAnchorer` (invisible `glassine-outline://` anchor per heading, returning the heading list beside the HTML) rewriters, the word-count walker, and the two-layer stylesheet. Pure Swift, safe off-main. |
+| `MarkdownHTML.swift` | Markdown → HTML, and the types around it: `MarkdownLayout`, `MarkdownStyle` (the six built-ins plus the `.css` files in `Prefs.stylesDirectory`), `MarkdownStyling`, `MarkdownStats`, `MarkdownHeading`. Decode (UTF-8, UTF-16 by BOM), front-matter strip, `Markdown.Document` + `HTMLFormatter`, the `ImageInliner` (relative local images → `data:` URIs) and `HeadingAnchorer` (invisible `glassine-outline://` anchor per heading, returning the heading list beside the HTML) rewriters, the word-count walker, and the two-layer stylesheet. `body(…, output: .preview)` is the Quick Look variant: no outline links, an 8 MiB image budget, and `PreviewContentFilter` after the `Sanitiser`. Pure Swift, safe off-main. |
+| `MarkdownPreview.swift` | The Finder Quick Look page: bounded read of the `.md`, `MarkdownHTML.body(…, output: .preview)`, Manuscript at 12 pt continuous plus a light/dark reading-column layer, and fixed notices for empty and over-2 MiB files. Used only by the `GlassineQuickLook` extension. |
 | `Prefs.swift` | UserDefaults, against an injectable `Prefs.defaults`: invert toggle, dark-paper level, appearance override, per-file last position with its 500-entry LRU, Markdown style/layout/size, window opacity and blur, and the 30-entry `recentDocuments` list with its bookmarks. `stylesDirectory` and `applyAppearanceOverride` are the two hooks each app sets at launch. |
 | `DarkPaper.swift` | The three paper levels and their `lift`/`top`, written as screen sRGB — the one place to re-tune them — with the conversion each platform owes them. |
 | `FileWatcher.swift` | vnode `DispatchSource` on the file *and* its parent directory, 250 ms debounce, `(inode, mtime, size)` gate, reopens the descriptor when the file is replaced or recreated. |
@@ -2212,6 +2315,13 @@ arithmetic, the recents model, and both paths through `applyOutline`.
 | `MarkdownDocumentModel.swift` | `MarkdownContent` (html, headings, stats, hash) and the two functions that make it — one synchronous for a concurrent `read`, one off-main for a reload — plus `applyOutline`, which builds the bookmark tree either by scanning and removing the `glassine-outline://` link annotations (macOS) or from a pre-located heading map (iOS). Also `RenderedMarkdown` and the `MarkdownTypesetter` protocol. |
 | `RenderQueue.swift` | `MarkdownRenderError`, the `HTMLPrinter` primitive, and the platform-independent render pipeline: one job at a time, supersede by key, a 10 s watchdog with one fresh-printer retry, suspension and restart across sleep, one retry of an empty document after 0.2 s, and a 30 s idle teardown. Attempt identities reject abandoned callbacks. |
 | `RecentsModel.swift` | `RecentRow`, the rows built from `Prefs.recentDocuments` through `Prefs.resolvedURL`, the filename filter, and the folder/page and relative-date strings. |
+
+`Sources/GlassineQuickLook/` is the Quick Look extension, a separate SwiftPM
+executable (`PreviewProvider.swift`; `main.swift` is empty, the linker enters at
+`_NSExtensionMain`). `build.sh` embeds it as `Contents/PlugIns/GlassineQuickLook.appex`
+with `Support/QuickLook/Info.plist` and `GlassineQuickLook.entitlements`.
+macOS tests for it: `Tests/GlassineTests/MarkdownPreviewRenderingTests.swift`
+(real WebKit, both appearances); Core: `MarkdownPreviewTests.swift`.
 
 Support/: `Info.plist`, `Glassine.icon` (Icon Composer package, light+dark),
 `Assets.car` (compiled from it), `Glassine.icns` (fallback). scripts/:
@@ -2865,7 +2975,7 @@ again. Do not add an entry to `appcast.xml` and do not point `release.sh` at it.
 
 ### Signing on both Macs
 
-Status 2026-09-04: the MacBook (repo at `~/ClaudeCode/pdf`) has the Developer
+Status 2026-09-04: the MacBook (repo at `~/ClaudeCode/glassine`) has the Developer
 ID certificate and the `notary` profile and notarizes fine, but **not** the
 Sparkle EdDSA key, so `release.sh` stops in preflight there. A release attempt
 that day ran all the way through notarization before `generate_appcast` found
@@ -2901,7 +3011,7 @@ Steps 1–4 are kept for setting up any further machine.
    `./build.sh` has resolved the package. On this Mac:
    `~/ClaudeCode/pdfreader/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/glassine_eddsa_key`.
    Transfer privately, then on the MacBook:
-   `~/ClaudeCode/pdf/.build/artifacts/sparkle/Sparkle/bin/generate_keys -f ~/glassine_eddsa_key`
+   `~/ClaudeCode/glassine/.build/artifacts/sparkle/Sparkle/bin/generate_keys -f ~/glassine_eddsa_key`
    and delete the file on both machines. Do **not** run bare `generate_keys`
    there — it would mint a second key that no shipped app trusts.
 6. **End to end:** `./build.sh --notarize` should finish with `accepted` and
