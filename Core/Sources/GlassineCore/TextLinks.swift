@@ -17,24 +17,39 @@ public enum TextLinks {
     static let schemes: Set<String> = ["http", "https", "mailto", "ftp"]
 
     /// The address covering the character at `index` (a UTF-16 offset into
-    /// `text`, as `PDFPage.characterIndex(at:)` reports it), or nil.
-    public static func url(in text: String, at index: Int) -> URL? {
+    /// `text`, the page's `string`), or nil. On the Mac the index comes from
+    /// the page's text map, not `PDFPage.characterIndex(at:)`, whose offset
+    /// slips by one for every line above the point.
+    ///
+    /// The text alone cannot tell a wrapped line from a paragraph that ends
+    /// in `/`: "…/the-court/" at the end of one list item and "Marquette" at
+    /// the start of the next look exactly like an address wrapped after its
+    /// slash. `joins`, when given, is asked about each pair of runs before
+    /// they are joined -- the run that ends a line and the run that begins
+    /// the next, as ranges into `text` -- and a `false` stops the join there.
+    /// The caller answers from the page's geometry. Without it every
+    /// candidate pair is joined.
+    public static func url(in text: String, at index: Int,
+                           joins: ((_ previous: NSRange, _ next: NSRange) -> Bool)? = nil) -> URL? {
         let s = text as NSString
         guard index >= 0, index < s.length, !isSpace(s.character(at: index)) else { return nil }
         var start = index, end = index + 1
         while start > 0, !isSpace(s.character(at: start - 1)) { start -= 1 }
         while end < s.length, !isSpace(s.character(at: end)) { end += 1 }
         let clicked = NSRange(location: start, length: end - start)
+        let allowed = joins ?? { _, _ in true }
 
         var runs = [clicked]
         while runs.count < maxLines, let last = runs.last,
               wrapEnders.contains(s.character(at: NSMaxRange(last) - 1)),
-              let next = run(after: NSMaxRange(last), in: s) {
+              let next = run(after: NSMaxRange(last), in: s),
+              allowed(last, next) {
             runs.append(next)
         }
         while runs.count < maxLines, let first = runs.first,
               let previous = run(before: first.location, in: s),
-              wrapEnders.contains(s.character(at: NSMaxRange(previous) - 1)) {
+              wrapEnders.contains(s.character(at: NSMaxRange(previous) - 1)),
+              allowed(previous, first) {
             runs.insert(previous, at: 0)
         }
 

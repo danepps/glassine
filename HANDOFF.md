@@ -35,6 +35,54 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Links that wrap over several lines open (unreleased; Claude, 2026-11-21).**
+  Branch `fix/multiline-links` off `main` at `9213b64` (1.11.0). Dan hit it on
+  a Markdown list of sources: bare addresses that wrapped over two or three
+  lines opened the wrong page or nothing. Three separate causes, all fixed.
+  - **Bare addresses in Markdown are now real links.** swift-markdown attaches
+    cmark's table, strikethrough and tasklist extensions but not autolink, so
+    a bare `https://…` was plain text with no link annotation. Core's new
+    `MarkdownAutolinker` (`MarkdownAutolinks.swift`) runs on the body and on
+    every footnote, after image inlining and before the sanitiser, with GFM's
+    end-of-address rules. It undoes smart punctuation inside the address (the
+    parse had turned `--` into an en dash, so a Yahoo address opened a wrong
+    page). WebKit then writes a link annotation on every line the address
+    wraps onto. iOS, Quick Look and the `glassine-pdf` skill get this through
+    Core. Headings are skipped: a link inside a heading nests inside the
+    `glassine-outline:` anchor, which already breaks explicit `[x](url)`
+    links in headings (the outline anchor is cut short and the bookmark can
+    fall back to the previous heading's position). **Not fixed; a candidate
+    for next work.** Word counts are taken on the tree before linking, so
+    they are unchanged.
+  - **`PDFPage.characterIndex(at:)` is wrong on macOS 27.** It falls about
+    one character behind for every line above the point (0 on the first
+    line, −19 on the eighteenth, measured on a WebKit page and by the agent
+    on a CoreText page), as if it left out the line breaks in `page.string`.
+    A click near the start of a line partway down a page therefore landed on
+    the line above and found no address. `ReaderPDFView` now takes the index
+    from the page's text map (`PDFPage.linkCharacterIndex(at:)` in
+    `Sources/Glassine/TextLinkGeometry.swift`, using
+    `PageTextMap.strictCharacterIndex`), which is built from one-character
+    selections (about 1.5 ms for an 880-character page, cached on
+    `ReaderPage`). Anything else that trusts `characterIndex(at:)` on a
+    multi-line page deserves a look.
+  - **A plain-text address ending in `/` no longer swallows the next
+    paragraph's first word.** `TextLinks.url(in:at:joins:)` takes an optional
+    predicate asked about each pair of runs across a line break. The Mac
+    supplies `PDFPage.lineWrapped(between:and:)`: if the whole next run would
+    have fitted after the previous one (right margin = upper quartile of the
+    right edges of the lines in the same column), the break was a paragraph
+    end and the join is refused. It only refuses when sure: a rotated page, a
+    scan, or fewer than three lines to measure always joins, as before.
+  - **Tests.** Core 252 (15 new: `MarkdownAutolinksTests`, three in
+    `TextLinksTests`). Mac 114 plus `TextLinkClickTests`, an XCTest that sends
+    real PDFKit clicks to every line of a wrapped address through the
+    `ScanSelectionGestureTests` harness; `ReaderPDFView.openURL` is the seam
+    that keeps a test from launching a browser. iOS simulator build clean.
+  - **Not done**: not tried on a real two-column PDF, a real Word footnote
+    PDF or a real scan; iOS still has no plain-text address handling at all
+    (it has never used `TextLinks`); an address WebKit breaks mid-word at a
+    large text size cannot be joined as plain text (moot for Markdown now).
 - **Released 1.10.0 (Claude, 2026-11-16).** PDFs on the Mac now reload when
   another program rewrites them (a LaTeX build, a script, iCloud), as Markdown
   already did. Branch `feature/pdf-live-reload`. Dan tested the ad-hoc build

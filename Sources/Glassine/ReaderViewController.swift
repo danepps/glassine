@@ -48,16 +48,26 @@ final class ReaderPDFView: PDFView {
     /// and so opens only the first half of an address the PDF wrapped.
     private var pendingTextLink: URL?
 
+    /// How a plain-text address is opened. A seam for tests, which must
+    /// never launch a browser.
+    var openURL: (URL) -> Void = { _ = NSWorkspace.shared.open($0) }
+
     private func textLink(at event: NSEvent) -> URL? {
-        let point = convert(event.locationInWindow, from: nil)
-        guard let page = page(for: point, nearest: false), let text = page.string else { return nil }
+        textLink(atViewPoint: convert(event.locationInWindow, from: nil))
+    }
+
+    /// The plain-text address at a point in this view's coordinates, joined
+    /// across the lines it wrapped over (see `PDFPage.textLinkURL(at:)`).
+    func textLink(atViewPoint point: NSPoint) -> URL? {
+        guard let page = page(for: point, nearest: false), page.string != nil else { return nil }
         let pagePoint = convert(point, to: page)
         // A real link annotation wins; PDFKit handles those correctly.
         if page.annotation(at: pagePoint)?.type == "Link" { return nil }
-        // On a scan under OCR text, PDFKit's index is the page image's.
-        let index = (page as? ReaderPage)?.textCharacterIndex(at: pagePoint)
-            ?? page.characterIndex(at: pagePoint)
-        return TextLinks.url(in: text, at: index)
+        // Not PDFKit's `characterIndex(at:)`, whose offset slips by a line
+        // break per line; and on a scan under OCR text it names the page
+        // image. See `linkCharacterIndex(at:)`.
+        guard let index = page.linkCharacterIndex(at: pagePoint) else { return nil }
+        return page.textLinkURL(at: index)
     }
 
     /// The pointer over a scan with OCR text. PDFKit reports the page image
@@ -97,7 +107,7 @@ final class ReaderPDFView: PDFView {
     override func mouseUp(with event: NSEvent) {
         if let url = pendingTextLink {
             pendingTextLink = nil
-            if textLink(at: event) == url { NSWorkspace.shared.open(url) }
+            if textLink(at: event) == url { openURL(url) }
             return
         }
         super.mouseUp(with: event)
