@@ -204,6 +204,9 @@ public enum MarkdownHTML {
     /// footnote inside a heading is already a marker by the time the anchorer
     /// formats the heading's children.
     ///
+    /// Bare web addresses become links (`MarkdownAutolinker`) in the body and
+    /// in every note, after images are inlined and before the sanitiser.
+    ///
     /// `output` is `.pdf` for the reader. `.preview` is the Quick Look page:
     /// headings get plain `id`s without the private outline links, embedded
     /// HTML is shown as text after the sanitiser has removed what it removes
@@ -250,11 +253,14 @@ public enum MarkdownHTML {
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
         document = inliningImages(document, baseDirectory: base, bytesLeft: &imageBytesLeft)
+        let unlinked = autolinked(&document)
         document = sanitised(document, output: output)
 
         // A document with no definitions cannot have a reference, so it is not
         // worth rebuilding its whole tree to find out.
         var referencer = MarkdownFootnotes.Referencer(slugs: notes.slugs)
+        // A copy taken before it has seen anything, for the word count below.
+        let countingReferencer = referencer
         if !notes.isEmpty, let rewritten = referencer.visit(document) as? Document {
             document = rewritten
         }
@@ -268,12 +274,25 @@ public enum MarkdownHTML {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
             note = inliningImages(note, baseDirectory: base, bytesLeft: &imageBytesLeft)
+            let unlinkedNote = autolinked(&note)
             note = sanitised(note, output: output)
-            noteWords += statistics(of: note).words
+            noteWords += statistics(of: unlinkedNote.map { sanitised($0, output: output) } ?? note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
         }
 
-        var stats = statistics(of: document)
+        // Words are counted on the tree as it would be with no autolinks, so
+        // the count is exactly what it was before addresses became links: a
+        // link's text is a node of its own, and its smart punctuation has been
+        // undone, and either could move a word boundary.
+        var counted = document
+        if var plain = unlinked.map({ sanitised($0, output: output) }) {
+            var referencer = countingReferencer
+            if !notes.isEmpty, let rewritten = referencer.visit(plain) as? Document {
+                plain = rewritten
+            }
+            counted = plain
+        }
+        var stats = statistics(of: counted)
         stats.words += noteWords
 
         var anchorer = HeadingAnchorer(includeOutlineLinks: output == .pdf)
@@ -292,6 +311,21 @@ public enum MarkdownHTML {
         var inliner = ImageInliner(baseDirectory: baseDirectory, bytesLeft: bytesLeft)
         defer { bytesLeft = inliner.bytesLeft }
         return (inliner.visit(document) as? Document) ?? document
+    }
+
+    /// Links the bare web addresses in `document` (see `MarkdownAutolinker`).
+    /// Runs before the sanitiser, so a new link's destination has its `"`
+    /// turned into `%22` like any other, and a preview's content filter sees
+    /// it as an ordinary http(s) link. Returns the tree as it was when
+    /// anything was linked, for the word count, and nil when nothing was.
+    private static func autolinked(_ document: inout Document) -> Document? {
+        var autolinker = MarkdownAutolinker()
+        guard let linked = autolinker.visit(document) as? Document, autolinker.linkedAny else {
+            return nil
+        }
+        let original = document
+        document = linked
+        return original
     }
 
     /// The sanitiser runs on every document. A preview then goes through the

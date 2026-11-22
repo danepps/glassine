@@ -231,7 +231,7 @@ final class ScanSelectionGestureTests: XCTestCase {
 
     /// A borderless window that says it is key, so PDFKit tracks the mouse
     /// without the window ever being activated.
-    private final class KeyWindow: NSWindow {
+    final class KeyWindow: NSWindow {
         override var isKeyWindow: Bool { true }
         override var isMainWindow: Bool { true }
         override var canBecomeKey: Bool { true }
@@ -239,8 +239,9 @@ final class ScanSelectionGestureTests: XCTestCase {
 
     /// The drag and release are queued, then the press is dispatched, so
     /// PDFKit's own tracking consumes them as it would a person's. Nothing is
-    /// activated and the real pointer never moves.
-    private final class Harness {
+    /// activated and the real pointer never moves. `TextLinkClickTests` uses
+    /// it too.
+    final class Harness {
         let window: KeyWindow
         let view: ReaderPDFView
         private var number = 0

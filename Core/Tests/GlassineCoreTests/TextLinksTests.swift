@@ -48,6 +48,46 @@ struct TextLinksTests {
         #expect(url(text, clicking: "well") == nil)
     }
 
+    /// An address that ends in `/` at the end of a list item, and the next
+    /// item. The text alone reads as one wrapped address.
+    private let turley = "Turley, Nov. 9, 2026: https://jonathanturley.org/2026/11/09/the-reverse-ginsburg-\nscenario-democrats-may-only-need-to-wait-rather-than-pack-the-court/\nMarquette Law School Poll"
+    private let turleyFull = "https://jonathanturley.org/2026/11/09/the-reverse-ginsburg-scenario-democrats-may-only-need-to-wait-rather-than-pack-the-court/"
+
+    private func url(_ text: String, clicking needle: String,
+                     joins: @escaping (NSRange, NSRange) -> Bool) -> String? {
+        let index = (text as NSString).range(of: needle).location
+        return TextLinks.url(in: text, at: index, joins: joins)?.absoluteString
+    }
+
+    @Test func refusedJoinStopsAtTheParagraphBreak() {
+        let s = turley as NSString
+        // Refuse only the pair that crosses into "Marquette".
+        let refuse: (NSRange, NSRange) -> Bool = { _, next in s.substring(with: next) != "Marquette" }
+        #expect(url(turley, clicking: "jonathanturley", joins: refuse) == turleyFull)
+        #expect(url(turley, clicking: "scenario", joins: refuse) == turleyFull)
+        // Clicking the next paragraph's first word does not reach back into it.
+        let refuseBack: (NSRange, NSRange) -> Bool = { previous, _ in
+            !s.substring(with: previous).hasSuffix("the-court/")
+        }
+        #expect(url(turley, clicking: "Marquette", joins: refuseBack) == nil)
+    }
+
+    @Test func allowedJoinsMatchTheOldBehaviour() {
+        let joined = turleyFull + "Marquette"
+        #expect(url(turley, clicking: "scenario", joins: { _, _ in true }) == joined)
+        #expect(url(turley, clicking: "scenario") == joined)
+    }
+
+    @Test func predicateIsAskedAboutTheRunsOnEachSideOfABreak() {
+        var pairs: [String] = []
+        let s = politico as NSString
+        _ = url(politico, clicking: "legacy", joins: { previous, next in
+            pairs.append(s.substring(with: previous) + " | " + s.substring(with: next))
+            return true
+        })
+        #expect(pairs.contains("https://www.politico.com/news/magazine/2022/06/10/ruth-bader-ginsburg- | retire-legacy-00038638."))
+    }
+
     @Test func clickOffTheAddressFindsNothing() {
         #expect(url(politico, clicking: "June") == nil)
         #expect(TextLinks.url(in: politico, at: -1) == nil)
