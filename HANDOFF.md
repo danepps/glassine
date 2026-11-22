@@ -35,8 +35,9 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Links that wrap over several lines open (unreleased; Claude, 2026-11-21).**
-  Branch `fix/multiline-links` off `main` at `9213b64` (1.11.0). Dan hit it on
+- **Released 1.11.1 (Claude, 2026-11-21): links that wrap over several lines
+  open.** Build 28, tag `v1.11.1`. Branch `fix/multiline-links` off `main` at
+  `9213b64` (1.11.0), merged as `d4c020c`. Dan hit it on
   a Markdown list of sources: bare addresses that wrapped over two or three
   lines opened the wrong page or nothing. Three separate causes, all fixed.
   - **Bare addresses in Markdown are now real links.** swift-markdown attaches
