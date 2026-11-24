@@ -46,8 +46,9 @@ enum MarkdownFootnotes {
     /// A definition starts on a line of the form `[^label]: text` -- at most
     /// three spaces of indent, since four would be an indented code block --
     /// and runs on through lines indented by four spaces or a tab, through
-    /// lazy continuation lines (an unindented line that does not start another
-    /// definition), and across a blank line when the line after it is indented,
+    /// lazy paragraph continuation lines (an unindented line that does not
+    /// start another definition or an interrupting block), and across a blank
+    /// line when the line after it is indented,
     /// which starts a second paragraph in the same note. A blank line followed
     /// by unindented text ends the note.
     ///
@@ -107,9 +108,9 @@ enum MarkdownFootnotes {
                     index += 1
                     continue
                 }
-                // An unindented line starts the next definition, or lazily
-                // continues this one.
-                if definitionStart(next) != nil { break gathering }
+                // Only paragraph text can continue lazily. An interrupting
+                // block belongs to the body unless it was explicitly indented.
+                if definitionStart(next) != nil || interruptsParagraph(next) { break gathering }
                 body.append(next)
                 index += 1
             }
@@ -131,6 +132,21 @@ enum MarkdownFootnotes {
 
     private static func isBlank(_ line: String) -> Bool {
         line.allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
+    private static func interruptsParagraph(_ line: String) -> Bool {
+        let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+        guard let first = trimmed.first, "#`~>+-*_<0123456789".contains(first) else { return false }
+
+        // Let the same parser that renders the document decide which blocks
+        // can interrupt a paragraph. This preserves subtleties such as an
+        // ordered list starting at 2, an empty list item, and inline HTML,
+        // none of which can interrupt one despite resembling block openers.
+        let probe = Document(parsing: "paragraph\n" + line, options: [.disableSourcePosOpts])
+        if probe.childCount > 1 { return true }
+        // A dash-only rule becomes a setext underline in the probe. Outside
+        // the definition it must instead survive as a body thematic break.
+        return first == "-" && Document(parsing: line).child(at: 0) is ThematicBreak
     }
 
     /// `[^label]: rest`, with up to three spaces of indent. The label may not

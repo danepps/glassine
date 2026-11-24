@@ -99,7 +99,7 @@ public enum MarkdownDocumentModel {
 
     /// Give a rendered Markdown PDF the outline no print path ever writes.
     ///
-    /// `MarkdownHTML` wraps every heading in a `glassine-outline://<n>` anchor.
+    /// `MarkdownHTML` gives every heading a `glassine-outline://<n>` anchor.
     /// On the Mac, WebKit's print path *does* emit a link annotation for every
     /// `<a href>`, so each annotation names one heading and says exactly where
     /// it landed; those annotations are scanned, used, and then removed --
@@ -122,8 +122,8 @@ public enum MarkdownDocumentModel {
                 for annotation in page.annotations {
                     guard let url = annotation.url, url.scheme == "glassine-outline",
                           let index = url.host.flatMap(Int.init) else { continue }
-                    // A heading that wraps onto two lines gets one annotation per
-                    // line; the topmost is where the bookmark should point.
+                    // Keep the topmost annotation if a marker spans multiple
+                    // lines, including PDFs made with the older heading wrapper.
                     let top = annotation.bounds.maxY
                     let better = found[index].map {
                         pageIndex < $0.page || (pageIndex == $0.page && top > $0.top)

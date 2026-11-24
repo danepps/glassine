@@ -76,6 +76,38 @@ struct MarkdownAutolinksTests {
         #expect(hrefs(html("ftp://example.com and mailto:a@b.c")).isEmpty)
     }
 
+    #if os(macOS)
+    @Test("Long closing-bracket suffixes finish within a bounded subprocess")
+    func longBracketSuffixes() async {
+        await #expect(processExitsWith: .success) {
+            // The old quadratic scan takes far longer than this on 100,000
+            // brackets. Kill only the child if that behaviour returns, so a regression
+            // fails promptly instead of hanging the test runner.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { exit(124) }
+            for count in [25_000, 100_000] {
+                for pattern in [")", "]", ")]"] {
+                    let address = "https://example.com/"
+                    let suffix = String(repeating: pattern, count: count / pattern.count)
+                    guard MarkdownAutolinker.segments(in: address + suffix) ==
+                            [.link(address), .text(suffix)] else { exit(1) }
+                }
+            }
+        }
+    }
+    #endif
+
+    @Test("Bracket balances survive interleaved punctuation and entity trimming")
+    func mixedBracketSuffixes() {
+        let address = "https://example.com/(one)[two]"
+        for suffix in [").]!?", ")]&amp;", "])&name123;."] {
+            #expect(MarkdownAutolinker.segments(in: address + suffix) ==
+                    [.link(address), .text(suffix)])
+        }
+        // Balanced closers stop trimming even when another kind is unbalanced.
+        #expect(MarkdownAutolinker.segments(in: "https://example.com/([)]).") ==
+                [.link("https://example.com/([)]"), .text(").")])
+    }
+
     @Test("Code, raw HTML and existing links are left alone")
     func notDoubleLinked() {
         let markdown = """
@@ -133,7 +165,11 @@ struct MarkdownAutolinksTests {
         let converted = MarkdownHTML.body(fromMarkdown: "## See https://example.com/h\n\nText.",
                                           baseDirectory: nil)
         #expect(!converted.html.contains("href=\"https://"))
+        #if os(macOS)
+        #expect(converted.html.contains("&#160;</a>See https://example.com/h</h2>"))
+        #else
         #expect(converted.html.contains("<a class=\"fh\" href=\"glassine-outline://0\">See https://example.com/h</a>"))
+        #endif
         #expect(converted.headings.map(\.slug) == ["see-httpsexamplecomh"])
     }
 

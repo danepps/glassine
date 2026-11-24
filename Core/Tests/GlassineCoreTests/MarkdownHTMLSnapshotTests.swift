@@ -12,7 +12,9 @@ import Testing
 ///
 /// The expected digests were taken from the pre-Phase-4 source and re-recorded
 /// on 2026-09-07, when footnote support added five rules to the base layer
-/// (`sup.fnref`, the `section.footnotes` block and `a.fnback`). If a deliberate
+/// (`sup.fnref`, the `section.footnotes` block and `a.fnback`), and on
+/// 2026-11-24 for the outline-anchor CSS comment update; the rules did not
+/// change in that update. If a deliberate
 /// change to the stylesheet moves them again, re-record them *and* say so in
 /// HANDOFF — an accidental move is a silently different render for every
 /// Markdown document on both platforms.
@@ -39,8 +41,8 @@ struct MarkdownHTMLSnapshotTests {
 
     @Test("page() with no platformCSS is byte-identical to the pre-Phase-4 output")
     func pageIsUnchangedWithoutPlatformCSS() {
-        #expect(digest(snapshot(layout: .pages)) == "eff7ffeb2ace5323880111c35e94bec20b167ee7529501e8735c281565549fd1")
-        #expect(digest(snapshot(layout: .continuous)) == "4104dabf4597e94f9fbbb59ee508704a584e829f5567515e8bc11bce8a7cbfc3")
+        #expect(digest(snapshot(layout: .pages)) == "f843af62e61a7405e2192f58006857bbea27cb81c0ed69047bf88945d7cf9696")
+        #expect(digest(snapshot(layout: .continuous)) == "c9b6d320e60d1713e302a13bdcb3ddb8d3661a81b25ad17c7ce9a621e61ba326")
     }
 
     @Test("platformCSS is emitted as a third layer, after the style layer")
