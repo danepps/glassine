@@ -1,4 +1,5 @@
 import Foundation
+import Markdown
 import Testing
 @testable import GlassineCore
 
@@ -160,17 +161,104 @@ struct MarkdownAutolinksTests {
         #expect(out.contains(">https://example.com/a--b---c...d/it's/\"q\"/end</a>"))
     }
 
-    @Test("Headings are not autolinked")
-    func headings() {
-        let converted = MarkdownHTML.body(fromMarkdown: "## See https://example.com/h\n\nText.",
-                                          baseDirectory: nil)
-        #expect(!converted.html.contains("href=\"https://"))
-        #if os(macOS)
-        #expect(converted.html.contains("&#160;</a>See https://example.com/h</h2>"))
-        #else
-        #expect(converted.html.contains("<a class=\"fh\" href=\"glassine-outline://0\">See https://example.com/h</a>"))
-        #endif
-        #expect(converted.headings.map(\.slug) == ["see-httpsexamplecomh"])
+    private var headingCases: [(title: String, slug: String, linked: String)] {
+        let address = "https://example.com/h"
+        let link = "<a href=\"\(address)\">\(address)</a>"
+        return [
+            (address, "httpsexamplecomh", link),
+            ("\(address) heading", "httpsexamplecomh-heading", "\(link) heading"),
+            ("See \(address) here", "see-httpsexamplecomh-here", "See \(link) here"),
+            ("See (\(address)).", "see-httpsexamplecomh", "See (\(link)).")
+        ]
+    }
+
+    @Test("Heading autolinks follow the setting without changing ordinary text", arguments: [true, false])
+    func headings(linkHeadings: Bool) throws {
+        for fixture in headingCases {
+            let document = Document(parsing: "## \(fixture.title)", options: [.disableSourcePosOpts])
+            var autolinker = MarkdownAutolinker(linkHeadings: linkHeadings)
+            let rewritten = try #require(autolinker.visit(document) as? Document)
+            #expect(autolinker.linkedAny == linkHeadings)
+            #expect(HTMLFormatter.format(rewritten) ==
+                    "<h2>\(linkHeadings ? fixture.linked : fixture.title)</h2>\n")
+            if !linkHeadings {
+                #expect(HTMLFormatter.format(rewritten) == HTMLFormatter.format(document))
+            }
+        }
+    }
+
+    @Test("Conversion chooses heading autolinks for the output, including footnotes")
+    func headingOutputPolicy() {
+        for output in [MarkdownHTML.Output.pdf, .preview] {
+            for fixture in headingCases {
+                #if os(macOS)
+                let inner = fixture.linked
+                let linkCount = 2
+                #else
+                let inner = output == .preview ? fixture.linked : fixture.title
+                let linkCount = output == .preview ? 2 : 0
+                #endif
+                let markdown = "## \(fixture.title)\n\nText.[^1]\n\n[^1]: ## \(fixture.title)"
+                let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil, output: output)
+                #expect(count("href=\"https://example.com/h\"", in: converted.html) == linkCount)
+                #expect(converted.headings.map(\.title) == [fixture.title])
+                #expect(converted.headings.map(\.slug) == [fixture.slug])
+                #expect(converted.html.contains("<h2>\(inner)</h2>"))
+                if output == .preview {
+                    #expect(converted.html.contains("<h2 id=\"\(fixture.slug)\">\(inner)</h2>"))
+                    #expect(!converted.html.contains("glassine-outline:"))
+                } else {
+                    #if os(macOS)
+                    #expect(converted.html.contains("&#160;</a>\(inner)</h2>"))
+                    #else
+                    #expect(converted.html.contains("<a class=\"fh\" href=\"glassine-outline://0\">\(inner)</a>"))
+                    #endif
+                }
+            }
+        }
+    }
+
+    @Test("Heading autolinks restore smart punctuation only inside addresses", arguments: [true, false])
+    func headingSmartPunctuation(linkHeadings: Bool) throws {
+        let address = "https://example.com/a--b---c...d/it's/\"q\"/end"
+        let smartAddress = "https://example.com/a\u{2013}b\u{2014}c\u{2026}d/it\u{2019}s/\u{201C}q\u{201D}/end"
+        let markdown = "## An em---dash and en--dash, then \(address)."
+        let document = Document(parsing: markdown, options: [.disableSourcePosOpts])
+        var autolinker = MarkdownAutolinker(linkHeadings: linkHeadings)
+        let rewritten = try #require(autolinker.visit(document) as? Document)
+        let heading = try #require(rewritten.child(at: 0) as? Heading)
+        let prefix = "An em\u{2014}dash and en\u{2013}dash, then "
+        #expect(heading.plainText == prefix + (linkHeadings ? address : smartAddress) + ".")
+        #expect(autolinker.linkedAny == linkHeadings)
+        if linkHeadings {
+            let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil, output: .preview)
+            #expect(hrefs(converted.html) == ["https://example.com/a--b---c...d/it's/%22q%22/end"])
+            #expect(converted.headings.map(\.title) == [prefix + address + "."])
+            #expect(converted.headings.map(\.slug) == ["an-emdash-and-endash-then-httpsexamplecoma--b---cditsqend"])
+        } else {
+            #expect(HTMLFormatter.format(rewritten) == HTMLFormatter.format(document))
+            // Reparse the old smart-punctuated title as code, which linking
+            // leaves alone, to check its recorded title and slug too.
+            let baseline = MarkdownHTML.body(fromMarkdown: "## `\(prefix + smartAddress).`",
+                                             baseDirectory: nil, output: .preview)
+            #expect(baseline.headings.map(\.title) == [prefix + smartAddress + "."])
+            #expect(baseline.headings.map(\.slug) == ["an-emdash-and-endash-then-httpsexamplecomabcditsqend"])
+        }
+    }
+
+    @Test("Heading and footnote heading word counts use the tree before linking")
+    func headingWordCount() {
+        let markdown = "## Read https://example.com/a--b---c...d/it's/end now\n\nText.[^1]\n\n[^1]: ## Note https://example.com/n--te"
+        var expected = 0
+        for text in ["Read https://example.com/a\u{2013}b\u{2014}c\u{2026}d/it\u{2019}s/end now ",
+                     "Text. ", "Note https://example.com/n\u{2013}te "] {
+            text.enumerateSubstrings(in: text.startIndex..<text.endIndex,
+                                     options: [.byWords, .localized]) { _, _, _, _ in expected += 1 }
+        }
+        for output in [MarkdownHTML.Output.pdf, .preview] {
+            let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil, output: output)
+            #expect(converted.stats.words == expected)
+        }
     }
 
     @Test("Emphasis that cuts an address off leaves the address as text")

@@ -769,6 +769,8 @@ struct MarkdownHeadingAnchorTests {
         let converted = MarkdownHTML.body(fromMarkdown: "## " + markdown, baseDirectory: nil)
         let marker = try #require(converted.html.range(of: "glassine-outline://0"))
         let markerEnd = try #require(converted.html.range(of: "</a>", range: marker.upperBound..<converted.html.endIndex))
+        #expect(converted.html[marker.upperBound..<markerEnd.lowerBound].contains(
+            "aria-hidden=\"true\" style=\"position: absolute; width: 1pt; height: 1em;\">&#160;"))
         #expect(converted.html[markerEnd.upperBound...].hasPrefix(inner + "</h2>"))
         #expect(converted.headings.count == 1)
         let preview = MarkdownHTML.body(fromMarkdown: "## " + markdown, baseDirectory: nil, output: .preview)

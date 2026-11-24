@@ -161,7 +161,7 @@ public struct MarkdownHeading: Sendable {
 /// the margins and WebKit would otherwise apply both.
 public enum MarkdownHTML {
     public enum Output: Sendable {
-        /// The reader's PDF pipeline: private outline links around headings.
+        /// The reader's PDF pipeline: private outline links mark headings.
         case pdf
         /// Interactive HTML for Finder's Quick Look: real heading anchors,
         /// passive Markdown content, and a smaller image budget.
@@ -206,6 +206,8 @@ public enum MarkdownHTML {
     ///
     /// Bare web addresses become links (`MarkdownAutolinker`) in the body and
     /// in every note, after images are inlined and before the sanitiser.
+    /// Headings are skipped only for iOS PDF output, where the outline anchor
+    /// wraps their content and another link would break that anchor.
     ///
     /// `output` is `.pdf` for the reader. `.preview` is the Quick Look page:
     /// headings get plain `id`s without the private outline links, embedded
@@ -251,9 +253,11 @@ public enum MarkdownHTML {
         let markdown = markdown.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         let notes = MarkdownFootnotes.extract(from: stripFrontMatter(markdown))
+        var anchorer = HeadingAnchorer(includeOutlineLinks: output == .pdf)
+        let linkHeadings = !anchorer.wrapsHeadingContent
         var document = Document(parsing: notes.text, options: [.disableSourcePosOpts])
         document = inliningImages(document, baseDirectory: base, bytesLeft: &imageBytesLeft)
-        let unlinked = autolinked(&document)
+        let unlinked = autolinked(&document, linkHeadings: linkHeadings)
         document = sanitised(document, output: output)
 
         // A document with no definitions cannot have a reference, so it is not
@@ -274,7 +278,7 @@ public enum MarkdownHTML {
             var note = Document(parsing: notes.bodies[label] ?? "",
                                 options: [.disableSourcePosOpts])
             note = inliningImages(note, baseDirectory: base, bytesLeft: &imageBytesLeft)
-            let unlinkedNote = autolinked(&note)
+            let unlinkedNote = autolinked(&note, linkHeadings: linkHeadings)
             note = sanitised(note, output: output)
             noteWords += statistics(of: unlinkedNote.map { sanitised($0, output: output) } ?? note).words
             rendered.append((notes.slugs[label] ?? label, HTMLFormatter.format(note)))
@@ -295,7 +299,6 @@ public enum MarkdownHTML {
         var stats = statistics(of: counted)
         stats.words += noteWords
 
-        var anchorer = HeadingAnchorer(includeOutlineLinks: output == .pdf)
         if let rewritten = anchorer.visit(document) as? Document {
             document = rewritten
         }
@@ -318,8 +321,8 @@ public enum MarkdownHTML {
     /// turned into `%22` like any other, and a preview's content filter sees
     /// it as an ordinary http(s) link. Returns the tree as it was when
     /// anything was linked, for the word count, and nil when nothing was.
-    private static func autolinked(_ document: inout Document) -> Document? {
-        var autolinker = MarkdownAutolinker()
+    private static func autolinked(_ document: inout Document, linkHeadings: Bool) -> Document? {
+        var autolinker = MarkdownAutolinker(linkHeadings: linkHeadings)
         guard let linked = autolinker.visit(document) as? Document, autolinker.linkedAny else {
             return nil
         }
@@ -443,6 +446,16 @@ public enum MarkdownHTML {
     /// the PDF pipeline reads.
     private struct HeadingAnchorer: MarkupRewriter {
         let includeOutlineLinks: Bool
+        /// iOS measures the wrapping anchor before printing. Only that output
+        /// must skip heading autolinks, because nested links break the anchor.
+        var wrapsHeadingContent: Bool {
+            #if os(macOS)
+            return false
+            #else
+            return includeOutlineLinks
+            #endif
+        }
+
         var headings: [MarkdownHeading] = []
         /// How many headings have already claimed each slug, so a repeated
         /// title becomes `slug-1`, `slug-2`, … the way GitHub numbers them.
@@ -464,18 +477,18 @@ public enum MarkdownHTML {
             let level = heading.level
             let content: String
             if includeOutlineLinks {
-                #if os(macOS)
-                // A separate, nonempty marker gives WebKit printable link
-                // geometry even when the entire heading is another link.
-                // The right margin cancels its width without moving it outside
-                // the printable area. The title's layout stays unchanged and
-                // its own links remain siblings.
-                content = "<a class=\"fh\" href=\"glassine-outline://\(index)\" "
-                    + "aria-hidden=\"true\" style=\"display: inline-block; width: 1pt; margin-right: -1pt;\">&#160;</a>" + inner
-                #else
-                // iOS measures this anchor's text and bounds before printing.
-                content = "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
-                #endif
+                if wrapsHeadingContent {
+                    // iOS measures this anchor's text and bounds before printing.
+                    content = "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
+                } else {
+                    // A separate, nonempty marker gives WebKit printable link
+                    // geometry even when the entire heading is another link.
+                    // Absolute positioning keeps it at the first line without
+                    // adding a wrap opportunity or giving an empty heading a line.
+                    // The title's own links remain siblings.
+                    content = "<a class=\"fh\" href=\"glassine-outline://\(index)\" "
+                        + "aria-hidden=\"true\" style=\"position: absolute; width: 1pt; height: 1em;\">&#160;</a>" + inner
+                }
             } else {
                 content = inner
             }

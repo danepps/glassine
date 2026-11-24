@@ -45,6 +45,27 @@ struct MarkdownHTMLSnapshotTests {
         #expect(digest(snapshot(layout: .continuous)) == "c9b6d320e60d1713e302a13bdcb3ddb8d3661a81b25ad17c7ce9a621e61ba326")
     }
 
+    #if os(macOS)
+    @Test("Mac heading markers stay out of the text flow, including empty headings")
+    func headingMarkerHTML() {
+        let markdown = "# Supercalifragilisticexpialidocious\n\n# Short\n\n#\n"
+        let converted = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil)
+        #expect(converted.html == """
+        <h1 id="supercalifragilisticexpialidocious"><a class="fh" href="glassine-outline://0" aria-hidden="true" style="position: absolute; width: 1pt; height: 1em;">&#160;</a>Supercalifragilisticexpialidocious</h1>
+        <h1 id="short"><a class="fh" href="glassine-outline://1" aria-hidden="true" style="position: absolute; width: 1pt; height: 1em;">&#160;</a>Short</h1>
+        <h1 id="section"><a class="fh" href="glassine-outline://2" aria-hidden="true" style="position: absolute; width: 1pt; height: 1em;">&#160;</a></h1>
+
+        """)
+        let preview = MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil, output: .preview)
+        #expect(preview.html == """
+        <h1 id="supercalifragilisticexpialidocious">Supercalifragilisticexpialidocious</h1>
+        <h1 id="short">Short</h1>
+        <h1 id="section"></h1>
+
+        """)
+    }
+    #endif
+
     @Test("platformCSS is emitted as a third layer, after the style layer")
     func platformCSSComesLast() {
         let styling = MarkdownStyling(styleID: "manuscript",
