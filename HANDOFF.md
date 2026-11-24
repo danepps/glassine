@@ -35,10 +35,11 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **1.11.2 (Claude and Codex, 2026-11-24): dark-mode find highlights in
-  Reader Mode, and ten fixes from a Codex code review.** Mac only; nothing
-  here has been released for iOS. Branch `fix/1.11.2-reader-mode-and-review`
-  off `main` at `548f0f3`.
+- **Released 1.11.2 (Claude and Codex, 2026-11-24): dark-mode find highlights
+  in Reader Mode, and ten fixes from a Codex code review.** Build 29, tag
+  `v1.11.2`. Mac only; nothing here has been released for iOS. Branch
+  `fix/1.11.2-reader-mode-and-review` off `main` at `548f0f3`, merged as
+  `1b35722`.
   - **Find highlights (Dan's report).** With Reader Mode on in dark mode the
     green boxes were missing from the matches and a stray box sat elsewhere.
     PDFKit applies the displayed box's origin and the page's rotation inside
