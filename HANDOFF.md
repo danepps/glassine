@@ -35,11 +35,13 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **1.12.0 (Claude and Codex, 2026-11-24): the build for the public launch.**
-  Fixes only, numbered 1.12.0 rather than 1.11.3 at Dan's choice, to give the
-  launch a clean minor version (2.0 is kept for a release that changes what
-  the app does). Mac only. Branch `fix/1.12.0-review-followups` off `main` at
-  `e19c070`.
+- **Released 1.12.0 (Claude and Codex, 2026-11-24): the build for the public
+  launch.** Build 30, tag `v1.12.0`. Fixes only, numbered 1.12.0 rather than
+  1.11.3 at Dan's choice, to give the launch a clean minor version (2.0 is
+  kept for a release that changes what the app does). Mac only. Branch
+  `fix/1.12.0-review-followups` off `main` at `e19c070`, merged as `5c4ad17`.
+  Dan checked the casebook search and the address heading by eye in an ad-hoc
+  preview before release.
   - **Why it exists.** Before launch, two fresh Claude reviewers read the
     1.11.1 to 1.11.2 diff with no knowledge of the earlier review. Neither
     found a crash, hang or lost-work regression; they found the first two
