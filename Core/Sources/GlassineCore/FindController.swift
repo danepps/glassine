@@ -196,10 +196,11 @@ public final class FindController: FindSink {
         beginFind(query)
     }
 
-    /// Cancel whatever is running, without touching the query or the view. The
-    /// window's close handler calls this.
-    public func cancelIfFinding() {
-        if let pdf = document, pdf.isFinding { pdf.cancelFindString() }
+    /// Retire all search work when the reader closes. Detach the view before
+    /// resetting so neither the reset nor late PDFKit callbacks update it.
+    public func stop() {
+        delegate = nil
+        reset(for: nil)
     }
 
     /// A new document is taking the old one's place. Every `PDFSelection` we
@@ -207,7 +208,8 @@ public final class FindController: FindSink {
     /// goes with it -- but `lastQuery` stays, because the search is re-run
     /// against the replacement once it is installed.
     public func reset(for replacement: PDFDocument?) {
-        if let old = document, old !== replacement, old.isFinding { old.cancelFindString() }
+        let old = document
+        document = nil
         matches.removeAll()
         matchIndex = 0
         findInProgress = false
@@ -216,6 +218,9 @@ public final class FindController: FindSink {
         // Any fallback timer still in the air belongs to a wait this reset has
         // just ended; retire its token so it cannot fire into the next one.
         cancellationToken &+= 1
+        // PDFKit can report the cancelled search's end inside cancelFindString.
+        // Detach the document and retire pending work before making that call.
+        if let old, old !== replacement, old.isFinding { old.cancelFindString() }
         document = replacement
         delegate?.findControllerDidClear(self)
         delegate?.findController(self, canStep: false)
@@ -225,7 +230,7 @@ public final class FindController: FindSink {
     // MARK: FindSink
 
     public func findDidMatch(_ selection: PDFSelection) {
-        guard !isAwaitingCancelledFindEnd else { return }
+        guard let document, !isAwaitingCancelledFindEnd else { return }
         // A match found in a document that has since been replaced -- a Markdown
         // reload landing mid-search. Its pages are not in the document on
         // screen, so navigating to it would ask PDFView to show a page it does
@@ -264,6 +269,7 @@ public final class FindController: FindSink {
     }
 
     public func findDidEnd() {
+        guard document != nil else { return }
         if isAwaitingCancelledFindEnd {
             isAwaitingCancelledFindEnd = false
             startPendingFind()

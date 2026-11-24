@@ -99,6 +99,33 @@ struct PrefsTests {
         }
     }
 
+    @Test("Invalid saved positions are rejected without losing valid entries")
+    func invalidPositionEntries() {
+        withIsolatedDefaults {
+            let invalid = URL(fileURLWithPath: "/tmp/invalid.pdf")
+            let legacy = URL(fileURLWithPath: "/tmp/legacy.pdf")
+            let current = URL(fileURLWithPath: "/tmp/current.pdf")
+            let badEntries: [[Double]] = [
+                [], [0], [0, 1],
+                [1e30, 0, 0], [Double(Int.max), 0, 0],
+                [.nan, 0, 0], [.infinity, 0, 0], [-.infinity, 0, 0],
+                [-1, 0, 0], [1.5, 0, 0],
+                [0, .nan, 0], [0, .infinity, 0], [0, -.infinity, 0],
+                [0, 0, .nan], [0, 0, .infinity], [0, 0, -.infinity]
+            ]
+            for raw in badEntries {
+                Prefs.defaults.set([
+                    invalid.path: raw,
+                    legacy.path: [0, -12, 34],
+                    current.path: [7, 12, 340, 123]
+                ], forKey: "lastPositions")
+                #expect(Prefs.lastPosition(for: invalid) == nil)
+                #expect(Prefs.lastPosition(for: legacy) == Prefs.Position(pageIndex: 0, x: -12, y: 34))
+                #expect(Prefs.lastPosition(for: current) == Prefs.Position(pageIndex: 7, x: 12, y: 340))
+            }
+        }
+    }
+
     @Test("Interface opacity persists independently of existing document settings")
     func interfaceOpacity() {
         withIsolatedDefaults {
@@ -237,7 +264,66 @@ struct PrefsTests {
                                lastOpened: Date(), pageCount: nil)
             }
             Prefs.removeRecentDocument(path: "/tmp/r-1.pdf")
+            Prefs.flushRecentDocumentWrites()
             #expect(Prefs.recentDocuments.map(\.path) == ["/tmp/r-0.pdf", "/tmp/r-2.pdf"])
+        }
+    }
+
+    /// Hold the queue before bookmark creation so the test controls the order
+    /// of requests independently of how quickly the file system answers.
+    private func withRecentWritesPaused(_ body: () -> Void) throws {
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        Prefs.performAfterRecentDocumentWrites {
+            entered.signal()
+            _ = resume.wait(timeout: .now() + 5)
+        }
+        defer { resume.signal() }
+        try #require(entered.wait(timeout: .now() + 5) == .success)
+        body()
+    }
+
+    @Test("A queued open cannot undo a later removal of that same file")
+    func queuedOpenThenRemoval() throws {
+        try withIsolatedDefaults {
+            let directory = TempDirectory()
+            let file = directory.write(Data("old".utf8), to: "old.pdf")
+            let kept = directory.write(Data("kept".utf8), to: "kept.pdf")
+            Prefs.recentDocuments = [file, kept].map {
+                RecentDocument(path: $0.standardizedFileURL.path, bookmark: nil,
+                               lastOpened: Date(), pageCount: 1)
+            }
+
+            try withRecentWritesPaused {
+                Prefs.noteRecentDocument(file, pageCount: 7)
+                Prefs.removeRecentDocument(path: file.standardizedFileURL.path)
+            }
+            Prefs.flushRecentDocumentWrites()
+            #expect(Prefs.recentDocuments.map(\.path) == [kept.standardizedFileURL.path])
+        }
+    }
+
+    @Test("Moving a file after a queued open leaves only its new Recents path")
+    func queuedOpenThenMove() throws {
+        try withIsolatedDefaults {
+            let directory = TempDirectory()
+            let old = directory.write(Data("old".utf8), to: "old.pdf")
+            let moved = directory.url.appendingPathComponent("moved.pdf")
+            Prefs.recentDocuments = [
+                RecentDocument(path: old.standardizedFileURL.path, bookmark: nil,
+                               lastOpened: Date(), pageCount: 1)
+            ]
+            try FileManager.default.moveItem(at: old, to: moved)
+
+            try withRecentWritesPaused {
+                Prefs.noteRecentDocument(old, pageCount: 1)
+                Prefs.removeRecentDocument(path: old.standardizedFileURL.path)
+                Prefs.noteRecentDocument(moved, pageCount: 7)
+            }
+            Prefs.flushRecentDocumentWrites()
+            #expect(Prefs.recentDocuments.map(\.path) == [moved.standardizedFileURL.path])
+            #expect(Prefs.recentDocuments.first?.pageCount == 7)
+            #expect(Prefs.recentDocuments.first?.bookmark != nil)
         }
     }
 

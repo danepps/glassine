@@ -390,7 +390,7 @@ final class DocumentSession {
     /// Release the security scope and every observer. Called when the scene
     /// swaps documents or goes away.
     func close() {
-        find.cancelIfFinding()
+        find.stop()
         savePosition()
         // A render still in flight must not install into a view this session no
         // longer owns: the next session is handed the same PDFView.

@@ -195,4 +195,35 @@ struct RenderQueueTests {
         try clock.fire(30)
         #expect(printer.teardownCount == 1)
     }
+
+    @Test("An idle release that finds the queue busy is retried after the last job")
+    func busyIdleReleaseIsRetried() throws {
+        let (queue, printer, clock) = harness()
+        var completed = 0
+        for index in 0..<4 {
+            queue.render(html: "document \(index)", baseURL: nil,
+                         key: "\(index)", layout: .pages) { result in
+                #expect((try? result.get()) != nil)
+                completed += 1
+            }
+        }
+        queue.releaseIfIdle()
+        // Four nine-second jobs finish at 9, 18, 27 and 36 seconds. Each
+        // finishes before its watchdog, but the fourth outlasts the idle check.
+        for index in 0..<3 {
+            printer.completions[index](.success(printer.data))
+            try clock.fire(10)
+        }
+        try clock.fire(30)
+        #expect(completed == 3)
+        #expect(printer.teardownCount == 0)
+        printer.completions[3](.success(printer.data))
+        try clock.fire(10)
+        #expect(completed == 4)
+        #expect(printer.teardownCount == 0)
+
+        try clock.fire(30)
+        #expect(printer.teardownCount == 1)
+        #expect(clock.work.isEmpty)
+    }
 }
