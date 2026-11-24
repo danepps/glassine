@@ -141,6 +141,21 @@ public final class ReaderPage: PDFPage {
 
         context.saveGState()
 
+        // PDFKit applies the box's origin and the page's rotation inside its own
+        // draw and restores the caller's transform afterwards, so the context
+        // here is in the displayed box's space, not page space. The highlight
+        // rectangles are in page space: apply the same transform again, or they
+        // land off the text on any page whose box does not start at the origin
+        // or that is rotated. Reader Mode's trimmed art box makes a shifted
+        // origin routine, which is where this was first seen.
+        //
+        // Mac only for now: measured and pixel-tested on macOS. Whether UIKit's
+        // PDFKit hands this hook the same space has not been measured, so iOS
+        // keeps drawing as it did until a rotated page is checked there.
+        #if os(macOS)
+        transform(context, for: box)
+        #endif
+
         // A translucent box over each match, mirroring light mode's native
         // highlight. The 1pt vertical inset keeps the rect off the
         // neighbouring lines, whose ascenders and descenders reach into a
