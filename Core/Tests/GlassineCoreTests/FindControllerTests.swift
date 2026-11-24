@@ -79,19 +79,30 @@ final class ProbeDocument: PDFDocument {
     var cancelCount = 0
     var onCancel: (() -> Void)?
     var cancellationEndsFinding = true
+    /// Searches begun from inside `cancelFindString`. Real PDFKit accepts such
+    /// a search and never runs it, leaving `isFinding` true; they are kept out
+    /// of `started` so a test that expects a query to have started fails.
+    var droppedBegins: [String] = []
     private var finding = false
+    private var insideCancel = false
 
     override var isFinding: Bool { finding }
 
     override func beginFindString(_ string: String, withOptions options: NSString.CompareOptions) {
-        started.append(string)
         finding = true
+        guard !insideCancel else {
+            droppedBegins.append(string)
+            return
+        }
+        started.append(string)
     }
 
     override func cancelFindString() {
         cancelCount += 1
         if cancellationEndsFinding { finding = false }
+        insideCancel = true
         onCancel?()
+        insideCancel = false
     }
 
     /// A selection that really belongs to this document, for the identity checks.
@@ -426,6 +437,171 @@ struct FindControllerTests {
     }
 
     // MARK: Cancellation, replaced documents and stale timers (BUG-002)
+
+    @Test("A cancellation end starts the replacement once without reporting no matches",
+          arguments: [false, true])
+    func replacementStartsAtCancellationEnd(synchronous: Bool) async {
+        let document = makeProbeDocument()
+        let staleHit = document.firstMatch("alpha")
+        let newHit = document.firstMatch("beta")
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        document.onCancel = { [weak controller] in
+            MainActor.assumeIsolated {
+                guard let controller else { return }
+                #expect(controller.isAwaitingCancelledFindEnd)
+                #expect(controller.pendingQuery == "beta")
+                controller.findDidMatch(staleHit)
+                #expect(controller.matches.isEmpty)
+                if synchronous {
+                    controller.findDidEnd(in: document)
+                    // Nothing starts inside the cancel: PDFKit would drop it.
+                    #expect(document.started == ["alpha"])
+                    #expect(controller.isAwaitingCancelledFindEnd)
+                }
+            }
+        }
+        defer { document.onCancel = nil }
+
+        controller.search("alpha")
+        controller.search("beta")
+        #expect(document.droppedBegins.isEmpty)
+        if synchronous {
+            // The replacement began as soon as the cancel returned.
+            controller.findDidMatch(newHit)
+        } else {
+            #expect(document.started == ["alpha"])
+            #expect(controller.isAwaitingCancelledFindEnd)
+            #expect(controller.findInProgress)
+            #expect(controller.countText == "")
+            controller.findDidMatch(staleHit)
+            #expect(controller.matches.isEmpty)
+            controller.findDidEnd(in: document)
+            controller.findDidMatch(newHit)
+        }
+        #expect(document.started == ["alpha", "beta"])
+        #expect(document.cancelCount == 1)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(controller.pendingQuery == nil)
+        #expect(controller.lastQuery == "beta")
+        #expect(controller.findInProgress)
+        #expect(controller.matches.count == 1)
+        #expect(controller.countText == "1 found…")
+        #expect(!delegate.counts.contains("No matches"))
+        #expect(delegate.updates.allSatisfy { $0.inProgress })
+
+        // Past the fallback deadline, the replacement is still the same search
+        // with the same result, rather than a second begin or a renewed wait.
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        #expect(document.started == ["alpha", "beta"])
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(controller.pendingQuery == nil)
+        #expect(controller.findInProgress)
+        #expect(controller.matches.count == 1)
+        #expect(controller.countText == "1 found…")
+        #expect(!delegate.counts.contains("No matches"))
+    }
+
+    /// The only test here that lets PDFKit run the replacement itself. The
+    /// probe document cannot stand in for it: a search begun from inside
+    /// `cancelFindString()` is accepted by PDFKit and then never runs, which a
+    /// fake that merely records the call does not show.
+    @Test("A real PDFKit search replaced while it is running still finishes with its matches")
+    func realReplacementFinishes() async {
+        let document = makeTextPDF(pages: (0..<120).map { page in
+            "alpha beta alpha gamma page \(page) omega"
+        })
+        let forwarder = FindForwarder()
+        document.delegate = forwarder
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        forwarder.sink = controller
+
+        controller.startFind("alph")
+        #expect(document.isFinding)
+        // No run-loop turn in between, so PDFKit is still searching for the
+        // first query when the second arrives: the path a typed query takes.
+        controller.startFind("omega")
+        await settle(controller, timeout: 10)
+
+        #expect(controller.findInProgress == false)
+        #expect(document.isFinding == false)
+        #expect(controller.lastQuery == "omega")
+        #expect(controller.matches.count == 120)
+        #expect(controller.countText == "1 of 120")
+        if document.isFinding { document.cancelFindString() }
+    }
+
+    @Test("A missing cancellation end starts the replacement once at the fallback")
+    func replacementStartsWithoutCancellationEnd() async {
+        let document = makeProbeDocument()
+        let staleHit = document.firstMatch("alpha")
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+
+        controller.search("alpha")
+        controller.search("beta")
+        controller.findDidMatch(staleHit)
+        #expect(controller.matches.isEmpty)
+        #expect(controller.countText == "")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        #expect(document.started == ["alpha"])
+        #expect(controller.isAwaitingCancelledFindEnd)
+        #expect(controller.pendingQuery == "beta")
+
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        #expect(document.started == ["alpha", "beta"])
+        #expect(document.cancelCount == 1)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(controller.pendingQuery == nil)
+        #expect(controller.findInProgress)
+        #expect(controller.countText == "")
+        #expect(!delegate.counts.contains("No matches"))
+        #expect(delegate.updates.isEmpty)
+    }
+
+    @Test("Three rapid queries preserve only the latest search state",
+          arguments: [false, true])
+    func threeRapidQueries(synchronous: Bool) async {
+        let document = makeProbeDocument()
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        if synchronous {
+            document.onCancel = { [weak controller] in
+                MainActor.assumeIsolated { controller?.findDidEnd(in: document) }
+            }
+        }
+        defer { document.onCancel = nil }
+
+        controller.search("alpha")
+        controller.search("beta")
+        controller.search("gamma")
+        if !synchronous {
+            #expect(document.started == ["alpha"])
+            #expect(controller.pendingQuery == "gamma")
+            controller.findDidEnd(in: document)
+        }
+        let expected = synchronous ? ["alpha", "beta", "gamma"] : ["alpha", "gamma"]
+        #expect(document.started == expected)
+        #expect(document.cancelCount == (synchronous ? 2 : 1))
+        #expect(controller.lastQuery == "gamma")
+        #expect(controller.findInProgress)
+        #expect(controller.pendingQuery == nil)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(!delegate.counts.contains("No matches"))
+        #expect(delegate.updates.isEmpty)
+
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        #expect(document.started == expected)
+        #expect(controller.findInProgress)
+        #expect(controller.countText == "")
+        #expect(controller.pendingQuery == nil)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+    }
 
     @Test("Closing during query replacement drops the pending query and late results")
     func stopDropsPendingQueryAndLateResults() {

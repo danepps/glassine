@@ -18,23 +18,27 @@ import Markdown
 ///
 /// It works on `Text` nodes only, so code spans, code blocks and raw HTML are
 /// never touched, and it leaves alone the text of a link (which is already a
-/// link), an image (its alt text goes into an attribute) and a heading. A
-/// heading originally had to be skipped to avoid nesting links inside its
-/// outline anchor. The Mac now uses a separate geometry marker, but headings
-/// keep the established behaviour of displaying bare addresses as plain text.
+/// link) and an image (its alt text goes into an attribute). Headings are
+/// skipped only when their content will be wrapped in an outline anchor,
+/// because links cannot nest. The caller chooses this alongside the anchor
+/// policy, so a separate marker or a preview's plain heading allows links.
 ///
 /// `MarkupRewriter` maps one node to one node, so the splitting happens a
 /// level up, in `defaultVisit`, where a parent rebuilds its children. Runs of
 /// adjacent `Text` siblings are read together, so an address cmark happened to
 /// hand over in pieces is still found whole.
 struct MarkdownAutolinker: MarkupRewriter {
+    let linkHeadings: Bool
+
     /// Whether any address was linked. The caller counts words on the tree
     /// as it was when nothing was, so the count cannot change.
     private(set) var linkedAny = false
 
     mutating func visitLink(_ link: Link) -> Markup? { link }
     mutating func visitImage(_ image: Image) -> Markup? { image }
-    mutating func visitHeading(_ heading: Heading) -> Markup? { heading }
+    mutating func visitHeading(_ heading: Heading) -> Markup? {
+        linkHeadings ? defaultVisit(heading) : heading
+    }
 
     mutating func defaultVisit(_ markup: Markup) -> Markup? {
         var children: [Markup] = []

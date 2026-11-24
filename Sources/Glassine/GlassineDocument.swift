@@ -87,9 +87,24 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     private var pdfSavesInProgress = 0
     private var highlightSaveCompletions: [(Error?) -> Void] = []
     private var pdfSourceByteCount = 0
-    /// The bytes last read or saved, independent of the watcher's event baseline.
-    /// A move can adopt a new baseline before an outside revision was displayed.
-    private var pdfSourceHash: Int?
+    /// The revision last read or saved, independent of the watcher's event
+    /// baseline. Capture it ourselves: read(from:) runs before NSDocument has
+    /// finished updating fileModificationDate, and a move can adopt a watcher
+    /// baseline before an outside revision was displayed.
+    private var pdfSourceSignature: PDFSourceSignature?
+
+    private struct PDFSourceSignature: Equatable {
+        let size: Int64
+        let modified: TimeInterval
+
+        init?(url: URL) {
+            var info = stat()
+            guard stat(url.path, &info) == 0 else { return nil }
+            size = Int64(info.st_size)
+            modified = TimeInterval(info.st_mtimespec.tv_sec)
+                + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000
+        }
+    }
     private(set) var hasSignatureFields = false
     var highlightPageCache: [ObjectIdentifier: [SavedHighlight]] = [:]
     /// Whether any page holds a highlight, once someone has asked. Menu
@@ -133,6 +148,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         case .pdf:
             // Own the backing bytes: safe-save replaces the file, and a sync
             // client or network volume must not invalidate PDFKit's lazy reads.
+            // Capture the revision first so a rewrite during the read cannot
+            // be claimed as the revision we just loaded.
+            let signature = PDFSourceSignature(url: url)
             let bytes = try Data(contentsOf: url)
             guard let document = PDFDocument(data: bytes) else {
                 throw NSError(
@@ -146,7 +164,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             }
             document.delegate = self
             pdfSourceByteCount = bytes.count
-            pdfSourceHash = bytes.hashValue
+            pdfSourceSignature = signature
             pdf = document
             highlightPageCache.removeAll()
             cachedHasHighlights = nil
@@ -236,7 +254,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             // completion. Do not mistake that URL change for an outside edit,
             // or let a save to a former location claim the new file's state.
             if error == nil, !isClosed, kind == .pdf, fileURL == url {
-                pdfSourceHash = (try? Data(contentsOf: url))?.hashValue
+                pdfSourceSignature = PDFSourceSignature(url: url)
                 watcher?.acceptCurrentState()
                 if !isDocumentEdited {
                     pendingHighlightSave?.cancel()
@@ -364,9 +382,10 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         guard !highlightSaveInProgress, pdfSavesInProgress == 0 else { return }
         do {
             // An unchanged rename must preserve unsaved highlights and undo.
-            // Compare source bytes, not the edited in-memory PDF or an inode
-            // that can change when moving between volumes.
-            if onlyIfChanged, try Data(contentsOf: url).hashValue == pdfSourceHash { return }
+            // Size and modification time survive moves between volumes, unlike
+            // an inode, and comparing them never reads or hashes the PDF bytes.
+            if onlyIfChanged, let current = PDFSourceSignature(url: url),
+               current == pdfSourceSignature { return }
             try revert(toContentsOf: url, ofType: type)
         } catch {
             // Usually a file caught half-written; the writer's next event brings
@@ -448,9 +467,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
         watcher.retarget(to: url)
         // Retargeting adopts the current signature and retires old callbacks.
-        // Recover an unseen revision using the source content, so an unchanged
-        // move does not discard PDF edits. A pending highlight save already
-        // resolves fileURL when it runs and thus follows an unchanged move.
+        // Recover an unseen revision using the last-read or saved baseline, so
+        // an unchanged move does not discard PDF edits. A pending highlight
+        // save resolves fileURL when it runs and thus follows an unchanged move.
         // Let NSDocument finish updating its file bookkeeping before invoking
         // revert, which may itself set fileURL. A later URL change supersedes
         // this work, while retargeting above has already stopped old deliveries.
