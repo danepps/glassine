@@ -1,6 +1,9 @@
 # Glassine
 
-<https://github.com/danepps/glassine>
+**[Download Glassine for Mac](https://github.com/danepps/glassine/releases/latest/download/Glassine.zip)**
+(macOS 14 or later, Apple Silicon) · [glassineapp.com](https://glassineapp.com/)
+
+Unzip it and drag Glassine to Applications. It updates itself after that.
 
 A small, fast, native macOS PDF reader that also opens Markdown. Swift + AppKit
 + PDFKit, no Electron, no storyboards. WebKit typesets Markdown into pages;
