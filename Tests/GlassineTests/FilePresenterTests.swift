@@ -93,11 +93,27 @@ extension MacAppTests {
                 let pdf = try #require(document.pdf)
                 let window = try #require(document.windowControllers.first?.window)
 
+                let highlight = PDFAnnotation(bounds: CGRect(x: 40, y: 40, width: 100, height: 20),
+                                              forType: .highlight, withProperties: nil)
+                pdf.page(at: 0)?.addAnnotation(highlight)
+                document.highlightPageCache.removeAll()
+                document.cachedHasHighlights = nil
+                document.undoManager?.groupsByEvent = false
+                document.undoManager?.beginUndoGrouping()
+                document.undoManager?.registerUndo(withTarget: document) { $0.removeHighlight(highlight) }
+                document.undoManager?.endUndoGrouping()
+                document.updateChangeCount(.changeDone)
+                document.scheduleHighlightSave()
+
                 try FileManager.default.moveItem(at: originalURL, to: renamedURL)
                 await deliverMove(document, to: renamedURL)
                 try await waitUntil { document.fileURL == renamedURL && window.representedURL == renamedURL }
+                try await Task.sleep(for: .milliseconds(600))
                 #expect(document.pdf === pdf)
                 #expect(document.displayName == "Renamed.pdf")
+                #expect(document.savedHighlights.first?.annotation === highlight)
+                #expect(document.isDocumentEdited)
+                #expect(document.undoManager?.canUndo == true)
 
                 let note = PDFAnnotation(bounds: CGRect(x: 40, y: 40, width: 20, height: 20),
                                          forType: .text, withProperties: nil)
@@ -111,7 +127,10 @@ extension MacAppTests {
                 #expect(!document.isDocumentEdited)
                 #expect(!FileManager.default.fileExists(atPath: originalURL.path))
                 let reopened = try #require(PDFDocument(url: renamedURL))
-                #expect(reopened.page(at: 0)?.annotations.first?.contents == "Saved after rename")
+                #expect(reopened.page(at: 0)?.annotations.contains { $0.contents == "Saved after rename" } == true)
+                #expect(reopened.page(at: 0)?.annotations.contains { $0.type == "Highlight" } == true)
+                document.undoManager?.undo()
+                #expect(document.savedHighlights.isEmpty)
             }
         }
 
@@ -160,30 +179,50 @@ extension MacAppTests {
             }
         }
 
-        @Test("A revision saved just before a move is shown after it")
-        func moveAfterUnseenSave() async throws {
+        @Test("A revision saved just before a move is shown after it", arguments: [false, true])
+        func moveAfterUnseenSave(pdf: Bool) async throws {
             try await withFixture { folder in
-                let originalURL = folder.appendingPathComponent("Draft.md")
-                let renamedURL = folder.appendingPathComponent("Draft v2.md")
-                try "# Draft\n\nFirst.".write(to: originalURL, atomically: true, encoding: .utf8)
+                let originalURL = folder.appendingPathComponent(pdf ? "Draft.pdf" : "Draft.md")
+                let renamedURL = folder.appendingPathComponent(pdf ? "Draft v2.pdf" : "Draft v2.md")
+                let fixture = PDFDocument()
+                if pdf {
+                    fixture.insert(PDFPage(), at: 0)
+                    fixture.insert(PDFPage(), at: 1)
+                    try #require(fixture.write(to: originalURL))
+                } else {
+                    try "# Draft\n\nFirst.".write(to: originalURL, atomically: true, encoding: .utf8)
+                }
                 let document = try GlassineDocument(contentsOf: originalURL,
-                                                    ofType: GlassineDocument.markdownType.identifier)
+                    ofType: pdf ? UTType.pdf.identifier : GlassineDocument.markdownType.identifier)
                 let typesetter = ControlledMarkdownTypesetter()
                 document.markdownTypesetter = typesetter
                 document.makeWindowControllers()
                 defer { document.close() }
-                try #require(typesetter.requests.count == 1)
-                typesetter.succeed(0)
+                if pdf {
+                    try #require(document.pdf?.pageCount == 2)
+                } else {
+                    try #require(typesetter.requests.count == 1)
+                    typesetter.succeed(0)
+                }
 
                 // Save and move within the watcher's debounce window, so the
                 // move's retarget would otherwise take the new bytes as its
                 // baseline and the saved revision would never be rendered.
-                try "# Draft\n\nSecond, saved just before the move.".write(
-                    to: originalURL, atomically: true, encoding: .utf8)
+                if pdf {
+                    fixture.insert(PDFPage(), at: 2)
+                    try #require(fixture.write(to: originalURL))
+                } else {
+                    try "# Draft\n\nSecond, saved just before the move.".write(
+                        to: originalURL, atomically: true, encoding: .utf8)
+                }
                 try FileManager.default.moveItem(at: originalURL, to: renamedURL)
                 await deliverMove(document, to: renamedURL)
-                try await waitUntil { typesetter.requests.count == 2 }
-                #expect(typesetter.requests[1].html.contains("Second, saved just before the move."))
+                if pdf {
+                    try await waitUntil { document.pdf?.pageCount == 3 }
+                } else {
+                    try await waitUntil { typesetter.requests.count == 2 }
+                    #expect(typesetter.requests[1].html.contains("Second, saved just before the move."))
+                }
             }
         }
 

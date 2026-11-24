@@ -90,6 +90,142 @@ extension MacAppTests {
             abs(left.count - right.count) + zip(left, right).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
         }
 
+        /// Render through the reader's PDFView hook, which calls ReaderPage.draw.
+        /// The bitmap supplies only the tile's scale, translation and clip; PDFKit
+        /// must place the page and its overlay inside that tile itself.
+        private func findPixels(_ page: ReaderPage, in view: ReaderPDFView,
+                                scale: CGFloat) throws -> (bytes: [UInt8], width: Int, height: Int) {
+            let box = page.bounds(for: view.displayBox)
+            let sideways = page.rotation % 180 != 0
+            let size = sideways ? CGSize(width: box.height, height: box.width) : box.size
+            let width = Int(ceil(size.width * scale)) + 34
+            let height = Int(ceil(size.height * scale)) + 46
+            let context = try #require(CGContext(data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.translateBy(x: 17, y: 23)
+            context.scaleBy(x: scale, y: scale)
+            context.clip(to: CGRect(origin: .zero, size: size))
+            view.draw(page, to: context)
+            let pointer = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+            return (Array(UnsafeBufferPointer(start: pointer, count: width * height * 4)), width, height)
+        }
+
+        @Test("Reader Mode find ink follows native match geometry at every rotation and zoom",
+              arguments: [CGFloat(0.75), 1.25, 2], ["passage", "visible"])
+        func renderedFindHighlights(scale: CGFloat, query: String) throws {
+            try checkRenderedFindHighlights(scale: scale, query: query, displayBox: .artBox)
+        }
+
+        /// The same defect without Reader Mode: the fixture's crop box starts at
+        /// (40, 50) and three of its pages are rotated, and the overlay missed
+        /// the text there too until it applied the box's transform itself.
+        @Test("Find ink follows native match geometry in a shifted, rotated crop box",
+              arguments: [CGFloat(0.75), 1.25, 2], ["passage", "visible"])
+        func renderedFindHighlightsInCropBox(scale: CGFloat, query: String) throws {
+            try checkRenderedFindHighlights(scale: scale, query: query, displayBox: .cropBox)
+        }
+
+        private func checkRenderedFindHighlights(scale: CGFloat, query: String,
+                                                 displayBox: PDFDisplayBox) throws {
+            let name = "GlassineFindRenderTests.\(UUID())"
+            let defaults = try #require(UserDefaults(suiteName: name))
+            let previous = Prefs.defaults
+            Prefs.defaults = defaults
+            defer {
+                Prefs.defaults = previous
+                defaults.removePersistentDomain(forName: name)
+            }
+            let (document, folder) = try fixture()
+            defer { document.close(); try? FileManager.default.removeItem(at: folder) }
+            let pdf = try #require(document.pdf)
+            let pages = try readerPages(in: document)
+            let matches = pdf.findString(query, withOptions: [])
+            try #require(matches.count == pages.count)
+            let view = ReaderPDFView(frame: CGRect(x: 0, y: 0, width: 900, height: 900))
+            view.document = pdf
+            view.isInverted = true
+            view.setFindMatches(matches, current: 0)
+            view.displayBox = .cropBox
+            let ordinary = try pages.map { try findPixels($0, in: view, scale: scale).bytes }
+            for page in pages { page.readerContentBounds = presentation }
+            // Merely having Reader Mode bounds must not change ordinary drawing.
+            // iOS uses this same highlighter and never installs those bounds.
+            for (index, page) in pages.enumerated() {
+                #expect(try findPixels(page, in: view, scale: scale).bytes == ordinary[index])
+            }
+            view.displayBox = displayBox
+
+            for (index, page) in pages.enumerated() {
+                view.isInverted = false
+                let plain = try findPixels(page, in: view, scale: scale)
+                // PDFKit's permanent annotation renderer is an independent oracle
+                // for the selection's position. No test transform duplicates the
+                // overlay's mapping, and the fixture's real art/crop/media origins
+                // all differ from the presentation bounds.
+                let reference = PDFAnnotation(bounds: matches[index].bounds(for: page),
+                                              forType: .square, withProperties: nil)
+                reference.color = .magenta
+                reference.interiorColor = .magenta
+                let border = PDFBorder()
+                border.lineWidth = 0
+                reference.border = border
+                page.addAnnotation(reference)
+                let marked = try findPixels(page, in: view, scale: scale)
+                page.removeAnnotation(reference)
+                let count = marked.width * marked.height
+                let mask = (0..<count).map { pixel in
+                    let offset = pixel * 4
+                    return marked.bytes[offset] > 200 && marked.bytes[offset + 1] < 80
+                        && marked.bytes[offset + 2] > 200
+                }
+                #expect(mask.filter { $0 }.count > 100)
+                // The native reference must actually cover the searched glyphs.
+                #expect((0..<count).filter { mask[$0] && plain.bytes[$0 * 4] < 100 }.count > 20)
+                #expect(!plain.bytes.enumerated().contains { offset, value in
+                    offset % 4 == 1 && Int(value) > Int(plain.bytes[offset - 1]) + 20
+                        && Int(value) > Int(plain.bytes[offset + 1]) + 20
+                })
+
+                view.isInverted = true
+                // Move the current result between the first and last pages; the
+                // other pages must retain fills without acquiring an outline.
+                for current in [0, pages.count - 1] {
+                    view.setCurrentMatchIndex(current)
+                    let drawn = try findPixels(page, in: view, scale: scale)
+                    var missing = 0
+                    var stray = 0
+                    var outline = 0
+                    for y in 1..<(marked.height - 1) {
+                        for x in 1..<(marked.width - 1) {
+                            let pixel = y * marked.width + x
+                            let offset = pixel * 4
+                            let red = Int(drawn.bytes[offset])
+                            let green = Int(drawn.bytes[offset + 1])
+                            let blue = Int(drawn.bytes[offset + 2])
+                            let ink = green > red + 20 && green > blue + 20
+                            if !ink && !mask[pixel] { continue }
+                            // Allow one pixel of edge antialiasing, but sample
+                            // every interior pixel and the entire surrounding tile.
+                            let neighbours = [-marked.width, 0, marked.width].flatMap { row in
+                                [-1, 0, 1].map { mask[pixel + row + $0] }
+                            }
+                            if neighbours.allSatisfy({ $0 }) && !ink { missing += 1 }
+                            if ink && !neighbours.contains(true) { stray += 1 }
+                            if red < 30 && blue < 30 && green > 170 { outline += 1 }
+                        }
+                    }
+                    #expect(missing == 0, "Missing match ink on page \(index), scale \(scale)")
+                    #expect(stray == 0, "Stray match ink on page \(index), scale \(scale)")
+                    #expect(index == current ? outline > 20 : outline == 0)
+                }
+                view.isInverted = false
+                #expect(try findPixels(page, in: view, scale: scale).bytes == plain.bytes)
+            }
+        }
+
         private func assertOutput(_ data: Data, matches baseline: PDFDocument) throws {
             let output = try #require(PDFDocument(data: data))
             #expect(output.pageCount == baseline.pageCount)

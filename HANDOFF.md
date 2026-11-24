@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-11-15. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-11-24. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -35,6 +35,76 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **1.11.2 (Claude and Codex, 2026-11-24): dark-mode find highlights in
+  Reader Mode, and ten fixes from a Codex code review.** Mac only; nothing
+  here has been released for iOS. Branch `fix/1.11.2-reader-mode-and-review`
+  off `main` at `548f0f3`.
+  - **Find highlights (Dan's report).** With Reader Mode on in dark mode the
+    green boxes were missing from the matches and a stray box sat elsewhere.
+    PDFKit applies the displayed box's origin and the page's rotation inside
+    its own `draw` and restores the caller's transform afterwards, so the
+    context `ReaderPage.draw(with:to:)` draws its overlay in is in the box's
+    space, while the highlight rectangles are in page space. Reader Mode's
+    trimmed art box made a shifted origin routine. `ReaderPage` now applies
+    `transform(_:for:)` before the overlay. Codex's fix covered Reader Mode
+    only; the same misplacement showed with Reader Mode off on a page whose
+    crop box is shifted or that is rotated (`ReaderModeOutputTests` fixture),
+    so the transform is applied for every box. **`#if os(macOS)`:** whether
+    UIKit's PDFKit hands the hook the same space is unmeasured, so iOS draws
+    as before; check a rotated page in dark mode there and drop the gate if
+    it shows the same fault. Dan checked the fix by eye in an ad-hoc preview.
+  - **The review.** `reviews/2026-11-24-code-review.md`: 22 findings from a
+    static review Codex ran on Linux, with nothing compiled. Claude checked
+    each against the source and agreed 17 were worth fixing. Codex
+    (gpt-6-astra) then fixed them in parallel, one git worktree per stream;
+    Claude read each diff and re-ran the suites outside Codex's sandbox,
+    which cannot run AppKit tests, WebKit printing, real file coordination or
+    xcodebuild.
+  - **Fixed in this release:** F1 (an invalid saved position no longer traps),
+    F3 (`FindController.stop()` replaces `cancelIfFinding()` at both close
+    sites and retires a queued find), F4 (a closed Markdown document stops
+    observing preferences), F7 (a footnote definition no longer swallows a
+    heading that follows without a blank line), F9 (bracket trimming of a bare
+    address is linear), F10 (the PDF watcher follows `fileURL`, so Save As
+    watches the new file), F11 (a PDF saved just before a move is reloaded;
+    an unchanged rename still keeps highlights and undo), F15 (a busy
+    render-queue release is retried when the queue drains), F18 (see below),
+    F20 (a Recents removal is ordered with queued opens).
+  - **F10 and F11 moved file tracking into a `fileURL` setter override** in
+    `GlassineDocument`, replacing the `presentedItemDidMove` override, and
+    added a `save(to:ofType:for:completionHandler:)` override that
+    re-baselines the watcher. `FileWatcher.retarget` is now synchronous on the
+    watcher's queue. A PDF is compared by a hash of its source bytes before a
+    move-time revert.
+  - **F18 changes every Mac Markdown heading's HTML:** the outline anchor is
+    now a 1 pt inline-block holding a no-break space, placed before the
+    heading's content, instead of an anchor wrapped around it. A fully linked
+    heading keeps its bookmark and its link (`MarkdownOutlineRenderingTests`,
+    which needs `GLASSINE_RUN_MARKDOWN_PRINT_TEST=1`). Not looked at by eye:
+    a heading's copied text may now start with a no-break space. iOS and Quick
+    Look output are unchanged. This closes the "candidate for next work" in
+    the 1.11.1 entry below.
+  - **Seen while testing, not fixed:** one rewrite of a watched PDF can reach
+    `FileWatcher` as two signature changes a few hundred milliseconds apart,
+    so the document reloads twice; a highlight added between the two is
+    dropped. `HighlightsTests.saveAs` waits 800 ms for that reason.
+  - **Tests.** Core 267, Mac 118 plus the five XCTest event tests (one
+    skipped), all passing; the iOS app compiles for the simulator SDK.
+  - **Not in this release, and not on `main`: the iOS fixes.** F6, F8, F14,
+    F16 and F22 (first pass) and F2 and F17 (second pass, a rewrite of how
+    `DocumentSession` opens a file) are written and compile, but have never
+    been run: the MacBook has no iOS simulator runtime. F8 is the important
+    one (file presenters are removed when the app enters the background, as
+    Apple's `NSFileCoordinator` page requires). Claude changed Codex's F8 so
+    that a file missing on return to the foreground no longer closes the open
+    document. They are on two stacked branches off this one:
+    `codex/fix-review-2026-11-24-ios` (first pass) and
+    `codex/fix-review-2026-11-24-ios-open-path` (F2 and F17). Run them on a
+    simulator or device before merging either; the manual steps for each
+    finding are in the review. The one iOS line that did land is F3's `find.stop()` in
+    `DocumentSession.close()`, needed to compile.
+  - **Left alone by decision:** F5, F12, F13, F19, F21 (rare or contrived; see
+    the review for each).
 - **Released 1.11.1 (Claude, 2026-11-21): links that wrap over several lines
   open.** Build 28, tag `v1.11.1`. Branch `fix/multiline-links` off `main` at
   `9213b64` (1.11.0), merged as `d4c020c`. Dan hit it on

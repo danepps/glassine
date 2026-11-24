@@ -77,6 +77,8 @@ final class FindForwarder: NSObject, PDFDocumentDelegate {
 final class ProbeDocument: PDFDocument {
     var started: [String] = []
     var cancelCount = 0
+    var onCancel: (() -> Void)?
+    var cancellationEndsFinding = true
     private var finding = false
 
     override var isFinding: Bool { finding }
@@ -88,7 +90,8 @@ final class ProbeDocument: PDFDocument {
 
     override func cancelFindString() {
         cancelCount += 1
-        finding = false
+        if cancellationEndsFinding { finding = false }
+        onCancel?()
     }
 
     /// A selection that really belongs to this document, for the identity checks.
@@ -423,6 +426,105 @@ struct FindControllerTests {
     }
 
     // MARK: Cancellation, replaced documents and stale timers (BUG-002)
+
+    @Test("Closing during query replacement drops the pending query and late results")
+    func stopDropsPendingQueryAndLateResults() {
+        let document = makeProbeDocument()
+        let hit = document.firstMatch("alpha")
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        controller.startFind("alpha")
+        controller.startFind("beta")
+        #expect(controller.pendingQuery == "beta")
+        let clears = delegate.clears
+        let counts = delegate.counts
+        let steps = delegate.stepStates
+
+        controller.stop()
+        controller.findDidEnd(in: document)
+        controller.findDidEnd()
+        controller.findDidMatch(hit)
+        // An empty selection must not pass the identity check just because
+        // both its page's document and the controller's document are nil.
+        controller.findDidMatch(PDFSelection(document: document))
+
+        #expect(document.started == ["alpha"])
+        #expect(controller.pendingQuery == nil)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(!controller.findInProgress)
+        #expect(controller.document == nil)
+        #expect(controller.delegate == nil)
+        #expect(controller.matches.isEmpty)
+        #expect(controller.countText == "")
+        #expect(delegate.shown.isEmpty && delegate.updates.isEmpty)
+        #expect(delegate.clears == clears)
+        #expect(delegate.counts == counts)
+        #expect(delegate.stepStates == steps)
+    }
+
+    @Test("Closing retires the pending query even if PDFKit never reports its end")
+    func stopRetiresCancellationFallback() async {
+        let document = makeProbeDocument()
+        let controller = FindController(document: document)
+        controller.startFind("alpha")
+        controller.startFind("beta")
+        controller.stop()
+
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        #expect(document.started == ["alpha"])
+        #expect(controller.pendingQuery == nil)
+        #expect(!controller.isAwaitingCancelledFindEnd)
+        #expect(!controller.findInProgress)
+    }
+
+    @Test("Closing ignores synchronous cancellation callbacks and queued highlight updates",
+          arguments: [false, true])
+    func stopIgnoresReentrantCancellation(pendingReplacement: Bool) async {
+        let document = makeProbeDocument()
+        let hit = document.firstMatch("alpha")
+        let controller = FindController(document: document)
+        let delegate = FakeFindDelegate()
+        controller.delegate = delegate
+        controller.startFind("alpha")
+        controller.findDidMatch(hit)
+        controller.findDidMatch(hit)
+        if pendingReplacement {
+            // PDFKit may still report a cancelled search as running until its
+            // end arrives, so closing must cancel again with beta still queued.
+            document.cancellationEndsFinding = false
+            controller.startFind("beta")
+            #expect(controller.pendingQuery == "beta")
+        }
+        let shown = delegate.shown
+        let updates = delegate.updates.count
+        let counts = delegate.counts
+        let clears = delegate.clears
+        let steps = delegate.stepStates
+        document.onCancel = { [weak controller] in
+            MainActor.assumeIsolated {
+                guard let controller else { return }
+                #expect(controller.document == nil)
+                #expect(controller.pendingQuery == nil)
+                #expect(!controller.isAwaitingCancelledFindEnd)
+                #expect(!controller.findInProgress)
+                controller.findDidEnd()
+                controller.findDidMatch(hit)
+            }
+        }
+        defer { document.onCancel = nil }
+
+        controller.stop()
+        #expect(document.cancelCount == (pendingReplacement ? 2 : 1))
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        #expect(controller.matches.isEmpty)
+        #expect(controller.countText == "")
+        #expect(delegate.shown == shown)
+        #expect(delegate.updates.count == updates)
+        #expect(delegate.counts == counts)
+        #expect(delegate.clears == clears)
+        #expect(delegate.stepStates == steps)
+    }
 
     @Test("Clearing the field during a pending cancellation clears the queue too")
     func clearingDuringCancellationDropsThePendingQuery() async {

@@ -52,7 +52,11 @@ struct MarkdownHTMLTests {
             }
             searchFrom = range.upperBound
         }
+        #if os(macOS)
+        #expect(converted.html.contains("&#160;</a>One</h1>"))
+        #else
         #expect(converted.html.contains("<a class=\"fh\" href=\"glassine-outline://0\">One</a></h1>"))
+        #endif
     }
 
     @Test("A relative image inside the base directory is inlined; one outside is not")
@@ -544,6 +548,60 @@ struct MarkdownFootnoteTests {
         #expect(html.contains("The note."))
     }
 
+    @Test("A heading immediately after a definition stays in the body and outline",
+          arguments: [false, true])
+    func headingAfterDefinition(referenced: Bool) throws {
+        let converted = convert("Intro.\(referenced ? "[^n]" : "")\n\n[^n]: A note.\n# Actual section\nThis belongs in the document body.")
+        #expect(converted.headings.map(\.title) == ["Actual section"])
+        let heading = try #require(converted.html.range(of: "<h1 id=\"actual-section\">"))
+        let paragraph = try #require(converted.html.range(of: "<p>This belongs in the document body.</p>"))
+        #expect(heading.lowerBound < paragraph.lowerBound)
+        if referenced {
+            let notes = try #require(converted.html.range(of: "<section class=\"footnotes\">"))
+            #expect(paragraph.upperBound < notes.lowerBound)
+        } else {
+            #expect(!converted.html.contains("A note."))
+        }
+    }
+
+    @Test("Paragraph-interrupting blocks end a footnote's lazy continuation", arguments: [
+        "# Heading", "   ### Heading", "```swift\nlet value = 1\n```",
+        "~~~\ncode\n~~~", "> Quotation", "- Item", "+ Item", "* Item",
+        "1. Item", "1) Item", "---", "* * *", "___",
+        "<div>Block</div>", "<!-- comment -->", "<?instruction?>", "<![CDATA[data]]>"
+    ])
+    func interruptingBlocks(block: String) {
+        let notes = MarkdownFootnotes.extract(from: "[^n]: A note.\n\(block)")
+        #expect(notes.bodies["n"] == "A note.")
+        #expect(notes.text.contains(block))
+        let actual = convert("[^n]: A note.\n\(block)")
+        #expect(actual.html == convert(block).html)
+    }
+
+    @Test("Block-like text that cannot interrupt a paragraph stays in the note", arguments: [
+        "ordinary continuation", "#not-a-heading", "####### Too many hashes",
+        "2. Not a starting list", "-", "*", "<span>inline</span>", "===",
+        "```invalid`info"
+    ])
+    func noninterruptingContinuation(line: String) {
+        let notes = MarkdownFootnotes.extract(from: "[^n]: A note.\n\(line)")
+        #expect(notes.bodies["n"] == "A note.\n\(line)")
+        #expect(notes.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    @Test("Explicitly indented note blocks stay in the note", arguments: ["    ", "\t"])
+    func indentedBlocks(indent: String) {
+        let block = ["# Note heading", "", "- Note item", "", "```", "note code", "```"]
+        let source = block.map { $0.isEmpty ? "" : indent + $0 }.joined(separator: "\n")
+        let converted = convert("Text.[^n]\n\n[^n]: A note.\n\(source)\n\nBody after the note.")
+        #expect(converted.headings.isEmpty)
+        let note = converted.html.components(separatedBy: "<section class=\"footnotes\">").last ?? ""
+        #expect(note.contains("<h1>Note heading</h1>"))
+        #expect(note.contains("<li><p>Note item</p>"))
+        #expect(note.contains("<pre><code>note code\n</code></pre>"))
+        #expect(!note.contains("Body after the note."))
+    }
+
     @Test("A reference with no definition stays literal text")
     func undefined() {
         let html = convert("Nothing defines this.[^ghost]\n").html
@@ -701,6 +759,23 @@ struct MarkdownFootnoteTests {
 @Suite("Markdown heading anchors")
 struct MarkdownHeadingAnchorTests {
 
+    #if os(macOS)
+    @Test("Mac outline markers are siblings of the heading's links", arguments: [
+        ("[Fully linked](https://example.com)", "<a href=\"https://example.com\">Fully linked</a>"),
+        ("[Leading](https://example.com) link", "<a href=\"https://example.com\">Leading</a> link"),
+        ("Middle [link](https://example.com) here", "Middle <a href=\"https://example.com\">link</a> here")
+    ])
+    func linkedHeadingMarkers(markdown: String, inner: String) throws {
+        let converted = MarkdownHTML.body(fromMarkdown: "## " + markdown, baseDirectory: nil)
+        let marker = try #require(converted.html.range(of: "glassine-outline://0"))
+        let markerEnd = try #require(converted.html.range(of: "</a>", range: marker.upperBound..<converted.html.endIndex))
+        #expect(converted.html[markerEnd.upperBound...].hasPrefix(inner + "</h2>"))
+        #expect(converted.headings.count == 1)
+        let preview = MarkdownHTML.body(fromMarkdown: "## " + markdown, baseDirectory: nil, output: .preview)
+        #expect(preview.html == "<h2 id=\"\(converted.headings[0].slug)\">\(inner)</h2>\n")
+    }
+    #endif
+
     private func html(_ markdown: String) -> String {
         MarkdownHTML.body(fromMarkdown: markdown, baseDirectory: nil).html
     }
@@ -794,7 +869,14 @@ struct MarkdownHeadingAnchorTests {
     @Test("The outline anchor is still inside the heading, after the id")
     func anchorSurvives() {
         let output = html("# One\n\n## Two\n")
+        #if os(macOS)
+        #expect(output.contains("<h1 id=\"one\"><a class=\"fh\" href=\"glassine-outline://0\" "))
+        #expect(output.contains("&#160;</a>One</h1>"))
+        #expect(output.contains("<h2 id=\"two\"><a class=\"fh\" href=\"glassine-outline://1\" "))
+        #expect(output.contains("&#160;</a>Two</h2>"))
+        #else
         #expect(output.contains("<h1 id=\"one\"><a class=\"fh\" href=\"glassine-outline://0\">One</a></h1>"))
         #expect(output.contains("<h2 id=\"two\"><a class=\"fh\" href=\"glassine-outline://1\">Two</a></h2>"))
+        #endif
     }
 }

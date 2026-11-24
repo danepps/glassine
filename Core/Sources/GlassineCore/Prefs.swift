@@ -312,8 +312,10 @@ public enum Prefs {
     /// still read (and are treated as least recently used).
     public static func lastPosition(for url: URL) -> Position? {
         let table = defaults.dictionary(forKey: Key.lastPositions) ?? [:]
-        guard let raw = table[url.path] as? [Double], raw.count >= 3 else { return nil }
-        return Position(pageIndex: Int(raw[0]), x: raw[1], y: raw[2])
+        guard let raw = table[url.path] as? [Double], raw.count >= 3,
+              let pageIndex = Int(exactly: raw[0]), pageIndex >= 0,
+              raw[1].isFinite, raw[2].isFinite else { return nil }
+        return Position(pageIndex: pageIndex, x: raw[1], y: raw[2])
     }
 
     private static let maxPositions = 500
@@ -357,8 +359,8 @@ public enum Prefs {
     // MARK: Recent documents
 
     public static let maxRecentDocuments = 30
-    /// Protect whole read-modify-write operations, including main-thread
-    /// removals and bookmark relocations that overlap background opens.
+    /// Protect whole read-modify-write operations, including bookmark
+    /// relocations that overlap background opens and removals.
     private static let recentsLock = NSLock()
 
     /// Most recent first, capped. Glassine's own list rather than
@@ -398,8 +400,8 @@ public enum Prefs {
     }
 
     /// Bookmark creation reads the file, so keep it off the main thread and
-    /// outside recentsLock. The queue also preserves the order of opens, and
-    /// recents resolution and the first-launch seed queue up behind them.
+    /// outside recentsLock. The queue also preserves the order of opens and
+    /// removals. Recents resolution and the first-launch seed queue up behind them.
     private static let recentsQueue = DispatchQueue(label: "com.epps.Glassine.recents")
 
     /// Record an open: the file moves to the front and takes today's date.
@@ -416,24 +418,28 @@ public enum Prefs {
         }
     }
 
-    /// Block until every queued `noteRecentDocument` has been written. Only
+    /// Block until every queued open and removal has been written. Only
     /// worth calling where the writes have to have landed before something else
     /// reads them -- a test, or a deliberate flush before quitting.
     public static func flushRecentDocumentWrites() {
         recentsQueue.sync {}
     }
 
-    /// Run `work` on the recents queue, after every open already noted and
-    /// before any noted later. Recents resolution runs here, so its rows are
-    /// never older than an open the reader has already made, and so does the
-    /// Mac's first-launch seed, so an open noted after the seed was queued
-    /// lands on top of the seeded list instead of racing it.
+    /// Run `work` on the recents queue, after every open and removal already
+    /// requested and before any requested later. Recents resolution runs here,
+    /// so its rows include those changes. So does the Mac's first-launch seed,
+    /// so an open noted after the seed was queued lands on top of the seeded
+    /// list instead of racing it.
     public static func performAfterRecentDocumentWrites(_ work: @escaping @Sendable () -> Void) {
         recentsQueue.async(execute: work)
     }
 
+    /// Queue the removal behind earlier opens so a pending bookmark write
+    /// cannot put the row back. Read updated rows through the recents queue.
     public static func removeRecentDocument(path: String) {
-        updateRecentDocuments { list in list.removeAll { $0.path == path } }
+        recentsQueue.async {
+            updateRecentDocuments { list in list.removeAll { $0.path == path } }
+        }
     }
 
     /// Where the entry's file is now: its stored path if that still exists,

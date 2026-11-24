@@ -1202,7 +1202,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     func windowWillClose(_ notification: Notification) {
-        findController.cancelIfFinding()
+        findController.stop()
         position.saveOnClose()
         // A document swapped in by a reload may still have PDFKit layout timers
         // pending for pages not yet drawn. Left attached, they fire after the

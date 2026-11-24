@@ -39,9 +39,9 @@ public final class FileWatcher: @unchecked Sendable {
     private var pending: DispatchWorkItem?
     private var reopenAttempts = 0
     private var stopped = false
-    /// Bumped by `acceptCurrentState()`. A change already on its way to the
-    /// main actor carries the epoch it was seen in, and is dropped there if the
-    /// owner has since said the file's current state is its own.
+    /// Bumped by `acceptCurrentState()` and `retarget(to:)`. A change already on
+    /// its way to the main actor carries the epoch it was seen in, and is dropped
+    /// there if the owner has since accepted that state or changed the URL.
     private var epoch = 0
 
     public init(url: URL, onChange: @escaping @MainActor @Sendable () -> Void) {
@@ -75,10 +75,15 @@ public final class FileWatcher: @unchecked Sendable {
         }
     }
 
-    /// Follow the file to a new location (NSDocument reports moves).
+    /// Follow the owner's new URL, adopting its current state. Retire queued
+    /// checks and deliveries from the old file before returning, just as for
+    /// an accepted save. The watcher's queue never waits on the main actor.
     public func retarget(to newURL: URL) {
-        queue.async { [weak self] in
-            guard let self, !self.stopped else { return }
+        queue.sync {
+            guard !self.stopped else { return }
+            self.pending?.cancel()
+            self.pending = nil
+            self.epoch &+= 1
             self.url = newURL
             self.signature = Self.signature(of: newURL)
             self.fileSource?.cancel()

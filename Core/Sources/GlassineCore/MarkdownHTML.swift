@@ -195,7 +195,7 @@ public enum MarkdownHTML {
     /// can re-wrap the same body without reparsing the Markdown.
     ///
     /// The headings come back with it: the caller turns them into the rendered
-    /// PDF's outline, using the anchors this leaves around each one. So do the
+    /// PDF's outline, using the anchors this adds to each one. So do the
     /// word-count statistics, which are counted from the same parse.
     ///
     /// Footnotes are two of the passes: their definitions come out of the text
@@ -426,8 +426,8 @@ public enum MarkdownHTML {
 
     // MARK: Headings
 
-    /// Wraps each heading's content in an anchor carrying a private-scheme URL,
-    /// and records the heading in the same pass so the numbering and the list
+    /// Adds an anchor carrying a private-scheme URL to each heading, and
+    /// records the heading in the same pass so the numbering and the list
     /// can never drift apart. WebKit emits a link annotation for every `<a>`
     /// but no PDF outline, so those annotations are how the renderer learns
     /// where each heading landed. The anchor is styled invisible.
@@ -462,9 +462,23 @@ public enum MarkdownHTML {
                                             slug: slug))
             let inner = heading.children.map { HTMLFormatter.format($0) }.joined()
             let level = heading.level
-            let content = includeOutlineLinks
-                ? "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
-                : inner
+            let content: String
+            if includeOutlineLinks {
+                #if os(macOS)
+                // A separate, nonempty marker gives WebKit printable link
+                // geometry even when the entire heading is another link.
+                // The right margin cancels its width without moving it outside
+                // the printable area. The title's layout stays unchanged and
+                // its own links remain siblings.
+                content = "<a class=\"fh\" href=\"glassine-outline://\(index)\" "
+                    + "aria-hidden=\"true\" style=\"display: inline-block; width: 1pt; margin-right: -1pt;\">&#160;</a>" + inner
+                #else
+                // iOS measures this anchor's text and bounds before printing.
+                content = "<a class=\"fh\" href=\"glassine-outline://\(index)\">" + inner + "</a>"
+                #endif
+            } else {
+                content = inner
+            }
             return HTMLBlock("<h\(level) id=\"\(slug)\">"
                              + content + "</h\(level)>\n")
         }
@@ -804,7 +818,7 @@ public enum MarkdownHTML {
         h4, h5, h6 { font-size: var(--body-size); }
         p { margin: 0 0 var(--paragraph-gap); orphans: 2; widows: 2; }
         a { color: var(--link); text-decoration: none; }
-        /* The outline anchor wrapped around every heading must not be visible;
+        /* The private outline anchor must not change the heading's colours;
            this rule has to come after the one above to win. */
         a.fh { color: inherit; text-decoration: none; }
         /* Footnotes: a superscript marker in the prose, and the notes

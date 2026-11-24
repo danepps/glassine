@@ -74,4 +74,27 @@ struct FileWatcherTests {
             #expect(counter.count == 0)
         }
     }
+
+    @Test("Retargeting drops an old-file delivery and watches the new baseline")
+    func retargetDropsOldChanges() async throws {
+        try await withFile { url in
+            let destination = url.deletingLastPathComponent().appendingPathComponent("copy.pdf")
+            try Data("copy".utf8).write(to: destination)
+            let counter = Counter()
+            let watcher = FileWatcher(url: url) { counter.count += 1 }
+            defer { watcher.stop() }
+            try Data("old file changed".utf8).write(to: url, options: .atomic)
+            watcher.poke()
+            // Keep delivery queued on main until after the URL switch.
+            Thread.sleep(forTimeInterval: 0.5)
+            watcher.retarget(to: destination)
+            try await Task.sleep(for: .milliseconds(400))
+            #expect(counter.count == 0)
+            try Data("old file changed again".utf8).write(to: url, options: .atomic)
+            try await Task.sleep(for: .milliseconds(400))
+            #expect(counter.count == 0)
+            try Data("new file changed".utf8).write(to: destination, options: .atomic)
+            try await waitUntil { counter.count == 1 }
+        }
+    }
 }

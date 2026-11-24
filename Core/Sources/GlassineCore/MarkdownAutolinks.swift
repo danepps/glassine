@@ -19,11 +19,9 @@ import Markdown
 /// It works on `Text` nodes only, so code spans, code blocks and raw HTML are
 /// never touched, and it leaves alone the text of a link (which is already a
 /// link), an image (its alt text goes into an attribute) and a heading. A
-/// heading is skipped because `HeadingAnchorer` wraps every heading's content
-/// in its own outline anchor for the PDF, and a link inside it would be an
-/// anchor nested in an anchor: the HTML parser closes the outline anchor at
-/// the inner one, and a heading that is nothing but an address loses its
-/// bookmark position.
+/// heading originally had to be skipped to avoid nesting links inside its
+/// outline anchor. The Mac now uses a separate geometry marker, but headings
+/// keep the established behaviour of displaying bare addresses as plain text.
 ///
 /// `MarkupRewriter` maps one node to one node, so the splitting happens a
 /// level up, in `defaultVisit`, where a parent rebuilds its children. Runs of
@@ -174,15 +172,32 @@ struct MarkdownAutolinker: MarkupRewriter {
     /// by cmark when no reference matches it -- does not keep the `]`.
     private static func trimmedEnd(_ s: [Unicode.Scalar], start: Int, end: Int) -> Int {
         var end = end
+        // Count once, then update only the closer being removed. Recounting
+        // the remaining address for each unmatched bracket makes a long
+        // suffix quadratic. Punctuation and entity suffixes contain no brackets.
+        var parentheses = 0
+        var brackets = 0
+        for c in s[start..<end] {
+            switch c {
+            case "(": parentheses += 1
+            case ")": parentheses -= 1
+            case "[": brackets += 1
+            case "]": brackets -= 1
+            default: break
+            }
+        }
         while end > start {
             let c = s[end - 1]
             if asTyped(c).unicodeScalars.allSatisfy(trailing.contains) {
                 end -= 1
             } else if c == ")" || c == "]" {
-                let opener: Unicode.Scalar = c == ")" ? "(" : "["
-                let opened = s[start..<end].filter { $0 == opener }.count
-                let closed = s[start..<end].filter { $0 == c }.count
-                guard closed > opened else { break }
+                if c == ")" {
+                    guard parentheses < 0 else { break }
+                    parentheses += 1
+                } else {
+                    guard brackets < 0 else { break }
+                    brackets += 1
+                }
                 end -= 1
             } else if c == ";" {
                 var k = end - 2

@@ -56,8 +56,9 @@ public protocol HTMLPrinter: AnyObject {
 /// still waiting in the queue (the loser's completion gets `.superseded`).
 /// A stuck load gets one retry with a fresh printer before reporting a timeout.
 /// Suspending abandons the printer but keeps its job for a fresh start on wake.
-/// The printer is torn down 30 s after the last job, because a WebContent
-/// process costs 60-120 MB and a Markdown-free session should not pay for it.
+/// A requested release checks for idle teardown after 30 s, and retries 30 s
+/// after the queue drains if it is still busy then. A WebContent process costs
+/// 60-120 MB and a Markdown-free session should not pay for it.
 @MainActor
 public final class RenderQueue: MarkdownTypesetter {
 
@@ -78,6 +79,7 @@ public final class RenderQueue: MarkdownTypesetter {
     private var current: Job?
     private var watchdog: DispatchWorkItem?
     private var idleTeardown: DispatchWorkItem?
+    private var releaseRequested = false
     private var didRetryPrint = false
     private var didRetryTimeout = false
     private var isSuspended = false
@@ -102,6 +104,7 @@ public final class RenderQueue: MarkdownTypesetter {
                        key: String,
                        layout: MarkdownLayout,
                        completion: @escaping (Result<RenderedMarkdown, Error>) -> Void) {
+        releaseRequested = false
         cancelIdleTeardown()
 
         if let index = queue.firstIndex(where: { $0.key == key }) {
@@ -138,14 +141,16 @@ public final class RenderQueue: MarkdownTypesetter {
     }
 
     public func releaseIfIdle() {
+        releaseRequested = true
         cancelIdleTeardown()
         let stamp = idleGeneration
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, stamp == self.idleGeneration,
-                      self.current == nil, self.queue.isEmpty else { return }
-                self.printer.teardown()
+                guard let self, stamp == self.idleGeneration else { return }
                 self.idleTeardown = nil
+                guard self.current == nil, self.queue.isEmpty else { return }
+                self.releaseRequested = false
+                self.printer.teardown()
             }
         }
         idleTeardown = work
@@ -155,7 +160,13 @@ public final class RenderQueue: MarkdownTypesetter {
     // MARK: Queue
 
     private func pump() {
-        guard !isSuspended, current == nil, !queue.isEmpty else { return }
+        guard !isSuspended, current == nil else { return }
+        guard !queue.isEmpty else {
+            // A close-time check may have fired while a job was still running.
+            // Keep the request until the queue drains and can try again.
+            if releaseRequested, idleTeardown == nil { releaseIfIdle() }
+            return
+        }
         current = queue.removeFirst()
         didRetryTimeout = false
         startCurrent()
