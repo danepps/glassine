@@ -93,9 +93,11 @@ final class DocumentSession {
     private(set) var url: URL
     let kind: Kind
     private(set) var title: String
-    /// The URL the security scope was started on; it has to be stopped on the
-    /// same one even after the file has moved.
-    @ObservationIgnored private let scopedURL: URL
+    /// Shared with an in-flight read, so close cannot release access while a
+    /// worker is still using it. The token remembers the original scoped URL.
+    @ObservationIgnored private var access: DocumentAccess?
+    @ObservationIgnored private let openGeneration = DocumentOpenGeneration()
+    @ObservationIgnored private var openingChanged = false
 
     private(set) var phase: Phase = .opening
     private(set) var document: PDFDocument?
@@ -119,7 +121,7 @@ final class DocumentSession {
     @ObservationIgnored private var styling = MarkdownStyling.current
     @ObservationIgnored private var watcher: FileWatcher?
     /// Both kinds have one: it is how a Files-app rename or move reaches the
-    /// session. Only Markdown also listens to it for content changes.
+    /// session. After opening, only Markdown also listens for content changes.
     @ObservationIgnored private var presenter: DocumentFilePresenter?
     @ObservationIgnored private var presenterRegistration: FilePresenterRegistration?
     /// App-wide state, independent of any one iPad scene or attached PDFView.
@@ -211,7 +213,6 @@ final class DocumentSession {
     /// strip binds straight to that view, so this is what tells it to rebuild.
     private(set) var pdfViewToken = 0
     @ObservationIgnored private var position: ReadingPosition?
-    @ObservationIgnored private var accessingScope = false
     /// When the iCloud download wait gives up. Nil when nothing is waiting.
     @ObservationIgnored private var downloadDeadline: Date?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -223,14 +224,13 @@ final class DocumentSession {
 
     init(url: URL) {
         self.url = url
-        self.scopedURL = url
         self.kind = DocumentTypes.kind(of: url)
         self.title = url.deletingPathExtension().lastPathComponent
         self.isBackgrounded = UIApplication.shared.applicationState == .background
         // Held for the life of the session, not just the read: PDFKit reads
         // pages lazily, so releasing the scope after the open would strand
         // every page that has not been rendered yet.
-        accessingScope = url.startAccessingSecurityScopedResource()
+        access = DocumentAccess(url: url)
         find.delegate = self
         // Not `find` directly: the session filters the print path's ghost text
         // out of the match stream before the state machine ever sees it.
@@ -239,21 +239,17 @@ final class DocumentSession {
     }
 
     deinit {
-        // Not `close()`: a deinit cannot hop to the main actor, and a Timer is
-        // not Sendable so it cannot even be read here. The download timer stops
-        // itself when its weak reference to the session has gone. A scene that
-        // disconnects (an iPad window closed) never calls `close()`, so the two
-        // resources that would otherwise outlive the session are released here
-        // or by their owning boxes. The coordinator retains its presenters, so
-        // `presenterRegistration` removes its presenter when the box goes.
-        if accessingScope { scopedURL.stopAccessingSecurityScopedResource() }
-        // The preference and application notification tokens remove themselves.
+        // A disconnected scene can release the session without calling close.
+        // A worker may still own the registration, so retire it explicitly;
+        // the shared access token stays alive until that worker is finished.
+        presenterRegistration?.close()
     }
 
     // MARK: Opening
 
     func open() {
-        guard phase == .opening else { return }
+        guard !isClosed, phase == .opening, let generation = openGeneration.begin() else { return }
+        presenterRegistration?.close()
         let status = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
             .ubiquitousItemDownloadingStatus
         if let status, status != .current {
@@ -268,10 +264,10 @@ final class DocumentSession {
                 return
             }
             downloadDeadline = Date().addingTimeInterval(Self.downloadTimeout)
-            schedulePoll()
+            schedulePoll(generation: generation)
             return
         }
-        load()
+        load(generation: generation)
     }
 
     /// How long the reader waits at "Downloading…" before saying so. Generous,
@@ -284,10 +280,10 @@ final class DocumentSession {
     /// weak reference, so it stops the moment the scene lets the session go --
     /// a repeating Timer would have to be invalidated from `deinit`, which a
     /// main-actor class cannot do.
-    private func schedulePoll() {
+    private func schedulePoll(generation: Int) {
         let box = MainBox(self)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            MainActor.assumeIsolated { box.value?.pollDownload() }
+            MainActor.assumeIsolated { box.value?.pollDownload(generation: generation) }
         }
     }
 
@@ -295,8 +291,8 @@ final class DocumentSession {
     /// cannot deliver it (no connection, no space, the item gone from the
     /// server), or the deadline passes. Without the last two a failed download
     /// spins at "Downloading…" for as long as the scene is open.
-    private func pollDownload() {
-        guard phase == .downloading else { return }
+    private func pollDownload(generation: Int) {
+        guard openGeneration.accepts(generation), phase == .downloading else { return }
         let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey,
                                                        .ubiquitousItemDownloadingErrorKey])
         if let error = values?.ubiquitousItemDownloadingError {
@@ -310,12 +306,12 @@ final class DocumentSession {
                 phase = .failed("\(url.lastPathComponent) did not finish downloading from "
                     + "iCloud. It may still be on its way; try opening it again in a moment.")
             } else {
-                schedulePoll()
+                schedulePoll(generation: generation)
             }
             return
         }
         downloadDeadline = nil
-        load()
+        load(generation: generation)
     }
 
     /// Ends the wait with iCloud's own explanation, which the alert shows under
@@ -326,51 +322,88 @@ final class DocumentSession {
             + error.localizedDescription)
     }
 
-    private func load() {
+    private func load(generation: Int) {
+        guard openGeneration.accepts(generation) else { return }
+        // The download poll hands off here too. It must stop polling while the
+        // read is in flight, and the reader must keep showing its opening UI.
+        phase = .opening
         guard kind == .pdf else {
-            loadMarkdown()
+            loadMarkdown(generation: generation)
             return
         }
-        var opened: PDFDocument?
-        var coordinationError: NSError?
-        // A coordinated read, so a Files-app or iCloud writer is not mid-save.
-        // PDFKit then reads pages lazily off the same URL, which is why the
-        // security scope above is held for the session rather than the block.
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [],
-                                       error: &coordinationError) { readURL in
-            opened = PDFDocument(url: readURL)
+        guard let (presenter, registration) = beginRead(generation: generation) else { return }
+        let url = self.url
+        let access = self.access
+        let box = MainBox(self)
+        DispatchQueue.global(qos: .userInitiated).async {
+            withExtendedLifetime(access) {
+                let opened = CoordinatedDocumentRead<OpenedPDF>.read(
+                    at: url, presenter: presenter, registration: registration,
+                    read: { OpenedPDF(url: $0) })
+                DispatchQueue.main.async {
+                    guard let self = box.value, self.openGeneration.accepts(generation) else {
+                        registration.close()
+                        return
+                    }
+                    guard let opened, let document = opened.value.take() else {
+                        // Same wording as the Mac's read error.
+                        self.phase = .failed("\(self.url.lastPathComponent) could not be opened as a PDF.")
+                        return
+                    }
+                    if self.restartChangedRead(at: opened.url, presenter: presenter) { return }
+                    // Before anything touches a page: PDFKit calls classForPage lazily, and
+                    // a page vended before the delegate is in place is a plain PDFPage
+                    // forever and can never draw a dark-mode find highlight.
+                    document.delegate = self.bridge
+                    self.document = document
+                    self.pageCount = document.pageCount
+                    self.find.document = document
+                    self.phase = .ready
+                    if let currentURL = presenter.presentedItemURL { self.fileDidMove(to: currentURL) }
+                    Prefs.noteRecentDocument(self.url, pageCount: document.pageCount)
+                    self.installInView()
+                }
+            }
         }
-        guard let document = opened else {
-            // Same wording as the Mac's read error.
-            phase = .failed("\(url.lastPathComponent) could not be opened as a PDF.")
-            return
-        }
-        // Before anything touches a page: PDFKit calls classForPage lazily, and
-        // a page vended before the delegate is in place is a plain PDFPage
-        // forever and can never draw a dark-mode find highlight.
-        document.delegate = bridge
-        self.document = document
-        pageCount = document.pageCount
-        find.document = document
-        phase = .ready
-        Prefs.noteRecentDocument(url, pageCount: document.pageCount)
-        startPresentingPDF()
-        installInView()
     }
 
-    /// The PDF half of the Mac's NSDocument file tracking: a presenter that
-    /// follows a Files-app rename or move, as Markdown's does. Moves only: a
-    /// PDF rewritten in place is not reloaded here, where NSDocument would
-    /// revert to it on the Mac. That is a separate change, with its own
-    /// questions about the reading position and an active search.
-    private func startPresentingPDF() {
-        guard !isClosed, kind == .pdf, presenter == nil else { return }
-        let presenter = DocumentFilePresenter(url: url, onChange: nil, onMove: { [weak self] newURL in
-            self?.fileDidMove(to: newURL)
+    /// Prepare on main, register on the worker inside its coordinated read.
+    /// Notifications can reach main before the result does; changes are held
+    /// for installation, and the presenter's locked URL remembers any move.
+    /// Once open, PDFs still follow moves only; in-place refresh is a separate policy.
+    private func beginRead(generation: Int) -> (DocumentFilePresenter, FilePresenterRegistration)? {
+        guard openGeneration.accepts(generation) else { return nil }
+        openingChanged = false
+        let presenter = DocumentFilePresenter(url: url, onChange: { [weak self] in
+            guard let self, self.openGeneration.accepts(generation) else { return }
+            if self.phase == .ready {
+                if self.kind == .markdown { self.watcher?.poke() }
+            } else {
+                self.openingChanged = true
+            }
+        }, onMove: { [weak self] newURL in
+            guard let self, self.openGeneration.accepts(generation), self.phase == .ready else { return }
+            self.fileDidMove(to: newURL)
         })
+        let registration = FilePresenterRegistration(presenter: presenter,
+                                                      isBackgrounded: isBackgrounded,
+                                                      initialReadPending: true)
         self.presenter = presenter
-        presenterRegistration = FilePresenterRegistration(presenter: presenter,
-                                                           isBackgrounded: isBackgrounded)
+        presenterRegistration = registration
+        return (presenter, registration)
+    }
+
+    /// A notification delivered before installation makes the initial read
+    /// stale, even for a PDF that will not live-reload once open. Markdown also
+    /// needs a fresh conversion after a move, because its image base changed.
+    private func restartChangedRead(at readURL: URL, presenter: DocumentFilePresenter,
+                                    watcher: FileWatcher? = nil) -> Bool {
+        let currentURL = presenter.presentedItemURL ?? readURL
+        guard openingChanged || (kind == .markdown && currentURL != readURL) else { return false }
+        watcher?.stop()
+        fileDidMove(to: currentURL)
+        open()
+        return true
     }
 
     #if DEBUG
@@ -421,6 +454,8 @@ final class DocumentSession {
     func close() {
         guard !isClosed else { return }
         isClosed = true
+        openGeneration.close()
+        downloadDeadline = nil
         presenterRegistration?.close()
         lifecycleObservers.removeAll()
         find.stop()
@@ -442,10 +477,7 @@ final class DocumentSession {
         presenter = nil
         reloader?.invalidate()
         if kind == .markdown { MarkdownRendererIOS.shared.releaseIfIdle() }
-        if accessingScope {
-            scopedURL.stopAccessingSecurityScopedResource()
-            accessingScope = false
-        }
+        access = nil
     }
 
     /// The reading position, written now rather than at the next page turn:
@@ -489,7 +521,7 @@ final class DocumentSession {
         isBackgrounded = false
         guard let presenterRegistration else { return }
         // A move already delivered to the presenter may have updated its URL.
-        if let currentURL = presenter?.presentedItemURL { fileDidMove(to: currentURL) }
+        if phase == .ready, let currentURL = presenter?.presentedItemURL { fileDidMove(to: currentURL) }
         // A move or deletion made while no presenter was registered reports
         // nothing, so the session cannot follow the file. The document already
         // on screen stays where it is rather than being closed on a
@@ -510,26 +542,58 @@ final class DocumentSession {
     /// until the first render lands. The reader is shown straight away because
     /// its empty gutter is already the right colour -- there is no white flash
     /// to hide, which is what makes "reload #0" cheap.
-    private func loadMarkdown() {
-        var data: Data?
-        var coordinationError: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [],
-                                       error: &coordinationError) { readURL in
-            data = try? Data(contentsOf: readURL)
+    private func loadMarkdown(generation: Int) {
+        guard let (presenter, registration) = beginRead(generation: generation) else { return }
+        let url = self.url
+        let access = self.access
+        let changed: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self, self.openGeneration.accepts(generation) else { return }
+            if self.phase == .ready {
+                self.reloadFromDisk()
+            } else {
+                self.openingChanged = true
+            }
         }
-        guard let data, let converted = try? MarkdownDocumentModel.content(of: data, url: url)
-        else {
-            phase = .failed("\(url.lastPathComponent) could not be read as Markdown.")
-            return
+        let box = MainBox(self)
+        DispatchQueue.global(qos: .userInitiated).async {
+            withExtendedLifetime(access) {
+                let opened = CoordinatedDocumentRead<Data>.read(
+                    at: url, presenter: presenter, registration: registration,
+                    onChange: changed, read: { try? Data(contentsOf: $0) })
+                // Conversion stays off main but outside coordination: a writer
+                // need not wait for the HTML to be built from our owned bytes.
+                let converted = opened.flatMap { try? MarkdownDocumentModel.content(of: $0.value, url: $0.url) }
+                if converted == nil {
+                    opened?.watcher?.stop()
+                    registration.close()
+                }
+                DispatchQueue.main.async {
+                    guard let self = box.value, self.openGeneration.accepts(generation) else {
+                        opened?.watcher?.stop()
+                        registration.close()
+                        return
+                    }
+                    guard let opened, let converted else {
+                        self.phase = .failed("\(self.url.lastPathComponent) could not be read as Markdown.")
+                        return
+                    }
+                    if self.restartChangedRead(at: opened.url, presenter: presenter,
+                                               watcher: opened.watcher) { return }
+                    self.content = converted
+                    self.subtitle = Self.subtitle(for: converted.stats)
+                    self.watcher = opened.watcher
+                    self.phase = .ready
+                    if let currentURL = presenter.presentedItemURL { self.fileDidMove(to: currentURL) }
+                    // No page count: Markdown has none until it has been typeset.
+                    Prefs.noteRecentDocument(self.url, pageCount: nil)
+                    self.startRender()
+                    self.observePrefs()
+                    // Check for saves whose notifications have not arrived yet.
+                    // Keep the read-time baseline so this cannot swallow one.
+                    self.watcher?.poke()
+                }
+            }
         }
-        content = converted
-        subtitle = Self.subtitle(for: converted.stats)
-        // No page count: a Markdown document has none until it has been typeset.
-        Prefs.noteRecentDocument(url, pageCount: nil)
-        phase = .ready
-        startRender()
-        startWatching()
-        observePrefs()
     }
 
     private static func subtitle(for stats: MarkdownStats) -> String {
@@ -671,29 +735,6 @@ final class DocumentSession {
 
     // MARK: Auto-refresh
 
-    /// Two watchers, because neither one alone sees every writer. The vnode
-    /// source catches an editor or a CLI writing the file directly; an
-    /// `NSFilePresenter` catches iCloud and the Files app, which write through
-    /// `NSFileCoordinator` and can leave the vnode untouched. Both poke the same
-    /// debounce and the same `(inode, mtime, size)` gate, so two notifications
-    /// for one save still cost one render.
-    private func startWatching() {
-        guard !isClosed, kind == .markdown, watcher == nil else { return }
-        watcher = FileWatcher(url: url) { [weak self] in
-            self?.reloadFromDisk()
-        }
-        let presenter = DocumentFilePresenter(url: url, onChange: { [weak self] in
-            // Straight into the watcher, so the coordinated and uncoordinated
-            // paths share one debounce and one signature gate.
-            self?.watcher?.poke()
-        }, onMove: { [weak self] newURL in
-            self?.fileDidMove(to: newURL)
-        })
-        self.presenter = presenter
-        presenterRegistration = FilePresenterRegistration(presenter: presenter,
-                                                           isBackgrounded: isBackgrounded)
-    }
-
     /// The Files app renamed or moved the open file (delivered through the
     /// presenter, on the main queue). Everything keyed by the location follows:
     /// the title, the Recents row, the reading position, and for Markdown the
@@ -719,7 +760,7 @@ final class DocumentSession {
     }
 
     private func reloadFromDisk() {
-        guard kind == .markdown else { return }
+        guard !isClosed, phase == .ready, kind == .markdown else { return }
         if reloader == nil {
             let made = MarkdownReloader()
             made.onContent = { [weak self] fresh in
@@ -1168,6 +1209,25 @@ final class DocumentSession {
         guard let path = info[AppLaunch.activityPathKey] as? String,
               FileManager.default.fileExists(atPath: path) else { return nil }
         return URL(fileURLWithPath: path)
+    }
+}
+
+/// A one-way handoff of a freshly created PDF. The worker only constructs it;
+/// every subsequent access, including taking it exactly once, is on main.
+/// `@unchecked Sendable` applies to this ownership transfer, not to PDFDocument.
+/// In particular, the worker must never ask for pages before main sets its delegate.
+private final class OpenedPDF: @unchecked Sendable {
+    private var document: PDFDocument?
+
+    init?(url: URL) {
+        guard let document = PDFDocument(url: url) else { return nil }
+        self.document = document
+    }
+
+    @MainActor
+    func take() -> PDFDocument? {
+        defer { document = nil }
+        return document
     }
 }
 
