@@ -21,8 +21,7 @@ struct ReaderView: View {
     private let prefs = PrefsModel.shared
 
     @FocusState private var findFocused: Bool
-    @State private var exportFile: ExportFile?
-    @State private var isExporting = false
+    @State private var exportFile: TemporaryExport?
 
     private var inverted: Bool { prefs.isInverted(in: colorScheme) }
 
@@ -49,8 +48,8 @@ struct ReaderView: View {
         // Only one alert per view: two `.alert` modifiers on the same view and
         // the second never presents (observed -- the go-to-page alert simply
         // did not appear in the element tree). The open-failure alert therefore
-        // hangs off the `.failed` branch of `page`, which is the only time it
-        // can fire anyway.
+        // hangs off the `.failed` branch of `page`, and output errors hang off
+        // its `.ready` branch.
         .alert(session.isContinuousMarkdown ? "Go to Position" : "Go to Page",
                isPresented: $session.isPageDialogVisible) {
             pageDialog
@@ -98,6 +97,26 @@ struct ReaderView: View {
                                        onCommand: handle)
                 .pageInversion(inverted, paper: prefs.darkPaper)
                 .ignoresSafeArea(edges: .bottom)
+                .alert(session.outputFailure?.action.failureTitle ?? "Cannot Complete Output",
+                       isPresented: Binding(
+                        get: { session.outputFailure != nil },
+                        set: { if !$0 { session.outputFailure = nil } }),
+                       presenting: session.outputFailure) { failure in
+                    Button("Retry") {
+                        session.outputFailure = nil
+                        // Let this alert dismiss before a synchronous failure
+                        // (such as unavailable printing) presents the next one.
+                        DispatchQueue.main.async {
+                            switch failure.action {
+                            case .print: printDocument()
+                            case .export: exportPDF()
+                            }
+                        }
+                    }
+                    Button("OK", role: .cancel) { session.outputFailure = nil }
+                } message: { failure in
+                    Text(failure.message)
+                }
         }
     }
 
@@ -230,10 +249,11 @@ struct ReaderView: View {
                 Divider()
             }
             Button("Print", systemImage: "printer") { printDocument() }
+                .disabled(session.isPrinting || session.isExporting)
             ShareLink(item: session.url) { Label("Share", systemImage: "square.and.arrow.up") }
             if session.kind == .markdown {
                 Button("Export as PDF…", systemImage: "square.and.arrow.down") { exportPDF() }
-                    .disabled(isExporting)
+                    .disabled(session.isExporting || session.isPrinting)
             }
             Divider()
             Button("Settings", systemImage: "gearshape") { onShowSettings() }
@@ -405,25 +425,59 @@ struct ReaderView: View {
     /// its carried-over headings -- so the same paginated re-render an export
     /// uses goes to the print controller. A PDF prints what is shown.
     private func printDocument() {
+        guard !session.isPrinting, !session.isExporting else { return }
+        session.isPrinting = true
         session.paginatedDocumentForOutput { result in
-            guard case .success(let document) = result,
-                  let data = document.dataRepresentation() else { return }
+            let document: PDFDocument
+            switch result {
+            case .success(let output): document = output
+            case .failure(let error):
+                outputFailed(.print, error: error)
+                return
+            }
+            guard let data = document.dataRepresentation() else {
+                outputFailed(.print, error: DocumentSession.nothingToExport)
+                return
+            }
             let info = UIPrintInfo(dictionary: nil)
             info.outputType = .general
             info.jobName = session.title
             let controller = UIPrintInteractionController.shared
             controller.printInfo = info
             controller.printingItem = data
-            controller.present(animated: true, completionHandler: nil)
+            let presented = controller.present(animated: true) { _, _, error in
+                Task { @MainActor in
+                    session.isPrinting = false
+                    // Cancelling the print sheet is not an error. A controller
+                    // failure, however, deserves the same retry as a render.
+                    if let error { outputFailed(.print, error: error) }
+                }
+            }
+            if !presented {
+                outputFailed(.print, error: NSError(
+                    domain: UIPrintErrorDomain, code: UIPrintError.Code.notAvailable.rawValue,
+                    userInfo: [NSLocalizedDescriptionKey: "Printing is not available right now."]))
+            }
         }
     }
 
     private func exportPDF() {
-        isExporting = true
+        guard !session.isExporting, !session.isPrinting else { return }
+        session.isExporting = true
         session.exportPDF { result in
-            isExporting = false
-            guard case .success(let url) = result else { return }
-            exportFile = ExportFile(url: url)
+            session.isExporting = false
+            switch result {
+            case .success(let file): exportFile = file
+            case .failure(let error): outputFailed(.export, error: error)
+            }
         }
+    }
+
+    private func outputFailed(_ action: DocumentSession.OutputAction, error: Error) {
+        switch action {
+        case .print: session.isPrinting = false
+        case .export: session.isExporting = false
+        }
+        session.outputFailure = .init(action: action, message: error.localizedDescription)
     }
 }

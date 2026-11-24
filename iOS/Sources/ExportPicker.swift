@@ -1,25 +1,14 @@
+import GlassineCore
 import SwiftUI
 import UIKit
 
-/// A file the reader has just written and wants to hand to the system: Export as
-/// PDF's paginated re-render, sitting in the temporary directory until the
-/// picker moves or copies it.
-///
-/// `Identifiable` because `.sheet(item:)` is what presents it: the URL is not
-/// known until the re-render finishes, and a boolean flag would present the
-/// sheet with nothing in it.
-struct ExportFile: Identifiable {
-    let id = UUID()
-    let url: URL
-}
-
 /// `UIDocumentPickerViewController(forExporting:)` -- "where should this go?",
 /// the iOS answer to the Mac's `NSSavePanel`. The file is written first and the
-/// picker moves it, which is why `exportPDF` writes into the temporary directory
+/// picker copies it, which is why `exportPDF` writes into the temporary directory
 /// rather than asking for a destination up front.
 struct ExportPicker: UIViewControllerRepresentable {
 
-    let file: ExportFile
+    let file: TemporaryExport
     let onFinish: () -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
@@ -31,18 +20,33 @@ struct ExportPicker: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIDocumentPickerViewController,
                                 context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
+    func makeCoordinator() -> Coordinator { Coordinator(file: file, onFinish: onFinish) }
+
+    static func dismantleUIViewController(_ controller: UIDocumentPickerViewController,
+                                         coordinator: Coordinator) {
+        // Interactive sheet dismissal need not call the picker delegate.
+        coordinator.file.remove()
+    }
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let file: TemporaryExport
         private let onFinish: () -> Void
-        init(onFinish: @escaping () -> Void) { self.onFinish = onFinish }
+        init(file: TemporaryExport, onFinish: @escaping () -> Void) {
+            self.file = file
+            self.onFinish = onFinish
+        }
 
         func documentPicker(_ controller: UIDocumentPickerViewController,
                             didPickDocumentsAt urls: [URL]) {
-            onFinish()
+            finish()
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            finish()
+        }
+
+        private func finish() {
+            file.remove()
             onFinish()
         }
     }

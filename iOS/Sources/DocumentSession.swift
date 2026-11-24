@@ -121,6 +121,11 @@ final class DocumentSession {
     /// Both kinds have one: it is how a Files-app rename or move reaches the
     /// session. Only Markdown also listens to it for content changes.
     @ObservationIgnored private var presenter: DocumentFilePresenter?
+    @ObservationIgnored private var presenterRegistration: FilePresenterRegistration?
+    /// App-wide state, independent of any one iPad scene or attached PDFView.
+    @ObservationIgnored private var isBackgrounded: Bool
+    @ObservationIgnored private var isClosed = false
+    @ObservationIgnored private var lifecycleObservers: [NotificationToken] = []
     /// Reloads, in order: two saves in quick succession are two conversions
     /// racing on a concurrent queue, and without this the slower one could
     /// overwrite the newer revision.
@@ -170,6 +175,27 @@ final class DocumentSession {
     var isPageDialogVisible = false
     var pageEntry = ""
 
+    // MARK: Output feedback
+
+    enum OutputAction {
+        case print, export
+
+        var failureTitle: String {
+            self == .print ? "Cannot Print Document" : "Cannot Export PDF"
+        }
+    }
+
+    struct OutputFailure {
+        let action: OutputAction
+        let message: String
+    }
+
+    // Like the page dialog, these are shared with separately hosted toolbar
+    // content so a failed menu action can present an alert in the reader.
+    var outputFailure: OutputFailure?
+    var isPrinting = false
+    var isExporting = false
+
     // MARK: Outline
 
     private(set) var outlineEntries: [OutlineEntry] = []
@@ -200,6 +226,7 @@ final class DocumentSession {
         self.scopedURL = url
         self.kind = DocumentTypes.kind(of: url)
         self.title = url.deletingPathExtension().lastPathComponent
+        self.isBackgrounded = UIApplication.shared.applicationState == .background
         // Held for the life of the session, not just the read: PDFKit reads
         // pages lazily, so releasing the scope after the open would strand
         // every page that has not been rendered yet.
@@ -208,6 +235,7 @@ final class DocumentSession {
         // Not `find` directly: the session filters the print path's ghost text
         // out of the match stream before the state machine ever sees it.
         bridge.findSink = self
+        observeApplicationLifecycle()
     }
 
     deinit {
@@ -215,12 +243,11 @@ final class DocumentSession {
         // not Sendable so it cannot even be read here. The download timer stops
         // itself when its weak reference to the session has gone. A scene that
         // disconnects (an iPad window closed) never calls `close()`, so the two
-        // registrations that would otherwise outlive the session -- the file
-        // coordinator retains its presenters -- are undone here; both calls are
-        // thread-safe.
+        // resources that would otherwise outlive the session are released here
+        // or by their owning boxes. The coordinator retains its presenters, so
+        // `presenterRegistration` removes its presenter when the box goes.
         if accessingScope { scopedURL.stopAccessingSecurityScopedResource() }
-        if let presenter { NSFileCoordinator.removeFilePresenter(presenter) }
-        // `prefsObserver` removes itself when its box goes.
+        // The preference and application notification tokens remove themselves.
     }
 
     // MARK: Opening
@@ -337,12 +364,13 @@ final class DocumentSession {
     /// revert to it on the Mac. That is a separate change, with its own
     /// questions about the reading position and an active search.
     private func startPresentingPDF() {
-        guard kind == .pdf, presenter == nil else { return }
+        guard !isClosed, kind == .pdf, presenter == nil else { return }
         let presenter = DocumentFilePresenter(url: url, onChange: nil, onMove: { [weak self] newURL in
             self?.fileDidMove(to: newURL)
         })
-        NSFileCoordinator.addFilePresenter(presenter)
         self.presenter = presenter
+        presenterRegistration = FilePresenterRegistration(presenter: presenter,
+                                                           isBackgrounded: isBackgrounded)
     }
 
     #if DEBUG
@@ -366,8 +394,9 @@ final class DocumentSession {
         // exported as real pages with its bookmarks and no private links.
         if arguments.bool(forKey: "export") {
             exportPDF { [weak self] result in
-                guard case .success(let file) = result,
-                      let data = try? Data(contentsOf: file) else { return }
+                guard case .success(let file) = result else { return }
+                defer { file.remove() }
+                guard let data = try? Data(contentsOf: file.url) else { return }
                 _ = self
                 let documents = FileManager.default.urls(for: .documentDirectory,
                                                          in: .userDomainMask)[0]
@@ -390,6 +419,10 @@ final class DocumentSession {
     /// Release the security scope and every observer. Called when the scene
     /// swaps documents or goes away.
     func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        presenterRegistration?.close()
+        lifecycleObservers.removeAll()
         find.stop()
         savePosition()
         // A render still in flight must not install into a view this session no
@@ -405,10 +438,8 @@ final class DocumentSession {
         prefsObserver = nil
         watcher?.stop()
         watcher = nil
-        if let presenter {
-            NSFileCoordinator.removeFilePresenter(presenter)
-            self.presenter = nil
-        }
+        presenterRegistration = nil
+        presenter = nil
         reloader?.invalidate()
         if kind == .markdown { MarkdownRendererIOS.shared.releaseIfIdle() }
         if accessingScope {
@@ -423,6 +454,54 @@ final class DocumentSession {
     /// its position would date from the last background.
     func saveNow() {
         savePosition()
+    }
+
+    // MARK: Application lifecycle
+
+    /// These observers belong to the session, not its view. A session can open
+    /// in the background or outlive several views, and one iPad scene entering
+    /// the background must not suspend presenters used by another active scene.
+    private func observeApplicationLifecycle() {
+        let box = MainBox(self)
+        lifecycleObservers = [
+            NotificationToken(NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { box.value?.applicationDidEnterBackground() }
+            }),
+            NotificationToken(NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { box.value?.applicationWillEnterForeground() }
+            })
+        ]
+    }
+
+    private func applicationDidEnterBackground() {
+        guard !isClosed else { return }
+        isBackgrounded = true
+        presenterRegistration?.suspend()
+        savePosition()
+    }
+
+    private func applicationWillEnterForeground() {
+        guard !isClosed else { return }
+        isBackgrounded = false
+        guard let presenterRegistration else { return }
+        // A move already delivered to the presenter may have updated its URL.
+        if let currentURL = presenter?.presentedItemURL { fileDidMove(to: currentURL) }
+        // A move or deletion made while no presenter was registered reports
+        // nothing, so the session cannot follow the file. The document already
+        // on screen stays where it is rather than being closed on a
+        // reachability check: a file provider that is slow to answer just
+        // after a foreground would otherwise cost the reader their document.
+        // Until it is reopened, the position and the Recents row stay under
+        // the old path.
+        presenterRegistration.resume()
+        // Keep the watcher's baseline: resetting it here would swallow a save
+        // missed during suspension. Its signature gate coalesces this check
+        // with any vnode notification already queued for the same revision.
+        watcher?.poke()
     }
 
     // MARK: Markdown
@@ -599,7 +678,7 @@ final class DocumentSession {
     /// debounce and the same `(inode, mtime, size)` gate, so two notifications
     /// for one save still cost one render.
     private func startWatching() {
-        guard kind == .markdown, watcher == nil else { return }
+        guard !isClosed, kind == .markdown, watcher == nil else { return }
         watcher = FileWatcher(url: url) { [weak self] in
             self?.reloadFromDisk()
         }
@@ -610,8 +689,9 @@ final class DocumentSession {
         }, onMove: { [weak self] newURL in
             self?.fileDidMove(to: newURL)
         })
-        NSFileCoordinator.addFilePresenter(presenter)
         self.presenter = presenter
+        presenterRegistration = FilePresenterRegistration(presenter: presenter,
+                                                           isBackgrounded: isBackgrounded)
     }
 
     /// The Files app renamed or moved the open file (delivered through the
@@ -622,7 +702,7 @@ final class DocumentSession {
     /// from the old path. A PDF is not re-read; the `PDFDocument` already open
     /// stays on screen, as the Mac's does across a rename.
     private func fileDidMove(to newURL: URL) {
-        guard newURL != url else { return }
+        guard !isClosed, newURL != url else { return }
         let previous = url
         url = newURL
         title = newURL.deletingPathExtension().lastPathComponent
@@ -727,8 +807,8 @@ final class DocumentSession {
 
     /// Export as PDF: a paginated re-render, re-serialised so the bookmarks are
     /// in the file and the `glassine-outline://` link annotations are not, in a
-    /// temporary file for the document picker to move where the reader says.
-    func exportPDF(_ completion: @escaping @MainActor (Result<URL, Error>) -> Void) {
+    /// temporary file for the document picker to copy where the reader says.
+    func exportPDF(_ completion: @escaping @MainActor (Result<TemporaryExport, Error>) -> Void) {
         paginatedDocumentForOutput { [weak self] result in
             guard let self else { return }
             switch result {
@@ -739,11 +819,8 @@ final class DocumentSession {
                     completion(.failure(Self.nothingToExport))
                     return
                 }
-                let file = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(self.title)
-                    .appendingPathExtension("pdf")
                 do {
-                    try data.write(to: file)
+                    let file = try TemporaryExport(data: data, filename: self.title + ".pdf")
                     completion(.success(file))
                 } catch {
                     completion(.failure(error))
@@ -754,7 +831,7 @@ final class DocumentSession {
         }
     }
 
-    private static let nothingToExport = NSError(
+    static let nothingToExport = NSError(
         domain: NSCocoaErrorDomain,
         code: NSFileWriteUnknownError,
         userInfo: [NSLocalizedDescriptionKey: "There is nothing to export yet."])
@@ -783,7 +860,14 @@ final class DocumentSession {
         // change); the old one's observers would otherwise pile up -- and the
         // new one restores the *saved* position, so the old one's is saved first
         // or a continuous document jumps back to wherever the last save was.
-        if pdfView != nil { savePosition() }
+        if let pdfView {
+            savePosition()
+            // Pages belong to the document shared by both views. Retire the
+            // old view's ink before the replacement takes ownership of it.
+            pdfView.setFindMatches([], current: 0)
+            pdfView.highlightedSelections = nil
+            pdfView.setCurrentSelection(nil, animate: false)
+        }
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         pdfView = view
@@ -802,11 +886,6 @@ final class DocumentSession {
         ) { _ in
             MainActor.assumeIsolated { box.value?.scheduleOutlineSync() }
         })
-        observers.append(NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { box.value?.savePosition() }
-        })
         // A locked PDF reports no pages and no outline, and its position
         // restore waits (ReadingPosition leaves `restoreStarted` false) until
         // the reader has typed the password into PDFKit's own prompt.
@@ -823,6 +902,13 @@ final class DocumentSession {
         })
 
         installInView()
+        // A completed search will send no more callbacks. Rebuild the new
+        // view's cache even when the session's appearance has not changed, so
+        // stepping and Done own all of the ink left on these shared pages.
+        applyHighlights()
+        if !isInverted, find.matches.indices.contains(find.matchIndex) {
+            view.setCurrentSelection(find.matches[find.matchIndex], animate: false)
+        }
     }
 
     /// The Mac's `documentDidUnlock`: everything the locked document could not
@@ -1121,52 +1207,6 @@ extension DocumentSession: FindSink {
         guard let band = ghostBand, band.margin > 0,
               let page = selection.pages.first else { return false }
         return selection.bounds(for: page).maxY <= band.margin + 0.5
-    }
-}
-
-/// `NSFilePresenter` for the open file, whichever kind it is.
-///
-/// For both kinds it follows the file: iOS has no NSDocument, so without a
-/// presenter a Files-app rename or move of an open document goes unnoticed
-/// and the session keeps saving its position and Recents row under a path
-/// that no longer exists.
-///
-/// For Markdown it also sits beside the vnode watcher. The Mac gets by on the
-/// watcher alone because the writers that matter there (editors, CLI tools) do
-/// not coordinate. On iOS the important writers do: iCloud Drive and the Files
-/// app both go through `NSFileCoordinator`, and a coordinated write can leave
-/// the vnode source with nothing to report. `onChange` pokes the watcher's
-/// debounce rather than doing anything itself, so one save seen twice still
-/// costs one render. A PDF passes no `onChange`.
-///
-/// `@unchecked Sendable` because it is: every callback is delivered on the main
-/// queue, which is where the closures it holds belong and the only place the
-/// URL is rewritten (a move must update `presentedItemURL`, or the coordinator
-/// keeps delivering events for the old location).
-final class DocumentFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
-
-    private(set) var presentedItemURL: URL?
-    let presentedItemOperationQueue = OperationQueue.main
-    private let onChange: (@MainActor () -> Void)?
-    private let onMove: @MainActor (URL) -> Void
-
-    init(url: URL,
-         onChange: (@MainActor () -> Void)?,
-         onMove: @escaping @MainActor (URL) -> Void) {
-        self.presentedItemURL = url
-        self.onChange = onChange
-        self.onMove = onMove
-        super.init()
-    }
-
-    func presentedItemDidChange() {
-        guard let onChange else { return }
-        MainActor.assumeIsolated { onChange() }
-    }
-
-    func presentedItemDidMove(to newURL: URL) {
-        presentedItemURL = newURL
-        MainActor.assumeIsolated { onMove(newURL) }
     }
 }
 
