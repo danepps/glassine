@@ -35,6 +35,82 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **1.12.0 (Claude and Codex, 2026-11-24): the build for the public launch.**
+  Fixes only, numbered 1.12.0 rather than 1.11.3 at Dan's choice, to give the
+  launch a clean minor version (2.0 is kept for a release that changes what
+  the app does). Mac only. Branch `fix/1.12.0-review-followups` off `main` at
+  `e19c070`.
+  - **Why it exists.** Before launch, two fresh Claude reviewers read the
+    1.11.1 to 1.11.2 diff with no knowledge of the earlier review. Neither
+    found a crash, hang or lost-work regression; they found the first two
+    items below, and Dan found the other two using the preview.
+  - **Large PDFs: no more whole-file hash on the main thread.** 1.11.2's F11
+    kept `pdfSourceHash` and read the file back to hash it after every
+    highlight save and on every rename (measured 0.08 s at 100 MB, 0.31 s at
+    400 MB). `GlassineDocument` now keeps `PDFSourceSignature`, the size and
+    modification time from `stat`, of the revision it last read or wrote.
+  - **Heading marker out of the flow.** 1.11.2's inline-block marker left a
+    wrap opportunity after it, so a heading whose first word was wider than
+    the line started a line lower, and an empty heading took a line. The
+    marker is now `position: absolute; width: 1pt; height: 1em`, which
+    rendered identically to 1.11.1 and still gives one `glassine-outline:`
+    annotation per heading.
+  - **Bare addresses in headings are links on the Mac.** Dan clicked a long
+    address used as a heading and the browser got only its first line: the
+    autolinker skipped headings, so the click fell back to plain-text address
+    joining, which cannot rejoin an address broken mid-word. Since the marker
+    no longer wraps the heading, `MarkdownAutolinker(linkHeadings:)` links
+    them wherever `HeadingAnchorer.wrapsHeadingContent` is false (Mac PDF
+    output and the preview output; iOS PDF output still wraps, and still
+    skips). Side effect: an address in a heading keeps `--`, `...` and
+    straight quotes as typed, which changes that heading's slug.
+  - **Search: a query edited mid-search starts at once.** The old code set up
+    its wait after `cancelFindString()`, but PDFKit reports the cancelled
+    search's end inside that call, so the UI read as no matches and the new
+    query started only from the 0.5 s fallback. **PDFKit silently drops a
+    search begun inside `cancelFindString()`**: no match, no end, and
+    `isFinding` stays true for good (measured on macOS 27.2 with the
+    1,721-page casebook). Codex's first fix began the pending query from the
+    end callback, inside the cancel, and stranded every search whose query
+    was edited while running; its tests passed because `ProbeDocument` only
+    recorded the call. Dan caught it in the preview. `FindController` now
+    notes an end that arrives during the cancel and starts the pending query
+    after the cancel returns. `FindControllerTests.realReplacementFinishes`
+    runs a real `PDFDocument` through it, and `ProbeDocument` now refuses a
+    search begun inside its cancel. Never start a find from a PDFKit find
+    callback delivered inside a PDFKit call.
+  - **Tests.** Core 275, Mac 120 plus the five XCTest event tests (one
+    skipped), all passing; the iOS app compiles.
+  - **Found by the review and not fixed:**
+    - A highlight save that fires in the quarter second after another
+      program rewrites the PDF, before the watcher delivers the change,
+      writes the old pages over the new file. Older than 1.11.2; the race
+      itself was not reproduced.
+    - A Recents removal is lost if the app quits while `recentsQueue` is
+      stalled (new in 1.11.2's F20; `AppDelegate` does not flush on quit).
+    - Footnotes: a numbered item other than `1.`, a setext heading, a table
+      row or a link reference definition directly under a definition is
+      still pulled into the note. And, by design since 1.11.2, an unindented
+      list, quote, fence or rule directly under a definition now leaves the
+      note, as in cmark; that re-flows such documents in Quick Look and on
+      iOS too.
+    - The autolinker is still quadratic on a contrived line of `http://(`
+      repeated with no spaces.
+    - `Data.hashValue` covers every byte on macOS 27.2. If an older
+      supported macOS hashes only a prefix, the Markdown reload gate
+      (`MarkdownContent.hash`) would miss a same-length edit. Not checked on
+      macOS 14 to 26, and nothing in this release was run on those.
+  - **Checked and fine:** `page.thumbnail(of:for:)` does not draw the find
+    overlay at all, so the 1.11.2 highlight transform cannot be applied twice
+    there; heading text in the PDF carries no stray character from the
+    marker.
+  - **Test litter.** The Mac suites leave one preferences file per run in
+    `~/Library/Preferences` (`com.epps.Glassine.tests.<uuid>.plist` and a
+    dozen similar prefixes; about 1,280 on the MacBook). `removePersistentDomain`
+    does not delete the file. Harmless; worth a cleanup step in the tests.
+  - **iOS.** Still nothing released. The two iOS branches
+    (`codex/fix-review-2026-11-24-ios` and `…-ios-open-path`) are stacked on
+    1.11.2 and need rebasing onto this before they are tested.
 - **Released 1.11.2 (Claude and Codex, 2026-11-24): dark-mode find highlights
   in Reader Mode, and ten fixes from a Codex code review.** Build 29, tag
   `v1.11.2`. Mac only; nothing here has been released for iOS. Branch
