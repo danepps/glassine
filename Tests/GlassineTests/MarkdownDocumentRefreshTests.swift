@@ -141,6 +141,29 @@ extension MacAppTests {
             }
         }
 
+        @Test("A retained closed reader ignores typography changes and late renders")
+        func preferencesAfterClose() async throws {
+            try await withDocument { document, _, typesetter in
+                let original = try #require(document.pdf)
+                Prefs.markdownFontSize = 13
+                Prefs.markdownFontSize = 14
+                try #require(typesetter.requests.count == 3)
+                document.close()
+                let observer = NotificationCenter.default.addObserver(
+                    forName: .glassineDocumentDidReplacePDF, object: document, queue: .main
+                ) { _ in Issue.record("A closed reader installed a replacement PDF") }
+                defer { NotificationCenter.default.removeObserver(observer) }
+                let windows = NSApplication.shared.windows.count
+
+                Prefs.markdownFontSize = 15
+                #expect(typesetter.requests.count == 3)
+                typesetter.succeed(1)
+                typesetter.fail(2)
+                #expect(document.pdf === original)
+                #expect(NSApplication.shared.windows.count == windows)
+            }
+        }
+
         @Test("Export remains paginated while switching away from Continuous")
         func exportDuringLayoutTransition() async throws {
             try await withIsolatedDefaults {

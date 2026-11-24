@@ -69,6 +69,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     /// Bumped for every render; a completion whose generation is stale is dropped.
     private var renderGeneration = 0
     private var observingPrefs = false
+    // NSDocumentController creates a new instance when reopening a closed file.
+    // A retained export completion must not reactivate this reader.
+    private var isClosed = false
     /// Where the reader is, as an outline entry, recorded just before a
     /// re-render and handed to the window once the replacement is installed. A
     /// page index and a point mean nothing across a re-typesetting that moved
@@ -81,8 +84,12 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
 
     private var pendingHighlightSave: DispatchWorkItem?
     private var highlightSaveInProgress = false
+    private var pdfSavesInProgress = 0
     private var highlightSaveCompletions: [(Error?) -> Void] = []
     private var pdfSourceByteCount = 0
+    /// The bytes last read or saved, independent of the watcher's event baseline.
+    /// A move can adopt a new baseline before an outside revision was displayed.
+    private var pdfSourceHash: Int?
     private(set) var hasSignatureFields = false
     var highlightPageCache: [ObjectIdentifier: [SavedHighlight]] = [:]
     /// Whether any page holds a highlight, once someone has asked. Menu
@@ -139,6 +146,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             }
             document.delegate = self
             pdfSourceByteCount = bytes.count
+            pdfSourceHash = bytes.hashValue
             pdf = document
             highlightPageCache.removeAll()
             cachedHasHighlights = nil
@@ -164,6 +172,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // MARK: Saving highlights
 
     func scheduleHighlightSave() {
+        guard !isClosed else { return }
         pendingHighlightSave?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.flushHighlights { [weak self] error in
@@ -194,10 +203,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         highlightSaveInProgress = true
         save(to: url, ofType: UTType.pdf.identifier, for: .saveOperation) { [self] error in
             highlightSaveInProgress = false
-            // The file on disk is now this save, not an outside edit: without
-            // this the watcher would hand it straight back as a reload.
-            if error == nil { watcher?.acceptCurrentState() }
-            if error == nil && isDocumentEdited {
+            if error == nil && isDocumentEdited && !isClosed {
                 // If a queued user action changed the document during a save,
                 // a close request must wait until those changes are saved too.
                 flushHighlights { _ in }
@@ -220,6 +226,27 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
+    override func save(to url: URL, ofType typeName: String,
+                       for saveOperation: NSDocument.SaveOperationType,
+                       completionHandler: @escaping (Error?) -> Void) {
+        pdfSavesInProgress += 1
+        super.save(to: url, ofType: typeName, for: saveOperation) { [self] error in
+            pdfSavesInProgress -= 1
+            // Save As also writes our own PDF and changes fileURL before this
+            // completion. Do not mistake that URL change for an outside edit,
+            // or let a save to a former location claim the new file's state.
+            if error == nil, !isClosed, kind == .pdf, fileURL == url {
+                pdfSourceHash = (try? Data(contentsOf: url))?.hashValue
+                watcher?.acceptCurrentState()
+                if !isDocumentEdited {
+                    pendingHighlightSave?.cancel()
+                    pendingHighlightSave = nil
+                }
+            }
+            completionHandler(error)
+        }
+    }
+
     override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?,
                            contextInfo: UnsafeMutableRawPointer?) {
         // This runs BEFORE NSDocument decides to show a Save sheet. Saving in
@@ -231,6 +258,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     }
 
     override func makeWindowControllers() {
+        guard !isClosed else { return }
         addWindowController(ReaderWindowController(document: self))
         startWatching()
         guard kind == .markdown else { return }
@@ -241,7 +269,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // MARK: Markdown rendering
 
     private func startRender() {
-        guard kind == .markdown, let bodyHTML = content?.html else { return }
+        guard !isClosed, kind == .markdown, let bodyHTML = content?.html else { return }
         // Repeated saves of the same bytes must not duplicate an in-flight
         // render. Only a completed failure makes those bytes retryable.
         renderNeedsRetry = false
@@ -254,7 +282,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         let typesetter = markdownTypesetter ?? MarkdownRenderer.shared
         typesetter.render(html: html, baseURL: fileURL, key: renderKey,
                           layout: layout) { [weak self] result in
-            guard let self, generation == self.renderGeneration else { return }
+            guard let self, !self.isClosed, generation == self.renderGeneration else { return }
             // "First" is a fact about the document, not about which event asked
             // for this render: a save or a style change that lands before the
             // opening render has finished supersedes it, and *that* render is
@@ -308,7 +336,7 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // MARK: Reloading
 
     private func startWatching() {
-        guard let url = fileURL, watcher == nil else { return }
+        guard !isClosed, let url = fileURL, watcher == nil else { return }
         watcher = FileWatcher(url: url) { [weak self] in
             guard let self else { return }
             switch self.kind {
@@ -330,11 +358,15 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     /// waits 1.5 s) are dropped rather than saved over the new file, which
     /// would silently put the old pages back.
     @MainActor
-    private func reloadPDFFromDisk() {
-        guard kind == .pdf, let url = fileURL, let type = fileType else { return }
+    private func reloadPDFFromDisk(onlyIfChanged: Bool = false) {
+        guard !isClosed, kind == .pdf, let url = fileURL, let type = fileType else { return }
         // Our own save is landing; its completion re-baselines the watcher.
-        guard !highlightSaveInProgress else { return }
+        guard !highlightSaveInProgress, pdfSavesInProgress == 0 else { return }
         do {
+            // An unchanged rename must preserve unsaved highlights and undo.
+            // Compare source bytes, not the edited in-memory PDF or an inode
+            // that can change when moving between volumes.
+            if onlyIfChanged, try Data(contentsOf: url).hashValue == pdfSourceHash { return }
             try revert(toContentsOf: url, ofType: type)
         } catch {
             // Usually a file caught half-written; the writer's next event brings
@@ -352,7 +384,8 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
             // Cached source can be newer than the PDF on screen after a
             // failure. A matching hash only rules out work if its last render
             // succeeded or is still running.
-            guard let self, self.content?.hash != fresh.hash || self.renderNeedsRetry else { return }
+            guard let self, !self.isClosed,
+                  self.content?.hash != fresh.hash || self.renderNeedsRetry else { return }
             self.content = fresh
             self.captureAnchor()
             self.startRender()
@@ -360,11 +393,9 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         return made
     }
 
-    /// `location` overrides `fileURL` for the one caller that knows the file
-    /// has moved before NSDocument has finished saying so.
     @MainActor
-    private func reloadFromDisk(from location: URL? = nil) {
-        guard kind == .markdown, let url = location ?? fileURL else { return }
+    private func reloadFromDisk() {
+        guard !isClosed, kind == .markdown, let url = fileURL else { return }
         if reloader == nil { reloader = makeReloader() }
         reloader?.reload(url: url)
     }
@@ -390,28 +421,52 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
         }
     }
 
-    override func presentedItemDidMove(to newURL: URL) {
-        super.presentedItemDidMove(to: newURL)
-        // NSDocument delivers Finder moves on its file-presenter queue.
-        // Reload state and watcher ownership belong to the main actor. Enqueue
-        // both together, without blocking file coordination on the main thread.
+    override var fileURL: URL? {
+        get { super.fileURL }
+        set {
+            let previous = super.fileURL
+            super.fileURL = newValue
+            guard previous != newValue else { return }
+            // NSDocument uses this setter for Save As as well as moves. Keep
+            // its thread-safe storage; only reader state belongs on main.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { fileURLChanged() }
+            } else {
+                DispatchQueue.main.async { [weak self] in self?.fileURLChanged() }
+            }
+        }
+    }
+
+    @MainActor
+    private func fileURLChanged() {
+        guard !isClosed, let watcher else { return }
+        invalidateReloads()
+        guard let url = fileURL else {
+            watcher.stop()
+            self.watcher = nil
+            return
+        }
+        watcher.retarget(to: url)
+        // Retargeting adopts the current signature and retires old callbacks.
+        // Recover an unseen revision using the source content, so an unchanged
+        // move does not discard PDF edits. A pending highlight save already
+        // resolves fileURL when it runs and thus follows an unchanged move.
+        // Let NSDocument finish updating its file bookkeeping before invoking
+        // revert, which may itself set fileURL. A later URL change supersedes
+        // this work, while retargeting above has already stopped old deliveries.
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.invalidateReloads()
-            // A closed document has no watcher, and must not start reloading.
-            guard let watcher = self.watcher else { return }
-            watcher.retarget(to: newURL)
-            // The retarget takes the file's current signature as its baseline,
-            // and the invalidation above dropped any conversion in flight -- so
-            // a revision saved just before the move would never be shown.
-            // Re-read once; the content hash gate makes an unchanged file free.
-            // From `newURL` directly: NSDocument updates `fileURL` on its own
-            // schedule and may not have done so yet.
-            self.reloadFromDisk(from: newURL)
+            guard let self, !self.isClosed, self.fileURL == url else { return }
+            switch self.kind {
+            case .markdown: self.reloadFromDisk()
+            case .pdf: self.reloadPDFFromDisk(onlyIfChanged: true)
+            }
         }
     }
 
     override func close() {
+        isClosed = true
+        NotificationCenter.default.removeObserver(self, name: .glassinePrefsChanged, object: nil)
+        observingPrefs = false
         // A render suspended at sleep may complete much later. A closed tab
         // must not install its result or present a delayed typesetting alert.
         renderGeneration += 1
@@ -428,13 +483,14 @@ final class GlassineDocument: NSDocument, PDFDocumentDelegate {
     // MARK: Typography
 
     private func observePrefs() {
-        guard !observingPrefs else { return }
+        guard !isClosed, !observingPrefs else { return }
         observingPrefs = true
         NotificationCenter.default.addObserver(
             self, selector: #selector(prefsChanged), name: .glassinePrefsChanged, object: nil)
     }
 
     @objc private func prefsChanged() {
+        guard !isClosed else { return }
         let current = MarkdownStyling.current
         guard kind == .markdown, current != styling else { return }
         styling = current

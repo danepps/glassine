@@ -1,5 +1,6 @@
 import AppKit
 import CoreText
+import GlassineCore
 import PDFKit
 import Testing
 import UniformTypeIdentifiers
@@ -273,10 +274,23 @@ extension MacAppTests {
             #expect(doc.savedHighlights.count == 8)
         }
 
-        @Test("Save As preserves the source, existing annotations and rotated-page geometry")
+        @Test("Save As preserves annotations and geometry, and watches only the new file")
         func saveAs() async throws {
+            Prefs.flushRecentDocumentWrites()
+            let name = "com.epps.Glassine.save-as-tests.\(UUID())"
+            let defaults = try #require(UserDefaults(suiteName: name))
+            let previous = Prefs.defaults
+            Prefs.defaults = defaults
+            defer {
+                Prefs.flushRecentDocumentWrites()
+                Prefs.defaults = previous
+                defaults.removePersistentDomain(forName: name)
+            }
             let (doc, folder) = try fixture()
             defer { doc.close(); try? FileManager.default.removeItem(at: folder) }
+            doc.makeWindowControllers()
+            let saveAsItem = NSMenuItem(title: "Save As…", action: #selector(NSDocument.saveAs(_:)), keyEquivalent: "")
+            #expect(doc.validateUserInterfaceItem(saveAsItem))
             let source = try #require(doc.fileURL)
             let originalBytes = try Data(contentsOf: source)
             let page = try #require(doc.pdf?.page(at: 0))
@@ -304,6 +318,39 @@ extension MacAppTests {
             #expect(reopened.pdf?.page(at: 0)?.bounds(for: .cropBox) == page.bounds(for: .cropBox))
             #expect(reopened.pdf?.page(at: 0)?.annotations.contains(where: { $0.contents == "An existing note" }) == true)
             #expect(!reopened.isDocumentEdited)
+
+            // An uncoordinated rewrite of B must reach the real window watcher.
+            // Keep A untouched until this reload has been observed, so a watcher
+            // accidentally left on A cannot make this assertion pass.
+            let replacement = try #require(PDFDocument(data: originalBytes))
+            replacement.insert(PDFPage(), at: replacement.pageCount)
+            try #require(replacement.write(to: destination))
+            let deadline = Date().addingTimeInterval(5)
+            while doc.pdf?.pageCount != 3 && Date() < deadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            #expect(doc.pdf?.pageCount == 3)
+            // Let the rewrite of B settle. One write can reach the watcher as
+            // two signature changes a few hundred milliseconds apart, and the
+            // second reload would discard the highlight added below -- which
+            // would then be blamed on the write to A.
+            try await Task.sleep(for: .milliseconds(800))
+            // Continue even on a failed watcher assertion, so the old-source
+            // event also demonstrates whether it can discard an unsaved edit.
+            let current = try #require(doc.pdf)
+            let pending = try #require(current.findString("Final passage", withOptions: []).first)
+            edit(doc) { doc.addHighlight(selection: pending, color: .pink) }
+            let highlight = try #require(doc.savedHighlights.last?.annotation)
+            let oldRevision = try #require(PDFDocument(data: originalBytes))
+            oldRevision.insert(PDFPage(), at: 0)
+            try #require(oldRevision.write(to: source))
+            try await Task.sleep(for: .milliseconds(600))
+            #expect(doc.pdf === current)
+            #expect(doc.savedHighlights.contains { $0.annotation === highlight })
+            #expect(doc.isDocumentEdited)
+            #expect(doc.undoManager?.canUndo == true)
+            doc.undoManager?.undo()
+            #expect(!doc.savedHighlights.contains { $0.annotation === highlight })
         }
 
         @Test("Failed saves retain unsaved edits and encrypted documents remain read-only")
