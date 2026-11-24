@@ -51,7 +51,7 @@ public protocol FindControllerDelegate: AnyObject {
 /// Incremental find over a `PDFDocument`, and the small state machine that makes
 /// replacing a running search safe.
 ///
-/// PDFKit delivers find callbacks asynchronously and does not tag them with the
+/// PDFKit delivers find matches asynchronously and does not tag them with the
 /// query, so a search cancelled mid-flight can still report matches (and its
 /// end) after a replacement has begun. The old search is cancelled,
 /// `isAwaitingCancelledFindEnd` drops its stragglers, and the new query starts
@@ -101,6 +101,10 @@ public final class FindController: FindSink {
     /// which would start the replacement half a second early, or after a
     /// `reset(for:)` had already thrown the pending query away.
     private var cancellationToken = 0
+    /// True only while `startFind` is inside PDFKit's `cancelFindString`, and
+    /// whether the cancelled search's end was reported during that call.
+    private var isCancellingFind = false
+    private var findEndedDuringCancel = false
 
     /// How long to wait for a cancelled search's end callback before starting
     /// the replacement anyway.
@@ -155,10 +159,28 @@ public final class FindController: FindSink {
         }
 
         if let pdf = document, pdf.isFinding {
-            pdf.cancelFindString()
             pendingQuery = trimmed
             isAwaitingCancelledFindEnd = true
-            armCancellationFallback()
+            // PDFKit can report the cancelled search's end inside
+            // cancelFindString. The wait is set up first, so that end is
+            // recognised as the cancelled search's and not reported as a
+            // search that found nothing. But the pending query must not start
+            // from inside the cancel: PDFKit accepts a search begun there and
+            // then never runs it (measured on macOS 27 with a 1,700-page PDF:
+            // no match, no end, `isFinding` true for good). So an end that
+            // arrives during the cancel is only noted, and the pending query
+            // starts once the cancel has returned.
+            isCancellingFind = true
+            findEndedDuringCancel = false
+            pdf.cancelFindString()
+            isCancellingFind = false
+            if findEndedDuringCancel {
+                findEndedDuringCancel = false
+                isAwaitingCancelledFindEnd = false
+                startPendingFind()
+            } else {
+                armCancellationFallback()
+            }
             return
         }
         beginFind(trimmed)
@@ -271,6 +293,12 @@ public final class FindController: FindSink {
     public func findDidEnd() {
         guard document != nil else { return }
         if isAwaitingCancelledFindEnd {
+            // Still inside cancelFindString: `startFind` starts the pending
+            // query itself once that call has returned.
+            if isCancellingFind {
+                findEndedDuringCancel = true
+                return
+            }
             isAwaitingCancelledFindEnd = false
             startPendingFind()
             return
