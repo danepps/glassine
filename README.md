@@ -289,15 +289,15 @@ outline, and position memory need to know nothing about it.
 
 ## Icon
 
-Four fanned sheets of glassine, the front one ruled in coral, amber, mint and
-blue: a near-white tile in light, a graphite one with the rims blooming in dark.
+Four fanned sheets of glassine, the front one ruled in red, orange, violet and
+blue (the Spectrum palette, shared with Dubitante): a near-white tile in light, a graphite one with the rims blooming in dark.
 `Support/Glassine.icon` is an Icon Composer package with those two appearances,
 compiled by `scripts/make-icon.sh` into `Support/Assets.car` (macOS 26 uses it
 via `CFBundleIconName`). The same script renders `Support/Glassine.icns` as the
 fallback for macOS 14 and 15, drawing every size at its own resolution rather
 than downsampling 1024. `swift scripts/make-doc-icon.swift` builds
 `Support/MarkdownDocument.icns`, the Finder document icon for `.md` files: one
-sheet of the same family, coral-rimmed, with an M↓ over the four rules.
+sheet of the same family, red-rimmed, with an M↓ over the four rules.
 `swift scripts/make-doc-icon.swift --pdf` builds the matching
 `Support/PDFDocument.icns`, with a PDF mark. Both are bundled by `build.sh` and
 registered in `Support/Info.plist`. At 16 px the marks simplify to M and P;

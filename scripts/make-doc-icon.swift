@@ -9,7 +9,7 @@
 //                   individual sizes can be inspected.
 //
 // The app icon's drawing language on a single sheet: the same folded page, a
-// coral rim, and the four coloured rules — with an M↓ or PDF mark above them
+// red rim, and the four coloured rules — with an M↓ or PDF mark above them
 // saying which kind of document this is. Light variant only: Finder draws one
 // document icon whatever the appearance is. Each size is drawn at its own pixel
 // resolution rather than downsampled, so the 16 and 32 px tiles can snap their
@@ -55,7 +55,7 @@ let ruleLeft: CGFloat = 289
 let ruleThickness: CGFloat = 38
 let ruleWidths: [CGFloat] = [350, 446, 388, 446]
 let ruleYs: [CGFloat] = [452, 364, 276, 188]
-let ruleColors = [rgb(255, 91, 91), rgb(255, 190, 48), rgb(46, 210, 171), rgb(76, 160, 255)]
+let ruleColors = [rgb(232, 48, 14), rgb(232, 164, 0), rgb(154, 100, 160), rgb(33, 72, 160)]   // make-icon.swift's accents
 
 let markCenterY: CGFloat = 700
 let markSize: CGFloat = 224
@@ -63,7 +63,7 @@ let markSize: CGFloat = 224
 let paperColor = rgb(255, 255, 255)
 let foldColor = rgb(212, 219, 229)
 let inkColor = rgb(38, 46, 58)              // #262E3A, the app icon's slate
-let rimColor = ruleColors[0]                // coral, as on the app icon's top leaf
+let rimColor = ruleColors[0]                // red, as on the app icon's top leaf
 let rimWidth: CGFloat = 9
 
 // MARK: - Per-size tuning
@@ -73,7 +73,7 @@ let rimWidth: CGFloat = 9
 // proportional size (a 0.25 × height stem lands under 2 px and greys out), the
 // rules are floored at 2 px so their colours survive, and at 16 px the rules
 // and the arrow are dropped — there is room for a bold M and nothing else, so
-// the mark moves back to the middle of the sheet and the coral rim is left to
+// the mark moves back to the middle of the sheet and the red rim is left to
 // carry the family's colour.
 struct Tuning {
     var zoom: CGFloat = 1
@@ -217,7 +217,7 @@ func render(side: Int, pdf: Bool) -> CGImage {
     flap.closeSubpath()
     fill(flap, foldColor, in: ctx)
 
-    // The coral rim is the app icon's front leaf, on its own. It is a
+    // The red rim is the app icon's front leaf, on its own. It is a
     // double-width stroke clipped to the sheet, so the rim lies wholly inside
     // the pixel-snapped edge: a centred 1 px stroke at 16 px would land half in
     // and half out and come back as two grey rows.
