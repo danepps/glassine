@@ -1,6 +1,6 @@
 # Glassine — Handoff
 
-_Last updated 2026-11-24. Repo: https://github.com/danepps/glassine (public
+_Last updated 2026-11-26. Repo: https://github.com/danepps/glassine (public
 since v1.0.0, MIT; see "Signing,
 notarization, updates")._
 
@@ -35,6 +35,70 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
+- **Unreleased, merged to `main` from `touch-support` (Claude, 2026-11-26):
+  touch on the PROLED MacBook Pro (Mac17,13, macOS 27.2.1, the first Mac with a
+  touch display).** Dan's MacBook is one; he tried both halves by hand in
+  `build/Glassine Preview.app` and approved them.
+  - **What was wrong.** On macOS 27 PDFKit handles the mouse and a finger
+    through gesture recognizers (10 on `PDFView`, 7 on `PDFDocumentView`,
+    among them `_NSTextSelectionTouchTracker`, a touch-only long press and a
+    touch drag), and installs none of them on a `PDFView` subclass that
+    overrides `mouseDown`, `mouseDragged` or `mouseUp`. `ReaderPDFView`
+    overrode all three for plain-text addresses, so the reader ran PDFKit's
+    old tracking loop and a finger got only AppKit's mouse emulation (tap =
+    click, hold-then-move = drag, long press = right click). Measured with a
+    headless probe that lists `gestureRecognizers` down the view tree;
+    overriding only `menu(for:)` or `keyDown` costs nothing.
+  - **The fix.** No mouse overrides. A `NSClickGestureRecognizer` on the view
+    claims a plain single click or tap on a plain-text address; its delegate
+    (`TextLinkClickFilter`, a separate object) makes PDFKit's recognizers on
+    the view and pages wait for it to fail, without which they begin first
+    and it never fires; the scroll view's are left out so scrolling never
+    waits. The same object is the `PDFViewDelegate`: PDFKit opens plain-text
+    addresses itself even with `enableDataDetectors = false` (to the end of
+    the line only), so `pdfViewWillClick(onLink:with:)` reopens them as the
+    whole address under the press. **A `PDFView` cannot be its own delegate**:
+    its own `PDFViewWillChangeScaleFactor:toScale:` forwards to the delegate
+    and recurses until the stack runs out.
+  - **Page turns by touch (same branch).** Dan tried the Preview build by
+    hand, said it works, and asked for a gesture to page forward and back. A
+    finger tapped in the right strip of the reader view goes forward a page,
+    in the left strip back (`ReaderPDFView.pageTurnTap`, `turnPage(_:)`, the
+    same moves as the arrow keys). Strips are 14% of the view's width each,
+    56 to 120 pt (`pageTurnZone(x:in:)`). Touch only: an
+    `NSClickGestureRecognizer` with `buttonMask = 0`, installed on macOS 27
+    and later. A link or address under the finger stays a link, the scroller
+    stays the scroller, and a finger held down stays PDFKit's: its press
+    recognizers with a minimum duration (menu, drag, selection) do not wait
+    for the tap. A tap was chosen over a swipe because a one-finger drag
+    already scrolls and pans. No preference to turn it off yet.
+  - **Changed for the mouse too**: a drag that starts on an address now
+    selects text (it did nothing), and a double click on an address opens it
+    once.
+  - **Tests.** `ReaderPDFViewGestureTests` (in `TextLinkTests.swift`): the
+    view overrides none of the three methods, it has every recognizer a plain
+    `PDFView` has plus two, a double click opens once, a drag never opens part
+    of an address, where the page-turn strips are, that `turnPage` stops at
+    both ends, and that an address in a strip is not a page turn. Mac suite
+    120 Swift Testing + 12 XCTest, all passing. On
+    this Mac `xcode-select` points at the Command Line Tools, which have no
+    XCTest: run the Mac tests with
+    `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --no-parallel`.
+  - **Not verified: anything a finger does.** Touches cannot be synthesized
+    (they reach neither `NSApp.sendEvent` nor event monitors), so the touch
+    half of the delegate (`gestureRecognizer(_:shouldReceive:)`) and all of
+    PDFKit's touch behaviour in Glassine are untested until Dan tries
+    `build/Glassine Preview.app`. In particular: whether `menu(for:)` gets a
+    usable location from a touch long press, and whether touch selection on
+    a scan still goes through `ScanSelectionPatch`. Not tried on macOS 14–26.
+  - **Left alone on purpose**: `SearchResultsTable` and `HighlightsTable`
+    override `mouseDown` for the `isHandlingMouse` flag, which costs them 5 of
+    `NSTableView`'s 6 recognizers the same way. They still work by emulation;
+    removing the override needs another way to tell a click from an arrow
+    key, and `NSApp.currentEvent` is no good for that (a touch never becomes
+    the current event). Apple's guide:
+    developer.apple.com/documentation/appkit/adopting-gesture-recognizers-in-your-app
+    and TN3212.
 - **Released 1.12.0 (Claude and Codex, 2026-11-24): the build for the public
   launch.** Build 30, tag `v1.12.0`. Fixes only, numbered 1.12.0 rather than
   1.11.3 at Dan's choice, to give the launch a clean minor version (2.0 is
