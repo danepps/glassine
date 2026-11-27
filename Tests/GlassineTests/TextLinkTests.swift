@@ -313,3 +313,147 @@ final class TextLinkClickTests: XCTestCase {
         XCTAssertEqual(opened.map(\.absoluteString), [TextLinkFixture.turley], "\(size) pt, Turley")
     }
 }
+
+// MARK: - Gesture recognizers, not mouse overrides (XCTest)
+
+/// On macOS 27 PDFKit handles the mouse, and a finger on a touch display,
+/// through gesture recognizers, and installs none of them on a `PDFView`
+/// subclass that overrides `mouseDown`, `mouseDragged` or `mouseUp`: such a
+/// view drops to the old tracking loop, and a finger gets only AppKit's mouse
+/// emulation instead of PDFKit's touch selection, long-press menu and double
+/// tap. `ReaderPDFView` opens plain-text addresses from a click recognizer for
+/// that reason, and these hold the line.
+@MainActor
+final class ReaderPDFViewGestureTests: XCTestCase {
+
+    func testReaderViewDoesNotOverrideTheMouseMethods() {
+        for name in ["mouseDown:", "mouseDragged:", "mouseUp:"] {
+            let selector = NSSelectorFromString(name)
+            XCTAssertEqual(class_getInstanceMethod(ReaderPDFView.self, selector),
+                           class_getInstanceMethod(PDFView.self, selector),
+                           "ReaderPDFView overrides \(name); PDFKit then installs no gesture recognizers")
+        }
+    }
+
+    func testReaderViewKeepsPDFKitsGestureRecognizers() throws {
+        let pdf = try TextLinkFixture.render(TextLinkFixture.plainMarkdown, size: 13)
+        func counts(_ view: PDFView) -> (view: Int, pages: Int) {
+            let window = NSWindow(contentRect: NSRect(x: -12000, y: -12000, width: 700, height: 1000),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            view.frame = window.contentView!.bounds
+            window.contentView!.addSubview(view)
+            view.document = pdf
+            view.layoutDocumentView()
+            defer { window.close() }
+            return (view.gestureRecognizers.count, view.documentView?.gestureRecognizers.count ?? 0)
+        }
+        let plain = counts(PDFView())
+        try XCTSkipIf(plain.pages == 0, "this PDFKit installs no gesture recognizers on its pages (before macOS 27)")
+        let reader = counts(ReaderPDFView())
+        XCTAssertEqual(reader.pages, plain.pages, "PDFKit's recognizers on the document view")
+        // PDFKit's own, plus the text-link click and the page-turn tap.
+        XCTAssertEqual(reader.view, plain.view + 2, "PDFKit's recognizers on the view")
+    }
+
+    // MARK: Page turns by touch
+
+    /// A touch cannot be synthesized (it reaches neither `NSApp.sendEvent` nor
+    /// an event monitor), so these cover everything up to the finger: where
+    /// the strips are, what a tap in them does, and what it leaves alone.
+    func testPageTurnStripsAreTheOuterEdgesOfTheView() {
+        let wide = NSRect(x: 0, y: 0, width: 1000, height: 800)   // 14% = 140, capped at 120
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 0, in: wide), .back)
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 119, in: wide), .back)
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 121, in: wide))
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 500, in: wide))
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 879, in: wide))
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 881, in: wide), .forward)
+        let medium = NSRect(x: 0, y: 0, width: 600, height: 800)  // 14% = 84
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 83, in: medium), .back)
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 85, in: medium))
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 517, in: medium), .forward)
+        let narrow = NSRect(x: 0, y: 0, width: 300, height: 800)  // floor of 56
+        XCTAssertEqual(ReaderPDFView.pageTurnZone(x: 55, in: narrow), .back)
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 57, in: narrow))
+        // No room for a middle: no strips at all.
+        XCTAssertNil(ReaderPDFView.pageTurnZone(x: 5, in: NSRect(x: 0, y: 0, width: 150, height: 800)))
+    }
+
+    func testTurnPageMovesAPageAndStopsAtTheEnds() throws {
+        let pdf = PDFDocument()
+        for index in 0..<3 { pdf.insert(PDFPage(), at: index) }
+        let harness = ScanSelectionGestureTests.Harness(document: pdf, page: try XCTUnwrap(pdf.page(at: 0)))
+        defer { harness.close() }
+        let view = harness.view
+        func current() -> Int { view.currentPage.map(pdf.index(for:)) ?? -1 }
+        XCTAssertEqual(current(), 0)
+        view.turnPage(.back)
+        XCTAssertEqual(current(), 0, "back from the first page")
+        view.turnPage(.forward)
+        XCTAssertEqual(current(), 1)
+        view.turnPage(.forward)
+        view.turnPage(.forward)
+        XCTAssertEqual(current(), 2, "forward from the last page")
+        view.turnPage(.back)
+        XCTAssertEqual(current(), 1)
+    }
+
+    /// An address in the strip is still an address, and the middle of the
+    /// view turns nothing.
+    func testATapOnAnAddressOrInTheMiddleIsNotAPageTurn() throws {
+        let pdf = try TextLinkFixture.render(TextLinkFixture.plainMarkdown, size: 13)
+        let page = try XCTUnwrap(pdf.page(at: 0))
+        let harness = ScanSelectionGestureTests.Harness(document: pdf, page: page)
+        defer { harness.close() }
+        let view = harness.view
+        XCTAssertNil(view.pageTurn(forTapAt: NSPoint(x: view.bounds.midX, y: view.bounds.midY)))
+        XCTAssertEqual(view.pageTurn(forTapAt: NSPoint(x: view.bounds.minX + 4, y: view.bounds.midY)), .back)
+        XCTAssertEqual(view.pageTurn(forTapAt: NSPoint(x: view.bounds.maxX - 30, y: view.bounds.midY)), .forward)
+        // Every point of the wrapped address, wherever it falls.
+        for point in TextLinkFixture.clickPoints(of: TextLinkFixture.huffpost, on: page) {
+            XCTAssertNil(view.pageTurn(forTapAt: harness.point(point, on: page)), "on the address at \(point)")
+        }
+    }
+
+    /// The second click of a double click reaches PDFKit, which reads the
+    /// address itself; the first click has already opened it.
+    func testDoubleClickOnAnAddressOpensItOnce() throws {
+        let pdf = try TextLinkFixture.render(TextLinkFixture.plainMarkdown, size: 13)
+        let page = try XCTUnwrap(pdf.page(at: 0))
+        let harness = ScanSelectionGestureTests.Harness(document: pdf, page: page)
+        defer { harness.close() }
+        var opened: [URL] = []
+        harness.view.openURL = { opened.append($0) }
+        for point in TextLinkFixture.linePoints(of: TextLinkFixture.huffpost, on: page) {
+            opened.removeAll()
+            _ = harness.click(harness.point(point, on: page), count: 2)
+            XCTAssertEqual(opened.map(\.absoluteString), [TextLinkFixture.huffpost], "double click at \(point)")
+        }
+    }
+
+    /// A press that moves is not the click recognizer's. Whatever PDFKit then
+    /// makes of it (a selection, or a click on the address as it read it),
+    /// nothing but the whole address is ever opened, and the view goes on
+    /// answering clicks.
+    func testDragBegunOnAnAddressNeverOpensPartOfIt() throws {
+        let pdf = try TextLinkFixture.render(TextLinkFixture.plainMarkdown, size: 13)
+        let page = try XCTUnwrap(pdf.page(at: 0))
+        let harness = ScanSelectionGestureTests.Harness(document: pdf, page: page)
+        defer { harness.close() }
+        var opened: [URL] = []
+        harness.view.openURL = { opened.append($0) }
+        let lines = TextLinkFixture.linePoints(of: TextLinkFixture.huffpost, on: page)
+        for point in lines {
+            let start = harness.point(point, on: page)
+            _ = harness.drag(from: start, to: CGPoint(x: start.x + 40, y: start.y))
+            _ = harness.drag(from: start, to: CGPoint(x: start.x + 30, y: start.y + 200))
+        }
+        XCTAssertTrue(opened.allSatisfy { $0.absoluteString == TextLinkFixture.huffpost },
+                      "opened \(opened.map(\.absoluteString))")
+        opened.removeAll()
+        let first = try XCTUnwrap(lines.first)
+        _ = harness.click(harness.point(first, on: page), count: 1)
+        XCTAssertEqual(opened.map(\.absoluteString), [TextLinkFixture.huffpost], "a click after the drags")
+    }
+}

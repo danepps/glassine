@@ -43,17 +43,172 @@ final class ReaderPDFView: PDFView {
         NSPasteboard.general.setString(owner.highlightsMarkdown([SavedHighlight(page: page, annotation: annotation)]), forType: .string)
     }
 
-    /// A plain-text address under a click, which Glassine opens itself rather
-    /// than leaving to PDFKit, whose detection stops at the end of the line
-    /// and so opens only the first half of an address the PDF wrapped.
+    // MARK: Plain-text addresses
+
+    /// A plain-text address under the press now in progress, which Glassine
+    /// opens itself rather than leaving to PDFKit, whose detection stops at
+    /// the end of the line and so opens only the first half of an address the
+    /// PDF wrapped.
+    ///
+    /// This is a gesture recognizer and not a `mouseDown(with:)` override on
+    /// purpose. On macOS 27 PDFKit handles the mouse and a finger on a touch
+    /// display through gesture recognizers of its own (text selection by
+    /// touch, the long-press menu, double tap), and it installs none of them
+    /// on a subclass that overrides `mouseDown`, `mouseDragged` or `mouseUp`:
+    /// the view drops to the old tracking loop and a finger gets only AppKit's
+    /// mouse emulation. `ReaderPDFViewGestureTests` holds that line.
     private var pendingTextLink: URL?
 
-    /// How a plain-text address is opened. A seam for tests, which must
-    /// never launch a browser.
+    /// Where the latest press began (view coordinates) and its click count; a
+    /// touch counts as one click. `pdfViewWillClick(onLink:with:)` is told
+    /// only the address PDFKit read, not where the click was.
+    private var lastPress: (point: NSPoint, clickCount: Int)?
+
+    fileprivate var textLinkClick: NSClickGestureRecognizer?
+    private var textLinkFilter: TextLinkClickFilter?
+
+    // MARK: Page turns by touch
+
+    enum PageTurn { case back, forward }
+
+    /// A finger tapped in the left strip of the view goes back a page, in the
+    /// right strip forward: the arrow keys, for a hand already on the screen.
+    /// Touch only (`buttonMask` 0), so a mouse click in the same place is
+    /// still just a click, and installed only where there are touch displays.
+    fileprivate var pageTurnTap: NSClickGestureRecognizer?
+
+    /// The turn the touch now in progress would make, if it stays a tap.
+    private var pendingPageTurn: PageTurn?
+
+    /// Which turn a tap at `x` makes, by position alone. The strips are 14% of
+    /// the view each, never narrower than a fingertip nor wider than 120 pt,
+    /// and a view too narrow to leave a middle between them has none.
+    static func pageTurnZone(x: CGFloat, in bounds: NSRect) -> PageTurn? {
+        let strip = min(max(bounds.width * 0.14, 56), 120)
+        guard bounds.width >= strip * 3 else { return nil }
+        if x < bounds.minX + strip { return .back }
+        if x > bounds.maxX - strip { return .forward }
+        return nil
+    }
+
+    /// The turn a tap at this point makes. A link under the finger is a link,
+    /// and the scroller is the scroller.
+    func pageTurn(forTapAt point: NSPoint) -> PageTurn? {
+        guard let turn = Self.pageTurnZone(x: point.x, in: bounds) else { return nil }
+        if textLink(atViewPoint: point) != nil { return nil }
+        if let page = page(for: point, nearest: false),
+           let annotation = page.annotation(at: convert(point, to: page)),
+           annotation.type == "Link" || annotation.type == "Widget" {
+            return nil
+        }
+        if let superview, let hit = superview.hitTest(convert(point, to: superview)),
+           sequence(first: hit, next: \.superview).contains(where: { $0 is NSScroller }) {
+            return nil
+        }
+        return turn
+    }
+
+    /// What the arrow keys do: a page, or a viewport of a document that is
+    /// one long page.
+    func turnPage(_ turn: PageTurn) {
+        if scrollsRatherThanPages {
+            scrollByViewport(turn == .forward ? 1 : -1)
+        } else if turn == .forward {
+            goToNextPage(nil)
+        } else {
+            goToPreviousPage(nil)
+        }
+    }
+
+    fileprivate func touchBegan(forPageTurnAt point: NSPoint) -> Bool {
+        pendingPageTurn = pageTurn(forTapAt: point)
+        return pendingPageTurn != nil
+    }
+
+    /// True while `pageTurnTap` has a claim on the touch.
+    fileprivate var holdsPageTurnTouch: Bool { pendingPageTurn != nil }
+
+    @objc private func pageTurnTapped(_ recognizer: NSClickGestureRecognizer) {
+        guard let turn = pendingPageTurn else { return }
+        pendingPageTurn = nil
+        if recognizer.state == .ended { turnPage(turn) }
+    }
+
+    /// How an address is opened. A seam for tests, which must never launch a
+    /// browser.
     var openURL: (URL) -> Void = { _ = NSWorkspace.shared.open($0) }
 
-    private func textLink(at event: NSEvent) -> URL? {
-        textLink(atViewPoint: convert(event.locationInWindow, from: nil))
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        installTextLinkHandling()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installTextLinkHandling()
+    }
+
+    private func installTextLinkHandling() {
+        let filter = TextLinkClickFilter(view: self)
+        let click = NSClickGestureRecognizer(target: self, action: #selector(textLinkClicked(_:)))
+        click.delegate = filter
+        if #available(macOS 27.0, *) {
+            // A finger that lands on an address and then scrolls is scrolling.
+            click.isCancellableByScrollGesture = true
+        }
+        addGestureRecognizer(click)
+        textLinkClick = click
+        textLinkFilter = filter
+        if #available(macOS 27.0, *) {
+            let tap = NSClickGestureRecognizer(target: self, action: #selector(pageTurnTapped(_:)))
+            tap.buttonMask = 0
+            tap.allowedTouchTypes = .direct
+            tap.isCancellableByScrollGesture = true
+            tap.delegate = filter
+            addGestureRecognizer(tap)
+            pageTurnTap = tap
+        }
+        // Every link PDFKit decides to open comes back through
+        // `pdfKitWillOpen(_:)`.
+        delegate = filter
+    }
+
+    /// The links PDFKit opens itself: a real link annotation, and its own
+    /// reading of a plain-text address when a press was not `textLinkClick`'s
+    /// to claim (a modified click, or a drag that began and ended on the
+    /// address). PDFKit reads only to the end of the line, so the second kind
+    /// is opened as the whole address under the press instead.
+    fileprivate func pdfKitWillOpen(_ url: URL) {
+        // The second click of a double click: the first already opened it.
+        if let press = lastPress, press.clickCount > 1 { return }
+        if let press = lastPress, let whole = textLink(atViewPoint: press.point) {
+            openURL(whole)
+        } else {
+            openURL(url)
+        }
+    }
+
+    /// Every mouse-down and touch-began on the view, before any recognizer has
+    /// acted. True when the press is a plain single click or tap on a
+    /// plain-text address, which `textLinkClick` then claims.
+    fileprivate func pressBegan(at point: NSPoint, clickCount: Int, modified: Bool) -> Bool {
+        lastPress = (point, clickCount)
+        pendingTextLink = clickCount == 1 && !modified ? textLink(atViewPoint: point) : nil
+        return pendingTextLink != nil
+    }
+
+    /// True while `textLinkClick` has a claim on the press, so PDFKit's own
+    /// recognizers wait for it: without that they begin first and it never
+    /// fires. A press that turns into a drag fails the click and PDFKit goes
+    /// on to select text, as anywhere else on the page.
+    fileprivate var holdsTextLinkPress: Bool { pendingTextLink != nil }
+
+    @objc private func textLinkClicked(_ recognizer: NSClickGestureRecognizer) {
+        guard let url = pendingTextLink else { return }
+        pendingTextLink = nil
+        if recognizer.state == .ended, textLink(atViewPoint: recognizer.location(in: self)) == url {
+            openURL(url)
+        }
     }
 
     /// The plain-text address at a point in this view's coordinates, joined
@@ -85,32 +240,6 @@ final class ReaderPDFView: PDFView {
         area.remove(.imageArea)
         if overText { area.insert(.textArea) } else { area.remove(.textArea) }
         return area
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        pendingTextLink = nil
-        if event.clickCount == 1,
-           event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
-           let url = textLink(at: event) {
-            pendingTextLink = url
-            return
-        }
-        super.mouseDown(with: event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        // Dragging from an address does nothing; PDFKit never saw the press.
-        if pendingTextLink != nil { return }
-        super.mouseDragged(with: event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        if let url = pendingTextLink {
-            pendingTextLink = nil
-            if textLink(at: event) == url { openURL(url) }
-            return
-        }
-        super.mouseUp(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -352,6 +481,61 @@ final class ReaderPDFView: PDFView {
         guard word.count >= 2 else { return false }
         let found = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0)
         return found.location == NSNotFound
+    }
+}
+
+/// The delegate of `ReaderPDFView.textLinkClick`, and the view's
+/// `PDFViewDelegate`. A separate object because PDFView answers both sets of
+/// delegate messages itself: its own `PDFViewWillChangeScaleFactor:toScale:`
+/// forwards to the delegate, so a view that is its own delegate recurses until
+/// the stack runs out, and a gesture delegate method on the subclass would
+/// replace PDFKit's.
+private final class TextLinkClickFilter: NSObject, NSGestureRecognizerDelegate, PDFViewDelegate {
+
+    private weak var view: ReaderPDFView?
+
+    init(view: ReaderPDFView) { self.view = view }
+
+    func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+        view?.pdfKitWillOpen(url)
+    }
+
+    /// Mouse input. Also asked about scroll and magnify events, which are
+    /// never a click.
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer,
+                           shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+        guard let view, gestureRecognizer === view.textLinkClick,
+              event.type == .leftMouseDown else { return false }
+        let modified = !event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
+        return view.pressBegan(at: view.convert(event.locationInWindow, from: nil),
+                               clickCount: event.clickCount, modified: modified)
+    }
+
+    /// A finger on a touch display, which never arrives as an event.
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldReceive touch: NSTouch) -> Bool {
+        guard let view else { return false }
+        let point = touch.location(in: view)
+        if gestureRecognizer === view.pageTurnTap { return view.touchBegan(forPageTurnAt: point) }
+        return view.pressBegan(at: point, clickCount: 1, modified: false)
+    }
+
+    /// PDFKit's recognizers on the view and its pages wait for the click to
+    /// fail. Scrolling does not wait: the scroll view's own recognizers are
+    /// left out.
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer,
+                           shouldBeRequiredToFailBy otherGestureRecognizer: NSGestureRecognizer) -> Bool {
+        guard let view, let other = otherGestureRecognizer.view, !(other is NSScrollView),
+              other === view || other.isDescendant(of: view) else { return false }
+        guard gestureRecognizer === view.pageTurnTap else { return view.holdsTextLinkPress }
+        // The page-turn tap. An address under the finger is the text-link
+        // click's, and a finger that stays down is PDFKit's: its recognizers
+        // that need a hold (the menu, a drag, a selection) do not wait, and
+        // when one of them begins the tap is over.
+        guard view.holdsPageTurnTouch, otherGestureRecognizer !== view.textLinkClick else { return false }
+        if let press = otherGestureRecognizer as? NSPressGestureRecognizer, press.minimumPressDuration > 0 {
+            return false
+        }
+        return true
     }
 }
 
