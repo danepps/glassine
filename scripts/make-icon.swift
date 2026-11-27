@@ -69,12 +69,14 @@ func pagePath(_ rect: CGRect, fold: CGFloat, radius: CGFloat) -> CGPath {
 
 // MARK: - Palettes
 
-/// The reader's four accent colours, unchanged since the Folio icon: they are
-/// the rules on the top leaf and the rims of the four leaves.
-let accents = [rgb(255, 91, 91),    // coral
-               rgb(255, 190, 48),   // amber
-               rgb(46, 210, 171),   // mint
-               rgb(76, 160, 255)]   // blue
+/// The four accent colours: the rules on the top leaf and the rims of the four
+/// leaves. The Spectrum palette (2026-11-26), shared with the Dubitante icon,
+/// replacing the Folio-era coral, amber, mint and blue (#FF5B5B, #FFBE30,
+/// #2ED2AB, #4CA0FF), which read as Google's four primaries.
+let accents = [rgb(232, 48, 14),    // Spectrum Red    #E8300E
+               rgb(232, 164, 0),    // Yamabuki orange #E8A400
+               rgb(154, 100, 160),  // Aconite Violet  #9A64A0
+               rgb(33, 72, 160)]    // Blue            #2148A0
 
 struct Palette {
     let tileTop: CGColor
