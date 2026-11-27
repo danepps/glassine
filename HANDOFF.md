@@ -35,10 +35,18 @@ Dan's stated requirements, all met as of this handoff:
 
 ## State
 
-- **Unreleased, merged to `main` from `touch-support` (Claude, 2026-11-26):
-  touch on the PROLED MacBook Pro (Mac17,13, macOS 27.2.1, the first Mac with a
-  touch display).** Dan's MacBook is one; he tried both halves by hand in
-  `build/Glassine Preview.app` and approved them.
+- **Released 1.13.0 (Claude, 2026-11-26): touch on the PROLED MacBook Pro
+  (Mac17,13, macOS 27.2.1, the first Mac with a touch display), and the
+  Spectrum icons.** Build 31, tag `v1.13.0`, release commit `baa4785`; merged
+  from `touch-support` and `icon-spectrum` (the icon palette, from another
+  session, `2fee0e7`). Dan's MacBook is a PROLED; he tried both halves of the
+  touch work by hand in `build/Glassine Preview.app` and approved them.
+  - **First release cut from the PROLED MacBook.** It had none of the three
+    secrets that morning; Dan imported the Developer ID `.p12` and stored the
+    `notary` profile, and the Sparkle key was imported with `generate_keys -f`
+    (public key checked against `SUPublicEDKey`). The Studio, the M2 MacBook
+    and the PROLED MacBook can all release now. It built with the Command Line
+    Tools toolchain (SDK 27.2), not Xcode's.
   - **What was wrong.** On macOS 27 PDFKit handles the mouse and a finger
     through gesture recognizers (10 on `PDFView`, 7 on `PDFDocumentView`,
     among them `_NSTextSelectionTouchTracker`, a touch-only long press and a
